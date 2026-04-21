@@ -1,0 +1,23 @@
+# Godot 4 .gitignore
+
+# Godot-specific ignores
+.godot/
+*.translation
+
+# Exported projects — add platforms as needed
+*.apk
+*.aab
+*.ipa
+*.exe
+*.x86_64
+*.app/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Editor metadata (optional: keep if you want to share editor layout)
+# .godot/editor/
