@@ -23,6 +23,7 @@ const BOSS_SCENE         = preload("res://scenes/EnemyBoss.tscn")
 const SPIKE_TRAP_SCENE   = preload("res://scenes/SpikeTrap.tscn")
 const SECRET_DOOR_SCENE  = preload("res://scenes/SecretDoor.tscn")
 const ENCHANT_TABLE_SCENE= preload("res://scenes/EnchantTable.tscn")
+const LAVA_TILE_SCRIPT   = preload("res://scripts/LavaTile.gd")
 
 # ── Biome palette ─────────────────────────────────────────────────────────────
 const BIOME_NAMES := ["Dungeon", "Catacombs", "Ice Cavern", "Lava Rift"]
@@ -103,6 +104,7 @@ func _ready() -> void:
 		_spawn_enchant_table(player_room)
 
 	_spawn_traps()
+	_spawn_lava_tiles()
 	_spawn_enemies(player_room, portal_room if is_boss_floor else Rect2i())
 	_create_minimap()
 
@@ -378,22 +380,85 @@ func _place_enemy(scene: PackedScene, room: Rect2i, health_mult: float) -> void:
 	if health_mult != 1.0 and "max_health" in enemy:
 		enemy.max_health = maxi(1, int(enemy.max_health * health_mult))
 
-	# 15% chance of elite: doubled HP, gold tinted AsciiChar
+	# 15% chance of elite: doubled HP, random modifier
 	if randf() < 0.15 and "is_elite" in enemy:
 		enemy.is_elite = true
 		if "max_health" in enemy:
 			enemy.max_health = maxi(1, enemy.max_health * 2)
-		# Tint the ASCII label gold after adding to tree (deferred)
+		if "elite_modifier" in enemy:
+			var mod := randi_range(1, 3)
+			enemy.elite_modifier = mod
+			if mod == 2 and "_split_scene" in enemy:
+				enemy._split_scene = scene
 		enemy.set_meta("_make_elite_visual", true)
 
 	$Enemies.add_child(enemy)
+
+	_apply_biome_debuffs(enemy)
 
 	# Apply elite visual now that the node is in the tree
 	if enemy.get_meta("_make_elite_visual", false):
 		var lbl := enemy.get_node_or_null("AsciiChar")
 		if lbl:
-			lbl.add_theme_color_override("font_color", Color(1.0, 0.75, 0.0))
-			lbl.add_theme_color_override("font_outline_color", Color(0.5, 0.2, 0.0))
+			var mod: int = enemy.get("elite_modifier") if "elite_modifier" in enemy else 0
+			var elite_col: Color
+			var elite_out: Color
+			match mod:
+				1:  # Shielded – icy blue
+					elite_col = Color(0.5, 0.9, 1.0)
+					elite_out = Color(0.0, 0.3, 0.5)
+				2:  # Splitting – purple
+					elite_col = Color(0.85, 0.4, 1.0)
+					elite_out = Color(0.3, 0.0, 0.4)
+				3:  # Enraged – orange
+					elite_col = Color(1.0, 0.55, 0.0)
+					elite_out = Color(0.5, 0.15, 0.0)
+				_:
+					elite_col = Color(1.0, 0.75, 0.0)
+					elite_out = Color(0.5, 0.2, 0.0)
+			lbl.add_theme_color_override("font_color", elite_col)
+			lbl.add_theme_color_override("font_outline_color", elite_out)
+			var mod_names := ["", "SHIELDED", "SPLITTING", "ENRAGED"]
+			if mod > 0:
+				FloatingText.spawn_str(enemy.global_position + Vector2(0.0, -24.0), mod_names[mod], elite_col, get_tree().current_scene)
+
+# ── Biome debuffs ──────────────────────────────────────────────────────────────
+
+func _apply_biome_debuffs(enemy: Node) -> void:
+	if GameState.biome == 2:  # Ice Cavern — enemies start pre-frozen
+		enemy.set("_chill_stacks", 8)
+		enemy.set("_frozen", true)
+		enemy.set("_frozen_timer", 5.0)
+		if not enemy.get("is_elite"):  # elites get their own tint below
+			var lbl := enemy.get_node_or_null("AsciiChar")
+			if lbl:
+				lbl.add_theme_color_override("font_color", Color(0.55, 0.85, 1.0))
+				lbl.add_theme_color_override("font_outline_color", Color(0.1, 0.3, 0.6))
+
+# ── Lava tiles (Lava Rift biome) ───────────────────────────────────────────────
+
+func _spawn_lava_tiles() -> void:
+	if GameState.biome != 3:
+		return
+	var count := randi_range(10, 18)
+	var placed := 0
+	var shuffled := _rooms.duplicate()
+	shuffled.shuffle()
+	for _r in shuffled:
+		if placed >= count:
+			break
+		var room: Rect2i = _r
+		if room == _rooms[0]:
+			continue
+		for _attempt in 5:
+			var tx := randi_range(room.position.x + 1, room.position.x + room.size.x - 2)
+			var ty := randi_range(room.position.y + 1, room.position.y + room.size.y - 2)
+			if _grid[ty][tx] == FLOOR:
+				var tile: Node = LAVA_TILE_SCRIPT.new()
+				tile.position = _tile_center(Vector2i(tx, ty))
+				add_child(tile)
+				placed += 1
+				break
 
 # ── Boss ──────────────────────────────────────────────────────────────────────
 

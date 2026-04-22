@@ -29,6 +29,12 @@ var _wander_timer: float  = 0.0
 
 var is_elite: bool = false
 
+# Elite modifiers (0=none 1=shielded 2=splitting 3=enraged)
+var elite_modifier: int    = 0
+var _shield_active: bool   = false
+var _enrage_triggered: bool = false
+var _split_scene: PackedScene = null
+
 # ── Status effects (10-stack trigger system) ──────────────────────────────────
 # FREEZE: gradual slow per stack; 10 stacks → FROZEN (stopped, +25% dmg taken)
 var _chill_stacks: int     = 0
@@ -61,6 +67,8 @@ func _ready() -> void:
 	_hitbox.body_entered.connect(_on_melee_hit)
 	_update_health_bar()
 	_pick_wander_dir()
+	if elite_modifier == 1:
+		_shield_active = true
 
 func _physics_process(delta: float) -> void:
 	if _buff_timer > 0.0:
@@ -293,19 +301,46 @@ func apply_buff(duration: float) -> void:
 	_buff_timer += duration
 
 func take_damage(amount: int) -> void:
+	if _shield_active:
+		_shield_active = false
+		FloatingText.spawn_str(global_position, "BLOCKED!", Color(0.4, 0.9, 1.0), get_tree().current_scene)
+		return
 	if not _has_aggro:
 		_has_aggro = true
 		FloatingText.spawn_str(global_position, "!", Color(1.0, 0.9, 0.0), get_tree().current_scene)
-	# Frozen targets take 25% more damage
 	var actual := int(float(amount) * 1.25) if (_frozen or _chill_stacks > 0) else amount
 	health -= actual
 	FloatingText.spawn(global_position, actual, false, get_tree().current_scene)
 	_update_health_bar()
+	if elite_modifier == 3 and not _enrage_triggered and health > 0 and health * 2 <= max_health:
+		_enrage_triggered = true
+		speed *= 1.5
+		_effective_interval = maxf(0.3, _effective_interval * 0.6)
+		FloatingText.spawn_str(global_position, "ENRAGED!", Color(1.0, 0.15, 0.0), get_tree().current_scene)
+		var lbl := get_node_or_null("AsciiChar")
+		if lbl:
+			lbl.add_theme_color_override("font_color", Color(1.0, 0.2, 0.0))
 	if health <= 0:
 		GameState.kills += 1
 		GameState.add_xp(5)
+		if elite_modifier == 2 and _split_scene != null:
+			_do_split()
 		_drop_gold()
 		queue_free()
+
+func _do_split() -> void:
+	FloatingText.spawn_str(global_position, "SPLIT!", Color(0.9, 0.4, 1.0), get_tree().current_scene)
+	var enemies_node := get_tree().current_scene.get_node_or_null("Enemies")
+	if enemies_node == null:
+		return
+	for _i in 2:
+		var clone: Node = _split_scene.instantiate()
+		clone.position = global_position + Vector2(randf_range(-28.0, 28.0), randf_range(-28.0, 28.0))
+		if "max_health" in clone:
+			clone.max_health = maxi(1, max_health / 2)
+		if "elite_modifier" in clone:
+			clone.elite_modifier = 0
+		enemies_node.call_deferred("add_child", clone)
 
 func _drop_gold() -> void:
 	var gold := GOLD_PICKUP_SCENE.instantiate()
