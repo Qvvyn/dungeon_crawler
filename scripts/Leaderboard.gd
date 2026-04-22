@@ -1,16 +1,37 @@
 extends Node
 
-const SAVE_PATH   := "user://leaderboard.json"
-const MAX_ENTRIES := 10
+const SAVE_PATH    := "user://leaderboard.json"
+const MAX_ENTRIES  := 10
+const BIOME_KEYS   := ["dungeon", "catacombs", "ice", "lava"]
 
 var data: Dictionary = {
 	"portals": [],
 	"gold":    [],
-	"damage":  []
+	"damage":  [],
+	"biome_deepest": {"dungeon": 0, "catacombs": 0, "ice": 0, "lava": 0},
+	"biome_gold":    {"dungeon": 0, "catacombs": 0, "ice": 0, "lava": 0},
 }
 
 func _ready() -> void:
 	_load()
+
+func submit_biome_record(biome: int, portals: int, gold: int) -> void:
+	var key: String = BIOME_KEYS[clampi(biome, 0, 3)]
+	var deepest: Dictionary = data.get("biome_deepest", {})
+	if portals > int(deepest.get(key, 0)):
+		deepest[key] = portals
+		data["biome_deepest"] = deepest
+	var gold_bests: Dictionary = data.get("biome_gold", {})
+	if gold > int(gold_bests.get(key, 0)):
+		gold_bests[key] = gold
+		data["biome_gold"] = gold_bests
+	_save()
+
+func get_biome_records() -> Dictionary:
+	return {
+		"deepest": data.get("biome_deepest", {}),
+		"gold":    data.get("biome_gold",    {}),
+	}
 
 ## Returns a dict of {category: 1-based rank} for the submitted values.
 ## A rank of -1 means it didn't make the top 10.
@@ -60,6 +81,11 @@ func _load() -> void:
 	var result = JSON.parse_string(f.get_as_text())
 	f.close()
 	if result is Dictionary:
-		for key in result:
+		for key: String in result:
 			if key in data:
 				data[key] = result[key]
+		# Ensure biome dicts exist after loading older save files
+		if not data.has("biome_deepest"):
+			data["biome_deepest"] = {"dungeon": 0, "catacombs": 0, "ice": 0, "lava": 0}
+		if not data.has("biome_gold"):
+			data["biome_gold"] = {"dungeon": 0, "catacombs": 0, "ice": 0, "lava": 0}

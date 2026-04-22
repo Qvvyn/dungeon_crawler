@@ -48,8 +48,53 @@ var _dash_dir:         Vector2 = Vector2.ZERO
 var _is_invincible:    bool = false
 const DASH_SPEED           := 900.0
 const DASH_DURATION        := 0.18
-const DASH_COOLDOWN        := 1.5
+var _dash_base_cooldown: float = 1.5
 const BASE_SHOT_MANA_COST  := 3.0   # mana cost when firing without a wand equipped
+
+# Stamina
+var stamina:           float = 100.0
+var max_stamina:       float = 100.0
+var _stam_bar_fg:      ColorRect = null
+var _perk_stam_bonus:  float = 0.0
+var _stam_regen_bonus: float = 0.0
+const STAMINA_REGEN      := 18.0
+const DASH_STAMINA_COST  := 35.0
+
+# Nova spell
+var _spell_cooldown: float = 0.0
+const SPELL_COOLDOWN   := 8.0
+const NOVA_MANA_COST   := 22.0
+const SPELL_ORB_SCRIPT = preload("res://scripts/SpellOrb.gd")
+
+# Screen shake / hit-stop
+var _hit_stop_end_ms: int = 0
+var _shake_tween: Tween   = null
+
+# Knockback
+var _knockback_vel:   Vector2 = Vector2.ZERO
+var _knockback_timer: float   = 0.0
+const KNOCKBACK_DURATION      := 0.35
+
+# Perk system
+const PERKS := [
+	{"id": "hp_up",        "name": "+3 Max HP",        "desc": "Permanently gain 3 max health"},
+	{"id": "mana_up",      "name": "+25 Max Mana",      "desc": "Expand your mana pool by 25"},
+	{"id": "speed_up",     "name": "+40 Move Speed",    "desc": "Move permanently faster"},
+	{"id": "fire_rate_up", "name": "Rapid Fire",        "desc": "Reduce shot delay by 0.04s"},
+	{"id": "block_up",     "name": "+10% Block",        "desc": "10% more chance to block damage"},
+	{"id": "dash_up",      "name": "+20 Max Stamina",   "desc": "Dash stamina pool +20, more dashes"},
+	{"id": "wisdom_up",    "name": "+15% Mana Regen",   "desc": "Regenerate mana 15% faster"},
+	{"id": "proj_up",      "name": "Extra Shot",        "desc": "+1 base projectile (no wand)"},
+	{"id": "heal_now",     "name": "Vitality",          "desc": "Fully restore HP right now"},
+]
+var _perk_queue: int            = 0
+var _perk_screen: CanvasLayer   = null
+var _is_perk_selecting: bool    = false
+var _perk_block_bonus: float    = 0.0
+var _perk_proj_bonus: int       = 0
+var _perk_wisdom_bonus_p: float = 0.0
+var _perk_dash_reduction: float = 0.0
+var _perk_mana_bonus: float     = 0.0
 
 # Levitate
 var _is_levitating:         bool = false
@@ -68,8 +113,8 @@ const SHIELD_RADIUS          := 48.0
 var _gold_label: Label = null
 
 # Wizard ASCII animation
-const WIZARD_F0 := "/^\\\n(o)\n/|\\"
-const WIZARD_F1 := "/^\\\n(o)\n\\|/"
+const WIZARD_F0 := "   ^\n__/_\\__\n (*-*)\n /)V(\\|\n /___\\|"
+const WIZARD_F1 := "   ^\n__/_\\__\n (*3*)\n /)V(\\|\n /___\\|"
 var _ascii_label: Label   = null
 var _anim_timer: float    = 0.0
 var _anim_frame: int      = 0
@@ -117,11 +162,21 @@ func _ready() -> void:
 		ev_lev.physical_keycode = KEY_SPACE
 		InputMap.action_add_event("levitate", ev_lev)
 
+	if not InputMap.has_action("nova_spell"):
+		InputMap.add_action("nova_spell")
+		var ev_nova := InputEventKey.new()
+		ev_nova.physical_keycode = KEY_Q
+		InputMap.action_add_event("nova_spell", ev_nova)
+
 	_setup_pause_menu()
 	_setup_shield()
 
 	_ascii_label = $AsciiChar
 	_ascii_label.text = WIZARD_F0
+	var _mono := SystemFont.new()
+	_mono.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
+	_ascii_label.add_theme_font_override("font", _mono)
+	_ascii_label.add_theme_constant_override("line_separation", -6)
 
 	# Inventory UI
 	var inv_ui := INVENTORY_UI_SCENE.instantiate()
@@ -177,17 +232,35 @@ func _setup_hud_additions() -> void:
 
 	_mana_label = Label.new()
 	_mana_label.name = "ManaLabel"
-	_mana_label.position = Vector2(10, 45)
-	_mana_label.size = Vector2(120, 16)
-	_mana_label.add_theme_font_size_override("font_size", 10)
-	_mana_label.add_theme_color_override("font_color", Color(0.4, 0.65, 1.0))
+	_mana_label.position = Vector2(10, 33)
+	_mana_label.size = Vector2(200, 12)
+	_mana_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_mana_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_mana_label.z_index = 2
+	_mana_label.add_theme_font_size_override("font_size", 9)
+	_mana_label.add_theme_color_override("font_color", Color(0.88, 0.93, 1.0))
 	hud.add_child(_mana_label)
 
-	# Dash cooldown label
+	# Stamina bar background
+	var stam_bg := ColorRect.new()
+	stam_bg.name = "StamBarBG"
+	stam_bg.color = Color(0.05, 0.2, 0.05)
+	stam_bg.position = Vector2(10, 49)
+	stam_bg.size = Vector2(202, 8)
+	hud.add_child(stam_bg)
+
+	_stam_bar_fg = ColorRect.new()
+	_stam_bar_fg.name = "StamBarFG"
+	_stam_bar_fg.color = Color(0.3, 0.9, 0.25)
+	_stam_bar_fg.position = Vector2(11, 50)
+	_stam_bar_fg.size = Vector2(200.0, 6.0)
+	hud.add_child(_stam_bar_fg)
+
+	# Dash label
 	var dash_lbl := Label.new()
 	dash_lbl.name = "DashLabel"
 	dash_lbl.text = "DASH [SHIFT]"
-	dash_lbl.position = Vector2(10, 55)
+	dash_lbl.position = Vector2(10, 62)
 	dash_lbl.size = Vector2(150, 18)
 	dash_lbl.add_theme_font_size_override("font_size", 11)
 	dash_lbl.add_theme_color_override("font_color", Color(0.5, 0.8, 1.0))
@@ -207,7 +280,7 @@ func _setup_hud_additions() -> void:
 	var lev_lbl := Label.new()
 	lev_lbl.name = "LevitateLabel"
 	lev_lbl.text = "LEVITATE [SPACE]"
-	lev_lbl.position = Vector2(10, 69)
+	lev_lbl.position = Vector2(10, 76)
 	lev_lbl.size = Vector2(200, 16)
 	lev_lbl.add_theme_font_size_override("font_size", 11)
 	lev_lbl.add_theme_color_override("font_color", Color(0.55, 0.75, 1.0))
@@ -216,11 +289,20 @@ func _setup_hud_additions() -> void:
 	var shd_lbl := Label.new()
 	shd_lbl.name = "ShieldLabel"
 	shd_lbl.text = "SHIELD [RMB]"
-	shd_lbl.position = Vector2(10, 83)
+	shd_lbl.position = Vector2(10, 90)
 	shd_lbl.size = Vector2(200, 16)
 	shd_lbl.add_theme_font_size_override("font_size", 11)
 	shd_lbl.add_theme_color_override("font_color", Color(0.35, 0.6, 1.0))
 	hud.add_child(shd_lbl)
+
+	var nova_lbl := Label.new()
+	nova_lbl.name = "NovaLabel"
+	nova_lbl.text = "NOVA [Q]"
+	nova_lbl.position = Vector2(10, 104)
+	nova_lbl.size = Vector2(200, 16)
+	nova_lbl.add_theme_font_size_override("font_size", 11)
+	nova_lbl.add_theme_color_override("font_color", Color(0.75, 0.3, 1.0))
+	hud.add_child(nova_lbl)
 
 # ── Pause menu ────────────────────────────────────────────────────────────────
 
@@ -239,29 +321,30 @@ func _setup_pause_menu() -> void:
 
 	var border := ColorRect.new()
 	border.color    = Color(0.28, 0.18, 0.45, 0.9)
-	border.position = Vector2(580, 250)
-	border.size     = Vector2(440, 340)
+	border.position = Vector2(580, 230)
+	border.size     = Vector2(440, 420)
 	_pause_menu.add_child(border)
 
 	var inner := ColorRect.new()
 	inner.color    = Color(0.04, 0.02, 0.09, 0.97)
-	inner.position = Vector2(583, 253)
-	inner.size     = Vector2(434, 334)
+	inner.position = Vector2(583, 233)
+	inner.size     = Vector2(434, 414)
 	_pause_menu.add_child(inner)
 
 	var title := Label.new()
 	title.text     = "— PAUSED —"
-	title.position = Vector2(586, 268)
+	title.position = Vector2(586, 248)
 	title.size     = Vector2(428, 50)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 32)
 	title.add_theme_color_override("font_color", Color(0.85, 0.75, 1.0))
 	_pause_menu.add_child(title)
 
-	_pause_btn("RESUME",       Vector2(640, 340), Color(0.4, 0.9, 0.5),  _resume_game)
-	_pause_btn("SAVE RUN",     Vector2(640, 410), Color(0.5, 0.75, 1.0), _save_run)
-	_pause_btn("TITLE SCREEN", Vector2(640, 480), Color(0.7, 0.55, 1.0), _on_title)
-	_pause_btn("QUIT",         Vector2(640, 550), Color(0.55, 0.55, 0.6),_on_quit)
+	_pause_btn("RESUME",       Vector2(640, 316), Color(0.4, 0.9, 0.5),  _resume_game)
+	_pause_btn("SAVE RUN",     Vector2(640, 382), Color(0.5, 0.75, 1.0), _save_run)
+	_pause_btn("TITLE SCREEN", Vector2(640, 448), Color(0.7, 0.55, 1.0), _on_title)
+	_pause_btn("QUIT",         Vector2(640, 514), Color(0.55, 0.55, 0.6),_on_quit)
+	_add_crt_toggle(Vector2(640, 578))
 
 func _pause_btn(txt: String, pos: Vector2, col: Color, cb: Callable) -> void:
 	var lbl := Label.new()
@@ -283,6 +366,35 @@ func _pause_btn(txt: String, pos: Vector2, col: Color, cb: Callable) -> void:
 	btn.mouse_exited.connect(func() -> void:
 		lbl.add_theme_color_override("font_color", col))
 	btn.pressed.connect(cb)
+	_pause_menu.add_child(btn)
+
+func _add_crt_toggle(pos: Vector2) -> void:
+	var col_on  := Color(0.55, 1.0, 0.55)
+	var col_off := Color(0.45, 0.45, 0.55)
+	var lbl := Label.new()
+	lbl.text = "[ CRT: %s ]" % ("ON" if GameState.crt_enabled else "OFF")
+	lbl.position = pos
+	lbl.size = Vector2(320, 32)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.add_theme_font_size_override("font_size", 17)
+	lbl.add_theme_color_override("font_color", col_on if GameState.crt_enabled else col_off)
+	_pause_menu.add_child(lbl)
+	var btn := Button.new()
+	btn.flat = true
+	btn.position = pos - Vector2(4, 2)
+	btn.size = Vector2(328, 36)
+	btn.mouse_entered.connect(func() -> void:
+		lbl.add_theme_color_override("font_color", lbl.get_theme_color("font_color").lightened(0.3)))
+	btn.mouse_exited.connect(func() -> void:
+		lbl.add_theme_color_override("font_color", col_on if GameState.crt_enabled else col_off))
+	btn.pressed.connect(func() -> void:
+		GameState.crt_enabled = not GameState.crt_enabled
+		GameState.save_settings()
+		lbl.text = "[ CRT: %s ]" % ("ON" if GameState.crt_enabled else "OFF")
+		lbl.add_theme_color_override("font_color", col_on if GameState.crt_enabled else col_off)
+		var scene := get_tree().current_scene
+		if scene.has_method("_apply_crt_state"):
+			scene._apply_crt_state())
 	_pause_menu.add_child(btn)
 
 func _toggle_pause() -> void:
@@ -381,6 +493,17 @@ func _debug_best_gear() -> void:
 		if best != null:
 			InventoryManager.equipped[slot] = best
 
+	# Always give a perfected beam wand with best gear
+	var beam := ItemDB.generate_wand(Item.RARITY_LEGENDARY)
+	beam.wand_shoot_type = "beam"
+	beam.wand_damage     = 20
+	beam.wand_mana_cost  = 5.0
+	beam.wand_fire_rate  = 0.06
+	beam.wand_flaws.clear()
+	beam.display_name    = "Annihilation Ray"
+	beam.color           = Color(0.3, 1.0, 0.8)
+	InventoryManager.equipped["wand"] = beam
+
 	InventoryManager.inventory_changed.emit()
 	update_equip_stats()
 	FloatingText.spawn_str(global_position, "BEST GEAR EQUIPPED", Color(1.0, 0.85, 0.15), get_tree().current_scene)
@@ -417,9 +540,52 @@ func _update_mana_bar() -> void:
 	if _mana_label:
 		_mana_label.text = "%d / %d MP" % [int(mana), int(max_mana)]
 
+func _update_stam_bar() -> void:
+	if _stam_bar_fg == null:
+		return
+	var ratio := clampf(stamina / max_stamina, 0.0, 1.0)
+	_stam_bar_fg.size.x = 200.0 * ratio
+
+func _cast_nova_spell() -> void:
+	if mana < NOVA_MANA_COST:
+		FloatingText.spawn_str(global_position, "Need %dMP" % int(NOVA_MANA_COST),
+			Color(0.8, 0.3, 0.8), get_tree().current_scene)
+		return
+	if _spell_cooldown > 0.0:
+		return
+	mana -= NOVA_MANA_COST
+	_spell_cooldown = SPELL_COOLDOWN
+	var orb := Node2D.new()
+	orb.set_script(SPELL_ORB_SCRIPT)
+	orb.global_position = global_position
+	orb.set("target_pos", get_global_mouse_position())
+	orb.set("proj_scene", projectile_scene)
+	get_tree().current_scene.add_child(orb)
+
+func camera_shake(intensity: float, duration: float) -> void:
+	var cam: Camera2D = get_node_or_null("Camera2D") as Camera2D
+	if cam == null:
+		return
+	if is_instance_valid(_shake_tween) and _shake_tween.is_running():
+		if cam.offset.length() > intensity:
+			return
+		_shake_tween.kill()
+	_shake_tween = create_tween()
+	var peak := Vector2(randf_range(-intensity, intensity), randf_range(-intensity, intensity))
+	_shake_tween.tween_property(cam, "offset", peak, duration * 0.25)
+	_shake_tween.tween_property(cam, "offset", Vector2.ZERO, duration * 0.75)
+
+func start_hit_stop(duration_ms: int) -> void:
+	Engine.time_scale = 0.08
+	var new_end := Time.get_ticks_msec() + duration_ms
+	_hit_stop_end_ms = maxi(_hit_stop_end_ms, new_end)
+
 func _process(_delta: float) -> void:
 	if _is_paused:
 		return
+	if _hit_stop_end_ms > 0 and Time.get_ticks_msec() >= _hit_stop_end_ms:
+		Engine.time_scale = 1.0
+		_hit_stop_end_ms = 0
 	$HUD/KillsLabel.text = "Kills: " + str(GameState.kills)
 	if _gold_label:
 		_gold_label.text = "G: " + str(GameState.gold)
@@ -432,8 +598,8 @@ func _process(_delta: float) -> void:
 		if _dash_timer > 0.0:
 			dash_lbl.text = "DASHING"
 			dash_lbl.add_theme_color_override("font_color", Color(0.3, 1.0, 1.0))
-		elif _dash_cooldown > 0.0:
-			dash_lbl.text = "DASH %.1fs" % _dash_cooldown
+		elif stamina < DASH_STAMINA_COST:
+			dash_lbl.text = "DASH (LOW STAM)"
 			dash_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.5))
 		else:
 			dash_lbl.text = "DASH [SHIFT]"
@@ -454,9 +620,21 @@ func _process(_delta: float) -> void:
 		else:
 			shd_lbl.text = "SHIELD [RMB]"
 			shd_lbl.add_theme_color_override("font_color", Color(0.35, 0.6, 1.0))
+	var nova_lbl := $HUD.get_node_or_null("NovaLabel")
+	if nova_lbl:
+		if _spell_cooldown > 0.0:
+			nova_lbl.text = "NOVA [Q] %.1fs" % _spell_cooldown
+			nova_lbl.add_theme_color_override("font_color", Color(0.4, 0.3, 0.5))
+		else:
+			nova_lbl.text = "NOVA [Q]"
+			nova_lbl.add_theme_color_override("font_color", Color(0.75, 0.3, 1.0))
+	_update_stam_bar()
 
 func _input(event: InputEvent) -> void:
 	if not (event is InputEventKey) or not event.pressed or event.echo:
+		return
+	if _is_perk_selecting:
+		get_viewport().set_input_as_handled()
 		return
 	match event.physical_keycode:
 		KEY_ESCAPE:
@@ -477,7 +655,7 @@ func _input(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 
 func _physics_process(delta: float) -> void:
-	if _is_dead or _is_paused:
+	if _is_dead or _is_paused or _is_perk_selecting:
 		return
 	if _buff_timer > 0.0:
 		_buff_timer -= delta
@@ -486,7 +664,15 @@ func _physics_process(delta: float) -> void:
 			_fire_rate_multiplier = 1.0
 	# Mana regen
 	var wisdom := BASE_WISDOM + _equip_wisdom_bonus
-	mana = minf(mana + wisdom * delta, max_mana)
+	var mana_mult := 2.0 if GameState.floor_modifier == "arcane" else 1.0
+	mana = minf(mana + wisdom * delta * mana_mult, max_mana)
+	# Stamina regen
+	stamina = minf(stamina + (STAMINA_REGEN + _stam_regen_bonus) * delta, max_stamina)
+	# Spell cooldown
+	if _spell_cooldown > 0.0:
+		_spell_cooldown -= delta
+	if Input.is_action_just_pressed("nova_spell") and not _is_dead:
+		_cast_nova_spell()
 	_tick_status(delta)
 	_tick_dash(delta)
 	_handle_levitate(delta)
@@ -526,8 +712,6 @@ func _tick_status(delta: float) -> void:
 				_on_death()
 
 func _tick_dash(delta: float) -> void:
-	if _dash_cooldown > 0.0:
-		_dash_cooldown -= delta
 	if _dash_timer > 0.0:
 		_dash_timer -= delta
 		if _dash_timer <= 0.0:
@@ -537,7 +721,7 @@ func _tick_dash(delta: float) -> void:
 			for enemy in get_tree().get_nodes_in_group("enemy"):
 				if is_instance_valid(enemy):
 					remove_collision_exception_with(enemy)
-	elif Input.is_action_just_pressed("dash") and _dash_cooldown <= 0.0 and not _is_dead:
+	elif Input.is_action_just_pressed("dash") and stamina >= DASH_STAMINA_COST and not _is_dead:
 		_start_dash()
 
 func _update_player_visual() -> void:
@@ -643,15 +827,35 @@ func _start_dash() -> void:
 		dir = (get_global_mouse_position() - global_position).normalized()
 	else:
 		dir = dir.normalized()
-	_dash_dir       = dir
-	_dash_timer     = DASH_DURATION
-	_dash_cooldown  = DASH_COOLDOWN
-	_is_invincible  = true
+	_dash_dir      = dir
+	_dash_timer    = DASH_DURATION
+	stamina       -= DASH_STAMINA_COST
+	_is_invincible = true
 	modulate        = Color(0.5, 0.8, 1.0, 0.6)
+	_spawn_dash_afterimages()
 	# Pass through enemies physically during invincibility
 	for enemy in get_tree().get_nodes_in_group("enemy"):
 		if is_instance_valid(enemy):
 			add_collision_exception_with(enemy)
+
+func _spawn_dash_afterimages() -> void:
+	var scene_root := get_tree().current_scene
+	for i in 3:
+		var ghost := ColorRect.new()
+		ghost.size = Vector2(18.0, 30.0)
+		ghost.color = Color(0.45, 0.78, 1.0, 0.38 - float(i) * 0.08)
+		ghost.position = global_position - Vector2(9.0, 16.0) - _dash_dir * float(i + 1) * 7.0
+		ghost.z_index = -1
+		scene_root.add_child(ghost)
+		var tw := ghost.create_tween()
+		tw.tween_property(ghost, "modulate:a", 0.0, 0.18 + float(i) * 0.04)
+		tw.tween_callback(ghost.queue_free)
+
+func apply_knockback(force: Vector2) -> void:
+	if _is_invincible or _is_dead:
+		return
+	_knockback_vel   = force
+	_knockback_timer = KNOCKBACK_DURATION
 
 func apply_status(effect: String, duration: float) -> void:
 	match effect:
@@ -665,6 +869,13 @@ func apply_status(effect: String, duration: float) -> void:
 			FloatingText.spawn_str(global_position, "POISON", Color(0.3, 0.9, 0.3), get_tree().current_scene)
 
 func _handle_movement() -> void:
+	if _knockback_timer > 0.0:
+		_knockback_timer -= get_physics_process_delta_time()
+		velocity = _knockback_vel * maxf(0.0, _knockback_timer / KNOCKBACK_DURATION)
+		move_and_slide()
+		if _knockback_timer <= 0.0:
+			_knockback_vel = Vector2.ZERO
+		return
 	if _dash_timer > 0.0:
 		velocity = _dash_dir * DASH_SPEED
 		move_and_slide()
@@ -681,7 +892,8 @@ func _handle_movement() -> void:
 	if direction != Vector2.ZERO:
 		direction = direction.normalized()
 	var slow_mult := 0.5 if _slow_timer > 0.0 else 1.0
-	velocity = direction * (speed + _equip_speed_bonus) * _speed_multiplier * slow_mult
+	var haste_mult := 1.3 if GameState.floor_modifier == "haste" else 1.0
+	velocity = direction * (speed + _equip_speed_bonus) * _speed_multiplier * slow_mult * haste_mult
 	move_and_slide()
 
 func _handle_shooting(delta: float) -> void:
@@ -786,6 +998,24 @@ func _fire(wand: Item = null) -> void:
 		if "erratic" in wand.wand_flaws:
 			base_dir = base_dir.rotated(randf_range(-0.7, 0.7))
 
+		if wand.wand_shoot_type == "shotgun":
+			var spread_total := deg_to_rad(48.0)
+			for i in 5:
+				var angle_offset := -spread_total * 0.5 + spread_total * (float(i) / 4.0)
+				var sProj := projectile_scene.instantiate()
+				sProj.global_position = global_position
+				sProj.direction = base_dir.rotated(angle_offset)
+				sProj.set("source", "player")
+				sProj.set("damage", wand.wand_damage)
+				sProj.set("shoot_type", "shotgun")
+				var sSpd := wand.wand_proj_speed
+				if "slow_shots" in wand.wand_flaws:
+					sSpd *= 0.5
+				sProj.set("speed", sSpd)
+				sProj.set("drift_speed", 0.0)
+				get_tree().current_scene.add_child(sProj)
+			return
+
 		var proj := projectile_scene.instantiate()
 		proj.global_position = global_position
 		proj.direction = base_dir
@@ -794,6 +1024,7 @@ func _fire(wand: Item = null) -> void:
 		proj.set("pierce_remaining", wand.wand_pierce)
 		proj.set("ricochet_remaining", wand.wand_ricochet)
 		proj.set("chain_remaining", wand.wand_chain)
+		proj.set("shoot_type", wand.wand_shoot_type)
 		proj.set("apply_freeze", wand.wand_shoot_type == "freeze")
 		proj.set("apply_burn", wand.wand_shoot_type == "fire")
 		proj.set("apply_shock", wand.wand_shoot_type == "shock")
@@ -821,7 +1052,7 @@ func _fire(wand: Item = null) -> void:
 
 func heal(amount: int) -> void:
 	var prev := health
-	health = mini(health + amount, max_health)
+	health = mini(health + amount, _max_hp())
 	var gained := health - prev
 	if gained > 0:
 		FloatingText.spawn(global_position, gained, true, get_tree().current_scene)
@@ -862,8 +1093,12 @@ func _update_health_bar() -> void:
 	var bar := get_node_or_null("HUD/HealthBarFG")
 	if bar == null:
 		return
-	var ratio := float(health) / float(max_health)
+	var max_hp := _max_hp()
+	var ratio := float(health) / float(max_hp)
 	bar.offset_right = 11.0 + 200.0 * ratio
+	var lbl := get_node_or_null("HUD/HPLabel")
+	if lbl:
+		lbl.text = "%d / %d" % [health, max_hp]
 
 func _update_xp_bar() -> void:
 	if _xp_bar_fg == null:
@@ -887,10 +1122,155 @@ func _on_level_up() -> void:
 	tw.tween_property(lbl, "position", lbl.position + Vector2(0, -90), 1.5)
 	tw.parallel().tween_property(lbl, "modulate:a", 0.0, 1.5)
 	tw.tween_callback(lbl.queue_free)
+	# perk selection disabled
+	pass
+
+# ── Perk selection screen ─────────────────────────────────────────────────────
+
+func _show_perk_screen() -> void:
+	if _is_perk_selecting or _perk_queue <= 0:
+		return
+	_is_perk_selecting = true
+	get_tree().paused = true
+	_perk_screen = CanvasLayer.new()
+	_perk_screen.layer = 28
+	_perk_screen.process_mode = Node.PROCESS_MODE_ALWAYS
+	add_child(_perk_screen)
+	_build_perk_ui()
+
+func _build_perk_ui() -> void:
+	var overlay := ColorRect.new()
+	overlay.color = Color(0.0, 0.0, 0.0, 0.72)
+	overlay.position = Vector2.ZERO
+	overlay.size = Vector2(1600.0, 900.0)
+	_perk_screen.add_child(overlay)
+
+	var title := Label.new()
+	title.text = "— LEVEL UP —   Choose a Perk"
+	title.position = Vector2(440.0, 300.0)
+	title.size = Vector2(720.0, 52.0)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 34)
+	title.add_theme_color_override("font_color", Color(1.0, 0.9, 0.2))
+	title.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0))
+	title.add_theme_constant_override("outline_size", 3)
+	_perk_screen.add_child(title)
+
+	var shuffled: Array = PERKS.duplicate()
+	shuffled.shuffle()
+	var card_w := 280.0
+	var card_h := 200.0
+	var gap    := 30.0
+	var total_w := card_w * 3.0 + gap * 2.0
+	var start_x := (1600.0 - total_w) / 2.0
+	for i in 3:
+		_build_perk_card(shuffled[i], Vector2(start_x + float(i) * (card_w + gap), 390.0), card_w, card_h)
+
+func _build_perk_card(perk: Dictionary, pos: Vector2, w: float, h: float) -> void:
+	var bg := ColorRect.new()
+	bg.color = Color(0.08, 0.05, 0.18, 0.97)
+	bg.position = pos
+	bg.size = Vector2(w, h)
+	_perk_screen.add_child(bg)
+
+	var top_bar := ColorRect.new()
+	top_bar.color = Color(0.55, 0.25, 0.9, 1.0)
+	top_bar.position = pos
+	top_bar.size = Vector2(w, 3.0)
+	_perk_screen.add_child(top_bar)
+
+	var name_lbl := Label.new()
+	name_lbl.text = perk["name"]
+	name_lbl.position = pos + Vector2(0.0, 14.0)
+	name_lbl.size = Vector2(w, 36.0)
+	name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_lbl.add_theme_font_size_override("font_size", 20)
+	name_lbl.add_theme_color_override("font_color", Color(0.95, 0.85, 1.0))
+	_perk_screen.add_child(name_lbl)
+
+	var desc_lbl := Label.new()
+	desc_lbl.text = perk["desc"]
+	desc_lbl.position = pos + Vector2(12.0, 64.0)
+	desc_lbl.size = Vector2(w - 24.0, 80.0)
+	desc_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	desc_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+	desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	desc_lbl.add_theme_font_size_override("font_size", 13)
+	desc_lbl.add_theme_color_override("font_color", Color(0.65, 0.65, 0.72))
+	_perk_screen.add_child(desc_lbl)
+
+	var select_lbl := Label.new()
+	select_lbl.text = "[ SELECT ]"
+	select_lbl.position = pos + Vector2(0.0, h - 38.0)
+	select_lbl.size = Vector2(w, 28.0)
+	select_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	select_lbl.add_theme_font_size_override("font_size", 14)
+	select_lbl.add_theme_color_override("font_color", Color(0.45, 0.8, 0.45))
+	_perk_screen.add_child(select_lbl)
+
+	var btn := Button.new()
+	btn.flat = true
+	btn.text = ""
+	btn.position = pos
+	btn.size = Vector2(w, h)
+	btn.mouse_entered.connect(func() -> void:
+		bg.color = Color(0.14, 0.08, 0.28, 0.97)
+		select_lbl.add_theme_color_override("font_color", Color(0.6, 1.0, 0.6)))
+	btn.mouse_exited.connect(func() -> void:
+		bg.color = Color(0.08, 0.05, 0.18, 0.97)
+		select_lbl.add_theme_color_override("font_color", Color(0.45, 0.8, 0.45)))
+	btn.pressed.connect(func() -> void: _apply_perk(perk))
+	_perk_screen.add_child(btn)
+
+func _apply_perk(perk: Dictionary) -> void:
+	match perk["id"]:
+		"hp_up":
+			max_health += 3
+			health = mini(health + 3, _max_hp())
+			_update_health_bar()
+		"mana_up":
+			_perk_mana_bonus += 25.0
+			update_equip_stats()
+		"speed_up":
+			speed += 40.0
+		"fire_rate_up":
+			fire_rate = maxf(0.04, fire_rate - 0.04)
+		"block_up":
+			_perk_block_bonus += 0.10
+			update_equip_stats()
+		"dash_up":
+			_perk_stam_bonus += 20.0
+			update_equip_stats()
+		"wisdom_up":
+			_perk_wisdom_bonus_p += 0.15
+			update_equip_stats()
+		"proj_up":
+			_perk_proj_bonus += 1
+			update_equip_stats()
+		"heal_now":
+			health = _max_hp()
+			_update_health_bar()
+	FloatingText.spawn_str(global_position, perk["name"], Color(1.0, 0.85, 0.3), get_tree().current_scene)
+	_close_perk_screen()
+
+func _close_perk_screen() -> void:
+	if _perk_screen:
+		_perk_screen.queue_free()
+		_perk_screen = null
+	_perk_queue -= 1
+	if _perk_queue > 0:
+		call_deferred("_show_perk_screen")
+	else:
+		_is_perk_selecting = false
+		if not _is_paused:
+			get_tree().paused = false
 
 func _on_death() -> void:
 	_is_dead = true
 	var ranks := Leaderboard.submit(GameState.portals_used, GameState.gold, GameState.damage_dealt)
+	Leaderboard.submit_biome_record(GameState.biome, GameState.portals_used, GameState.gold)
+	RunHistory.add_run(GameState.portals_used, GameState.kills, GameState.gold,
+		GameState.damage_dealt, GameState.biome)
 	_build_death_leaderboard(ranks)
 	$HUD/DeathMenu.visible = true
 
@@ -968,17 +1348,55 @@ func _add_lb_column(parent: Node, title: String, entries: Array, pos: Vector2, h
 		parent.add_child(row)
 		shown += 1
 
+func _max_hp() -> int:
+	return max_health + _equip_health_bonus
+
 func update_equip_stats() -> void:
 	_equip_speed_bonus      = InventoryManager.get_stat("speed")
 	_equip_fire_rate_bonus  = InventoryManager.get_stat("fire_rate_reduction")
 	_equip_block_chance     = InventoryManager.get_stat("block_chance")
 	_equip_projectile_count = int(InventoryManager.get_stat("projectile_count"))
 	_equip_wisdom_bonus     = InventoryManager.get_stat("wisdom")
-	var new_bonus := int(InventoryManager.get_stat("max_health"))
-	if new_bonus != _equip_health_bonus:
-		_equip_health_bonus = new_bonus
-		health = mini(health, max_health + _equip_health_bonus)
-		_update_health_bar()
+	var new_bonus           := int(InventoryManager.get_stat("max_health"))
+
+	var sb := _get_set_bonuses()
+	_equip_speed_bonus      += sb.get("speed",        0.0)
+	_equip_block_chance     += sb.get("block_chance", 0.0)
+	_equip_wisdom_bonus     += BASE_WISDOM * sb.get("wisdom_pct", 0.0)
+	new_bonus               += int(sb.get("max_health", 0))
+	max_mana = 100.0 + sb.get("max_mana", 0.0) + _perk_mana_bonus
+	max_stamina = 100.0 + _perk_stam_bonus
+	_stam_regen_bonus = InventoryManager.get_stat("stam_regen") + sb.get("stam_regen", 0.0)
+
+	_equip_block_chance     += _perk_block_bonus
+	_equip_projectile_count += _perk_proj_bonus
+	_equip_wisdom_bonus     += BASE_WISDOM * _perk_wisdom_bonus_p
+
+	var delta := new_bonus - _equip_health_bonus
+	_equip_health_bonus = new_bonus
+	if delta > 0:
+		health = mini(health + delta, _max_hp())
+	else:
+		health = maxi(1, mini(health, _max_hp()))
+	_update_health_bar()
+
+func _get_set_bonuses() -> Dictionary:
+	var counts := {"arcane": 0, "iron": 0, "swift": 0}
+	for slot in InventoryManager.equipped:
+		var item: Item = InventoryManager.equipped[slot] as Item
+		if item == null:
+			continue
+		var tag: String = item.get("set_tag") if "set_tag" in item else ""
+		if tag in counts:
+			counts[tag] += 1
+	var bonuses := {}
+	if counts["arcane"] >= 2: bonuses["max_mana"]       = 25.0
+	if counts["arcane"] >= 3: bonuses["wisdom_pct"]     = 0.20
+	if counts["iron"]   >= 2: bonuses["block_chance"]   = 0.08
+	if counts["iron"]   >= 3: bonuses["max_health"]     = 4
+	if counts["swift"]  >= 2: bonuses["speed"]          = 40.0
+	if counts["swift"]  >= 3: bonuses["stam_regen"] = 8.0
+	return bonuses
 
 func _on_retry() -> void:
 	InventoryManager.reset()

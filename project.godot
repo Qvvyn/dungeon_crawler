@@ -25,6 +25,7 @@ config/icon="res://icon.svg"
 GameState="*res://scripts/GameState.gd"
 Leaderboard="*res://scripts/Leaderboard.gd"
 InventoryManager="*res://scripts/InventoryManager.gd"
+RunHistory="*res://scripts/RunHistory.gd"
 
 [display]
 

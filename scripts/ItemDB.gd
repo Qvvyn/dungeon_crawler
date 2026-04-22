@@ -2,9 +2,27 @@ class_name ItemDB
 
 # All item definitions. Call ItemDB.random_item() to get a random drop.
 
+static func _make_wand(name: String, desc: String, col: Color, sell: int,
+		shoot_type: String, damage: int, fire_rate: float, mana_cost: float,
+		proj_speed: float) -> Item:
+	var item := Item.new()
+	item.type = Item.Type.WAND
+	item.display_name = name
+	item.description = desc
+	item.color = col
+	item.icon_char = "/"
+	item.sell_value = sell
+	item.rarity = Item.RARITY_LEGENDARY
+	item.wand_shoot_type = shoot_type
+	item.wand_damage = damage
+	item.wand_fire_rate = fire_rate
+	item.wand_mana_cost = mana_cost
+	item.wand_proj_speed = proj_speed
+	return item
+
 static func _make(type: Item.Type, name: String, desc: String,
 		col: Color, icon: String, sell: int, bonuses: Dictionary = {},
-		rarity: int = Item.RARITY_COMMON) -> Item:
+		rarity: int = Item.RARITY_COMMON, set_tag: String = "") -> Item:
 	var item := Item.new()
 	item.type = type
 	item.display_name = name
@@ -14,6 +32,7 @@ static func _make(type: Item.Type, name: String, desc: String,
 	item.sell_value = sell
 	item.rarity = rarity
 	item.stat_bonuses = bonuses
+	item.set_tag = set_tag
 	return item
 
 static func all_items() -> Array[Item]:
@@ -27,11 +46,11 @@ static func all_items() -> Array[Item]:
 		_make(Item.Type.HAT, "Pointed Hat",    "+1 HP.",
 			Color(0.3, 0.3, 0.7), "^", 12, {"max_health": 1}),
 		_make(Item.Type.HAT, "Iron Helm",      "+2 HP.",
-			Color(0.5, 0.5, 0.6), "^", 20, {"max_health": 2}),
+			Color(0.5, 0.5, 0.6), "^", 20, {"max_health": 2}, Item.RARITY_COMMON, "iron"),
 		_make(Item.Type.HAT, "Feathered Cap",  "+8 wisdom.",
-			Color(0.7, 0.6, 0.3), "^", 14, {"wisdom": 8.0}),
+			Color(0.7, 0.6, 0.3), "^", 14, {"wisdom": 8.0}, Item.RARITY_COMMON, "swift"),
 		_make(Item.Type.HAT, "Arcane Hood",    "+1 HP, +12 wisdom.",
-			Color(0.35, 0.25, 0.65), "^", 22, {"max_health": 1, "wisdom": 12.0}),
+			Color(0.35, 0.25, 0.65), "^", 22, {"max_health": 1, "wisdom": 12.0}, Item.RARITY_COMMON, "arcane"),
 		_make(Item.Type.HAT, "Mage's Cowl",    "+18 wisdom.",
 			Color(0.2, 0.4, 0.9), "^", 26, {"wisdom": 18.0}),
 
@@ -39,27 +58,27 @@ static func all_items() -> Array[Item]:
 		_make(Item.Type.ROBES, "Silk Robes",    "+1 HP.",
 			Color(0.6, 0.2, 0.5), "%", 14, {"max_health": 1}),
 		_make(Item.Type.ROBES, "Battle Garb",   "+2 HP.",
-			Color(0.4, 0.4, 0.4), "%", 22, {"max_health": 2}),
+			Color(0.4, 0.4, 0.4), "%", 22, {"max_health": 2}, Item.RARITY_COMMON, "iron"),
 		_make(Item.Type.ROBES, "Apprentice Robe", "+10 wisdom.",
-			Color(0.25, 0.35, 0.7), "%", 18, {"wisdom": 10.0}),
+			Color(0.25, 0.35, 0.7), "%", 18, {"wisdom": 10.0}, Item.RARITY_COMMON, "arcane"),
 		_make(Item.Type.ROBES, "Wizard's Vestment", "+1 HP, +15 wisdom.",
 			Color(0.4, 0.2, 0.8), "%", 28, {"max_health": 1, "wisdom": 15.0}),
 
 		# ── Feet ─────────────────────────────────────────────────────────────
 		_make(Item.Type.FEET, "Leather Boots",  "+20 speed.",
-			Color(0.5, 0.35, 0.2), "n", 12, {"speed": 20.0}),
+			Color(0.5, 0.35, 0.2), "n", 12, {"speed": 20.0}, Item.RARITY_COMMON, "swift"),
 		_make(Item.Type.FEET, "Swift Shoes",    "+40 speed.",
-			Color(0.2, 0.8, 0.5), "n", 24, {"speed": 40.0}),
+			Color(0.2, 0.8, 0.5), "n", 24, {"speed": 40.0}, Item.RARITY_COMMON, "swift"),
 		_make(Item.Type.FEET, "Sandals of Focus", "+12 wisdom.",
-			Color(0.6, 0.7, 0.9), "n", 16, {"wisdom": 12.0}),
+			Color(0.6, 0.7, 0.9), "n", 16, {"wisdom": 12.0}, Item.RARITY_COMMON, "arcane"),
 
 		# ── Rings ─────────────────────────────────────────────────────────────
 		_make(Item.Type.RING, "Fire Ring",      "Shoot faster.",
 			Color(1.0, 0.4, 0.1), "o", 18, {"fire_rate_reduction": 0.02}),
 		_make(Item.Type.RING, "Speed Ring",     "+15 speed.",
-			Color(0.2, 0.9, 0.7), "o", 16, {"speed": 15.0}),
+			Color(0.2, 0.9, 0.7), "o", 16, {"speed": 15.0}, Item.RARITY_COMMON, "swift"),
 		_make(Item.Type.RING, "Scholar's Ring", "+10 wisdom.",
-			Color(0.4, 0.6, 1.0), "o", 18, {"wisdom": 10.0}),
+			Color(0.4, 0.6, 1.0), "o", 18, {"wisdom": 10.0}, Item.RARITY_COMMON, "arcane"),
 		_make(Item.Type.RING, "Mana Ring",      "+14 wisdom.",
 			Color(0.3, 0.5, 1.0), "o", 20, {"wisdom": 14.0}),
 		_make(Item.Type.RING, "Sage's Band",    "+8 wisdom, shoot faster.",
@@ -67,9 +86,9 @@ static func all_items() -> Array[Item]:
 
 		# ── Necklaces ─────────────────────────────────────────────────────────
 		_make(Item.Type.NECKLACE, "Arcane Pendant", "Shoot faster.",
-			Color(0.8, 0.4, 1.0), "-", 20, {"fire_rate_reduction": 0.03}),
+			Color(0.8, 0.4, 1.0), "-", 20, {"fire_rate_reduction": 0.03}, Item.RARITY_COMMON, "arcane"),
 		_make(Item.Type.NECKLACE, "Life Cord",      "+1 HP.",
-			Color(0.9, 0.2, 0.3), "-", 16, {"max_health": 1}),
+			Color(0.9, 0.2, 0.3), "-", 16, {"max_health": 1}, Item.RARITY_COMMON, "iron"),
 		_make(Item.Type.NECKLACE, "Mana Amulet",    "+15 wisdom.",
 			Color(0.2, 0.5, 1.0), "-", 22, {"wisdom": 15.0}),
 		_make(Item.Type.NECKLACE, "Wellspring Cord", "+20 wisdom.",
@@ -81,7 +100,7 @@ static func all_items() -> Array[Item]:
 		_make(Item.Type.SHIELD, "Wooden Shield",   "15% block.",
 			Color(0.55, 0.38, 0.18), "D", 15, {"block_chance": 0.15}),
 		_make(Item.Type.SHIELD, "Iron Shield",     "25% block.",
-			Color(0.55, 0.55, 0.60), "D", 28, {"block_chance": 0.25}),
+			Color(0.55, 0.55, 0.60), "D", 28, {"block_chance": 0.25}, Item.RARITY_COMMON, "iron"),
 		_make(Item.Type.SHIELD, "Arcane Ward",     "20% block, +10 wisdom.",
 			Color(0.55, 0.20, 0.80), "D", 26, {"block_chance": 0.20, "wisdom": 10.0}),
 
@@ -274,6 +293,16 @@ static func legendary_items() -> Array[Item]:
 		# ── Legendary Wands (generated) ────────────────────────────────────────
 		generate_wand(Item.RARITY_LEGENDARY),
 		generate_wand(Item.RARITY_LEGENDARY),
+		# ── Fixed Legendary Wands with custom shoot types ─────────────────────
+		_make_wand("Thunderclap",
+			"Five-shot cone blast. One pull, five wounds.",
+			Color(1.0, 0.85, 0.1), 210, "shotgun", 3, 0.3, 10.0, 600.0),
+		_make_wand("Seeker's Staff",
+			"Hunts its target down. Distance means nothing.",
+			Color(0.5, 0.2, 1.0), 195, "homing", 4, 0.2, 9.0, 350.0),
+		_make_wand("Voidcaster",
+			"Detonates on contact. Eight radial shards.",
+			Color(0.15, 0.0, 0.35), 230, "nova", 3, 0.22, 12.0, 500.0),
 		# ── Fixed Legendary Wands ──────────────────────────────────────────────
 		_make(Item.Type.WAND, "Ecliptic Staff",
 			"Fires 4 bolts. Faster than thought.",
@@ -310,9 +339,9 @@ static func legendary_items() -> Array[Item]:
 
 		# ── Legendary Robes ────────────────────────────────────────────────────
 		_make(Item.Type.ROBES, "Shroud of the Undying",
-			"+5 HP, 15% block, move faster.",
+			"+1000 HP, 15% block, move faster.",
 			Color(0.1, 0.55, 0.35), "%", 190,
-			{"max_health": 5, "block_chance": 0.15, "speed": 15.0},
+			{"max_health": 1000, "block_chance": 0.15, "speed": 15.0},
 			Item.RARITY_LEGENDARY),
 		_make(Item.Type.ROBES, "Phantom Wrap",
 			"Ghost-silk. Near impossible to hit.",
@@ -377,9 +406,9 @@ static func legendary_items() -> Array[Item]:
 			{"wisdom": 60.0, "max_health": 2},
 			Item.RARITY_LEGENDARY),
 		_make(Item.Type.NECKLACE, "Wellspring of the Cosmos",
-			"+80 wisdom. Mana is a formality.",
+			"+80 wisdom. +120 stamina regen. Mana and stamina are a formality.",
 			Color(0.05, 0.5, 1.0), "-", 260,
-			{"wisdom": 80.0},
+			{"wisdom": 80.0, "stam_regen": 120.0},
 			Item.RARITY_LEGENDARY),
 
 		# ── Legendary Shields ──────────────────────────────────────────────────

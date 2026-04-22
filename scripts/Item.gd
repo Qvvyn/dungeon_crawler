@@ -16,6 +16,7 @@ var sell_value: int = 5
 var rarity: int = RARITY_COMMON
 # Flat bonuses applied while equipped. Keys: "speed", "max_health", "fire_rate_reduction", "block_chance", "projectile_count"
 var stat_bonuses: Dictionary = {}
+var set_tag: String = ""   # "arcane" | "iron" | "swift" | ""
 
 # Wand-specific fields (only meaningful when type == WAND)
 var wand_shoot_type: String  = "regular"  # regular/pierce/ricochet/chain/freeze/fire/beam

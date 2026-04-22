@@ -1,13 +1,35 @@
 extends Node
 
-# Persists player stats across scene reloads (portal transitions).
-# has_saved_state is consumed immediately in Player._ready() so a
-# subsequent death+retry always starts the player fresh.
-
 signal leveled_up
 
 var has_saved_state: bool = false
 var player_health: int = 10
+
+# User preferences (persist across sessions)
+var crt_enabled: bool = false
+
+const SETTINGS_PATH := "user://settings.json"
+
+func _ready() -> void:
+	_load_settings()
+
+func save_settings() -> void:
+	var f := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify({"crt_enabled": crt_enabled}))
+	f.close()
+
+func _load_settings() -> void:
+	if not FileAccess.file_exists(SETTINGS_PATH):
+		return
+	var f := FileAccess.open(SETTINGS_PATH, FileAccess.READ)
+	if f == null:
+		return
+	var result: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if result is Dictionary:
+		crt_enabled = bool(result.get("crt_enabled", false))
 
 # Persistent progression (survives death)
 var level: int = 1
@@ -21,12 +43,22 @@ var portals_used: int = 0
 var difficulty: float = 1.0
 var biome: int = 0   # 0=Dungeon 1=Catacombs 2=Ice Cavern 3=Lava Rift
 
+# Set by dungeon select — persists for the whole run
+var starting_difficulty: float = 1.0
+var loot_multiplier: float = 1.0
+
+# Testing grounds
+var test_mode: bool = false
+
+# Floor modifier (re-rolled each floor, cleared on new run)
+var floor_modifier: String = ""
+
 func reset_run_stats() -> void:
 	kills = 0
 	gold = 0
 	damage_dealt = 0
 	portals_used = 0
-	difficulty = 1.0
+	difficulty = starting_difficulty
 	biome = 0
 	level = 1
 	xp = 0

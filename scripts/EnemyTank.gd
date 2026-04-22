@@ -3,79 +3,67 @@ extends CharacterBody2D
 const GOLD_PICKUP_SCENE := preload("res://scenes/GoldPickup.tscn")
 const LOOT_BAG_SCENE    := preload("res://scenes/LootBag.tscn")
 
-@export var speed: float       = 150.0
-@export var max_health: int    = 5
+@export var speed: float    = 52.0
+@export var max_health: int = 25
 
-# ASCII art frames — skeleton warrior
-const CHASER_F0 := " (X_X)\n  /|\\ \n  d b "
-const CHASER_F1 := " (X_X)\n  \\|/ \n  d b "
+# ASCII art frames — armored tank
+const TANK_F0 := " (O_O)\n |[X]|\n  |#| \n // \\\\"
+const TANK_F1 := " (O_O)\n |[X]|\n  |#| \n \\\\ //"
 
-var health: int = 5
-var passive: bool = false
-var _player: Node2D  = null
-var _hitbox: Area2D  = null
-var _anim_timer: float = 0.0
-var _anim_frame: int   = 0
-var _attack_elapsed: float  = 0.0
+var health: int             = 25
+var passive: bool           = false
+var is_elite: bool          = false
+var is_champion: bool       = false
+var elite_modifier: int     = 0
+var _shield_active: bool    = false
+var _enrage_triggered: bool = false
+var _split_scene: PackedScene = null
 var _speed_multiplier: float = 1.0
-var _buff_timer: float       = 0.0
-var _effective_interval: float = 1.0
+var _buff_timer: float      = 0.0
+var _anim_timer: float      = 0.0
+var _anim_frame: int        = 0
+var _player: Node2D         = null
+var _hitbox: Area2D         = null
+var _attack_elapsed: float  = 0.0
+var _effective_interval: float = 1.2
 
-const BASE_INTERVAL   := 1.0
-const ATTACK_DURATION := 0.25
-const HITBOX_REACH    := 40.0
+const BASE_INTERVAL   := 1.2
+const ATTACK_DURATION := 0.35
+const HITBOX_REACH    := 48.0
+const KNOCKBACK_FORCE := 380.0
 
-# ── Sight & wander ────────────────────────────────────────────────────────────
-const SIGHT_RANGE          := 300.0
-const SIGHT_CHECK_INTERVAL := 0.15
+const SIGHT_RANGE          := 260.0
+const SIGHT_CHECK_INTERVAL := 0.2
+var _has_aggro: bool    = false
+var _sight_timer: float = 0.0
 
-var _has_aggro: bool      = false
-var _sight_timer: float   = 0.0
-var _wander_dir: Vector2  = Vector2.ZERO
-var _wander_timer: float  = 0.0
+var _wander_dir: Vector2 = Vector2.ZERO
+var _wander_timer: float = 0.0
 
 var _patrol_pts:  Array = []
 var _patrol_idx:  int   = 0
 var _patrol_wait: float = 0.0
 
-var is_elite: bool     = false
-var is_champion: bool  = false
-
-# Elite modifiers (0=none 1=shielded 2=splitting 3=enraged)
-var elite_modifier: int    = 0
-var _shield_active: bool   = false
-var _enrage_triggered: bool = false
-var _split_scene: PackedScene = null
-
-# ── Status effects (10-stack trigger system) ──────────────────────────────────
-# FREEZE: gradual slow per stack; 10 stacks → FROZEN (stopped, +25% dmg taken)
-var _chill_stacks: int     = 0
-var _chill_decay_t: float  = 0.0   # countdown to losing one chill stack
-var _frozen: bool          = false
-var _frozen_timer: float   = 0.0
-
-# BURN: 10 stacks → ENFLAMED (burst dmg + AOE spread + DoT)
-var _burn_stacks: int      = 0
-var _enflamed: bool        = false
-var _enflame_timer: float  = 0.0
-var _enflame_tick: float   = 0.0
-
-# SHOCK: 10 stacks → ELECTRIFIED (burst dmg + stun + no-attack debuff)
-var _shock_stacks: int     = 0
-var _stun_timer: float     = 0.0
+var _chill_stacks: int    = 0
+var _chill_decay_t: float = 0.0
+var _frozen: bool         = false
+var _frozen_timer: float  = 0.0
+var _burn_stacks: int     = 0
+var _enflamed: bool       = false
+var _enflame_timer: float = 0.0
+var _enflame_tick: float  = 0.0
+var _shock_stacks: int    = 0
+var _stun_timer: float    = 0.0
 var _no_attack_timer: float = 0.0
-
-# POISON: 10 stacks → POISONED (rapid health drain — highest total damage)
-var _poison_stacks: int    = 0
-var _poisoned: bool        = false
-var _poison_timer: float   = 0.0
-var _poison_tick: float    = 0.0
-var _hit_flash_t: float    = 0.0
-var _telegraphing: bool    = false
+var _poison_stacks: int   = 0
+var _poisoned: bool       = false
+var _poison_timer: float  = 0.0
+var _poison_tick: float   = 0.0
+var _hit_flash_t: float   = 0.0
+var _telegraphing: bool   = false
 
 func _ready() -> void:
 	health = max_health
-	_effective_interval = BASE_INTERVAL
 	_player = get_tree().get_first_node_in_group("player")
 	_hitbox = $MeleeHitbox
 	_hitbox.body_entered.connect(_on_melee_hit)
@@ -96,7 +84,7 @@ func _ready() -> void:
 		lbl.offset_top    = -44
 		lbl.offset_right  =  30
 		lbl.offset_bottom =  14
-		lbl.text = CHASER_F0
+		lbl.text = TANK_F0
 
 func _physics_process(delta: float) -> void:
 	if _buff_timer > 0.0:
@@ -120,11 +108,12 @@ func _physics_process(delta: float) -> void:
 	if not is_instance_valid(self): return
 
 	if _has_aggro:
-		_chase(delta)
+		_chase()
 	else:
 		_patrol(delta)
 
 	move_and_slide()
+
 	_tick_anim(delta)
 
 	if _has_aggro:
@@ -139,127 +128,7 @@ func _physics_process(delta: float) -> void:
 			var dir := (_player.global_position - global_position).normalized()
 			_launch_attack(dir)
 
-# ── Status ticking ────────────────────────────────────────────────────────────
-
-func _tick_status(delta: float) -> void:
-	# FREEZE — chill stacks decay when not being hit
-	if _frozen:
-		_frozen_timer -= delta
-		if _frozen_timer <= 0.0:
-			_frozen = false
-			_chill_stacks = 0
-	elif _chill_stacks > 0:
-		_chill_decay_t -= delta
-		if _chill_decay_t <= 0.0:
-			_chill_decay_t = 2.5
-			_chill_stacks -= 1
-
-	# ENFLAMED — DoT
-	if _enflamed:
-		_enflame_timer -= delta
-		if _enflame_timer <= 0.0:
-			_enflamed = false
-		else:
-			_enflame_tick -= delta
-			if _enflame_tick <= 0.0:
-				_enflame_tick = 0.45
-				take_damage(3)
-				if not is_instance_valid(self): return
-
-	# STUN / NO-ATTACK timers
-	if _stun_timer > 0.0:
-		_stun_timer -= delta
-	if _no_attack_timer > 0.0:
-		_no_attack_timer -= delta
-
-	# POISONED — fast drain (highest damage)
-	if _poisoned:
-		_poison_timer -= delta
-		if _poison_timer <= 0.0:
-			_poisoned = false
-		else:
-			_poison_tick -= delta
-			if _poison_tick <= 0.0:
-				_poison_tick = 0.28
-				take_damage(5)
-				if not is_instance_valid(self): return
-
-# ── Apply status ──────────────────────────────────────────────────────────────
-
-func apply_status(effect: String, _duration: float) -> void:
-	match effect:
-		"freeze_hit":
-			if _frozen:
-				return
-			_chill_stacks = mini(_chill_stacks + 1, 10)
-			_chill_decay_t = 3.0   # reset decay window on each hit
-			if _chill_stacks >= 10:
-				_frozen = true
-				_frozen_timer = 4.5
-				FloatingText.spawn_str(global_position, "FROZEN!", Color(0.7, 0.95, 1.0), get_tree().current_scene)
-			else:
-				FloatingText.spawn_str(global_position, "CHILL %d/10" % _chill_stacks, Color(0.45, 0.82, 1.0), get_tree().current_scene)
-		"burn_hit":
-			_burn_stacks = mini(_burn_stacks + 1, 10)
-			if _burn_stacks >= 10:
-				_burn_stacks = 0
-				_trigger_enflamed()
-			else:
-				FloatingText.spawn_str(global_position, "BURN %d/10" % _burn_stacks, Color(1.0, 0.55, 0.2), get_tree().current_scene)
-		"shock_hit":
-			_shock_stacks = mini(_shock_stacks + 1, 10)
-			if _shock_stacks >= 10:
-				_shock_stacks = 0
-				_trigger_electrified()
-			else:
-				FloatingText.spawn_str(global_position, "SHOCK %d/10" % _shock_stacks, Color(0.7, 0.85, 1.0), get_tree().current_scene)
-		"poison_hit":
-			_poison_stacks = mini(_poison_stacks + 1, 10)
-			if _poison_stacks >= 10:
-				_poison_stacks = 0
-				_trigger_poisoned()
-			else:
-				FloatingText.spawn_str(global_position, "VENOM %d/10" % _poison_stacks, Color(0.35, 1.0, 0.4), get_tree().current_scene)
-
-# ── Trigger effects ───────────────────────────────────────────────────────────
-
-func _trigger_enflamed() -> void:
-	FloatingText.spawn_str(global_position, "ENFLAMED!", Color(1.0, 0.3, 0.0), get_tree().current_scene)
-	_enflamed     = true
-	_enflame_timer = 5.0
-	_enflame_tick  = 0.0
-	take_damage(12)
-	if not is_instance_valid(self): return
-	# AOE — spread burn stacks to nearby enemies (capped to avoid cascade)
-	for enemy in get_tree().get_nodes_in_group("enemy"):
-		if not is_instance_valid(enemy) or enemy == self:
-			continue
-		if global_position.distance_to(enemy.global_position) < 160.0:
-			if enemy.has_method("_add_burn_stacks"):
-				enemy._add_burn_stacks(5)
-
-func _add_burn_stacks(count: int) -> void:
-	# Called by AOE spread — cap at 9 so we don't cascade-trigger another ENFLAMED
-	_burn_stacks = mini(_burn_stacks + count, 9)
-	if _burn_stacks >= 5:
-		FloatingText.spawn_str(global_position, "BURN %d/10" % _burn_stacks, Color(1.0, 0.55, 0.2), get_tree().current_scene)
-
-func _trigger_electrified() -> void:
-	FloatingText.spawn_str(global_position, "ELECTRIFIED!", Color(0.75, 0.9, 1.0), get_tree().current_scene)
-	take_damage(10)
-	if not is_instance_valid(self): return
-	_stun_timer      = 0.5
-	_no_attack_timer = 1.5   # 0.5s stun + 1s no-attack after
-
-func _trigger_poisoned() -> void:
-	FloatingText.spawn_str(global_position, "POISONED!", Color(0.2, 1.0, 0.35), get_tree().current_scene)
-	_poisoned     = true
-	_poison_timer = 9.0
-	_poison_tick  = 0.0
-
-# ── Movement ──────────────────────────────────────────────────────────────────
-
-func _chase(_delta: float) -> void:
+func _chase() -> void:
 	if _frozen or _stun_timer > 0.0:
 		velocity = Vector2.ZERO
 		return
@@ -296,34 +165,28 @@ func _wander(delta: float) -> void:
 	if _wander_timer <= 0.0:
 		_pick_wander_dir()
 	elif _wander_dir != Vector2.ZERO:
-		var jitter := randf_range(-3.0, 3.0) * delta
-		_wander_dir = _wander_dir.rotated(jitter)
+		_wander_dir = _wander_dir.rotated(randf_range(-2.0, 2.0) * delta)
 	var slow_mult := clampf(1.0 - float(_chill_stacks) * 0.1, 0.0, 1.0)
-	velocity = _wander_dir * speed * 0.45 * _speed_multiplier * slow_mult
+	velocity = _wander_dir * speed * 0.4 * _speed_multiplier * slow_mult
 
 func _pick_wander_dir() -> void:
-	if randf() < 0.15:
+	if randf() < 0.2:
 		_wander_dir   = Vector2.ZERO
-		_wander_timer = randf_range(0.3, 0.7)
+		_wander_timer = randf_range(0.5, 1.2)
 	else:
 		var angle := randf() * TAU
 		_wander_dir   = Vector2(cos(angle), sin(angle))
-		_wander_timer = randf_range(0.6, 2.0)
+		_wander_timer = randf_range(1.0, 2.5)
 
 func _tick_anim(delta: float) -> void:
+	_anim_timer += delta
+	if _anim_timer >= 0.45:
+		_anim_timer = 0.0
+		_anim_frame = 1 - _anim_frame
 	var lbl := get_node_or_null("AsciiChar")
 	if lbl == null:
 		return
-	var is_moving := velocity.length_squared() > 100.0
-	if is_moving:
-		_anim_timer += delta
-		if _anim_timer >= 0.28:
-			_anim_timer = 0.0
-			_anim_frame = 1 - _anim_frame
-	else:
-		_anim_frame = 0
-		_anim_timer = 0.0
-	lbl.text = CHASER_F0 if _anim_frame == 0 else CHASER_F1
+	lbl.text = TANK_F0 if _anim_frame == 0 else TANK_F1
 	if _hit_flash_t > 0.0:
 		_hit_flash_t -= delta
 		lbl.modulate = Color(1.0, 0.3, 0.3)
@@ -357,8 +220,6 @@ func _get_status_modulate() -> Color:
 		return Color(lerpf(1.0, 0.45, t4), 1.0, lerpf(1.0, 0.55, t4))
 	return Color.WHITE
 
-# ── Sight ─────────────────────────────────────────────────────────────────────
-
 func _check_sight() -> void:
 	if passive:
 		return
@@ -372,24 +233,124 @@ func _check_sight() -> void:
 		_has_aggro = true
 		FloatingText.spawn_str(global_position, "!", Color(1.0, 0.9, 0.0), get_tree().current_scene)
 
-# ── Attack ────────────────────────────────────────────────────────────────────
-
 func _launch_attack(dir: Vector2) -> void:
 	_hitbox.position = dir * HITBOX_REACH
 	_hitbox.monitoring = true
-	_hitbox.get_node("Visual").visible = true
+	var vis := _hitbox.get_node_or_null("Visual")
+	if vis: vis.visible = true
 	get_tree().create_timer(ATTACK_DURATION).timeout.connect(func() -> void:
-		if not is_instance_valid(self):
-			return
+		if not is_instance_valid(self): return
 		_hitbox.monitoring = false
-		_hitbox.get_node("Visual").visible = false
+		if vis: vis.visible = false
 	)
 
 func _on_melee_hit(body: Node2D) -> void:
 	if body.is_in_group("player") and body.has_method("take_damage"):
-		body.take_damage(1)
+		body.take_damage(2)
+		if body.has_method("apply_knockback"):
+			var dir := (body.global_position - global_position).normalized()
+			body.apply_knockback(dir * KNOCKBACK_FORCE)
 
-# ── Shared ────────────────────────────────────────────────────────────────────
+# ── Status ticking ────────────────────────────────────────────────────────────
+
+func _tick_status(delta: float) -> void:
+	if _frozen:
+		_frozen_timer -= delta
+		if _frozen_timer <= 0.0:
+			_frozen = false
+			_chill_stacks = 0
+	elif _chill_stacks > 0:
+		_chill_decay_t -= delta
+		if _chill_decay_t <= 0.0:
+			_chill_decay_t = 2.5
+			_chill_stacks -= 1
+	if _enflamed:
+		_enflame_timer -= delta
+		if _enflame_timer <= 0.0:
+			_enflamed = false
+		else:
+			_enflame_tick -= delta
+			if _enflame_tick <= 0.0:
+				_enflame_tick = 0.45
+				take_damage(3)
+				if not is_instance_valid(self): return
+	if _stun_timer > 0.0:
+		_stun_timer -= delta
+	if _no_attack_timer > 0.0:
+		_no_attack_timer -= delta
+	if _poisoned:
+		_poison_timer -= delta
+		if _poison_timer <= 0.0:
+			_poisoned = false
+		else:
+			_poison_tick -= delta
+			if _poison_tick <= 0.0:
+				_poison_tick = 0.28
+				take_damage(5)
+				if not is_instance_valid(self): return
+
+func apply_status(effect: String, _duration: float) -> void:
+	match effect:
+		"freeze_hit":
+			if _frozen: return
+			_chill_stacks = mini(_chill_stacks + 1, 10)
+			_chill_decay_t = 3.0
+			if _chill_stacks >= 10:
+				_frozen = true
+				_frozen_timer = 4.5
+				FloatingText.spawn_str(global_position, "FROZEN!", Color(0.7, 0.95, 1.0), get_tree().current_scene)
+			else:
+				FloatingText.spawn_str(global_position, "CHILL %d/10" % _chill_stacks, Color(0.45, 0.82, 1.0), get_tree().current_scene)
+		"burn_hit":
+			_burn_stacks = mini(_burn_stacks + 1, 10)
+			if _burn_stacks >= 10:
+				_burn_stacks = 0
+				_trigger_enflamed()
+			else:
+				FloatingText.spawn_str(global_position, "BURN %d/10" % _burn_stacks, Color(1.0, 0.55, 0.2), get_tree().current_scene)
+		"shock_hit":
+			_shock_stacks = mini(_shock_stacks + 1, 10)
+			if _shock_stacks >= 10:
+				_shock_stacks = 0
+				_trigger_electrified()
+			else:
+				FloatingText.spawn_str(global_position, "SHOCK %d/10" % _shock_stacks, Color(0.7, 0.85, 1.0), get_tree().current_scene)
+		"poison_hit":
+			_poison_stacks = mini(_poison_stacks + 1, 10)
+			if _poison_stacks >= 10:
+				_poison_stacks = 0
+				_trigger_poisoned()
+			else:
+				FloatingText.spawn_str(global_position, "VENOM %d/10" % _poison_stacks, Color(0.35, 1.0, 0.4), get_tree().current_scene)
+
+func _add_burn_stacks(count: int) -> void:
+	_burn_stacks = mini(_burn_stacks + count, 9)
+
+func _trigger_enflamed() -> void:
+	FloatingText.spawn_str(global_position, "ENFLAMED!", Color(1.0, 0.3, 0.0), get_tree().current_scene)
+	_enflamed      = true
+	_enflame_timer = 5.0
+	_enflame_tick  = 0.0
+	take_damage(12)
+	if not is_instance_valid(self): return
+	for enemy in get_tree().get_nodes_in_group("enemy"):
+		if not is_instance_valid(enemy) or enemy == self: continue
+		if global_position.distance_to(enemy.global_position) < 160.0:
+			if enemy.has_method("_add_burn_stacks"):
+				enemy._add_burn_stacks(5)
+
+func _trigger_electrified() -> void:
+	FloatingText.spawn_str(global_position, "ELECTRIFIED!", Color(0.75, 0.9, 1.0), get_tree().current_scene)
+	take_damage(10)
+	if not is_instance_valid(self): return
+	_stun_timer      = 0.5
+	_no_attack_timer = 1.5
+
+func _trigger_poisoned() -> void:
+	FloatingText.spawn_str(global_position, "POISONED!", Color(0.2, 1.0, 0.35), get_tree().current_scene)
+	_poisoned     = true
+	_poison_timer = 9.0
+	_poison_tick  = 0.0
 
 func heal(amount: int) -> void:
 	var prev := health
@@ -419,15 +380,15 @@ func take_damage(amount: int) -> void:
 	_update_health_bar()
 	if elite_modifier == 3 and not _enrage_triggered and health > 0 and health * 2 <= max_health:
 		_enrage_triggered = true
-		speed *= 1.5
-		_effective_interval = maxf(0.3, _effective_interval * 0.6)
+		speed *= 1.4
+		_effective_interval = maxf(0.4, _effective_interval * 0.6)
 		FloatingText.spawn_str(global_position, "ENRAGED!", Color(1.0, 0.15, 0.0), get_tree().current_scene)
 		var lbl := get_node_or_null("AsciiChar")
 		if lbl:
 			lbl.add_theme_color_override("font_color", Color(1.0, 0.2, 0.0))
 	if health <= 0:
 		GameState.kills += 1
-		GameState.add_xp(5)
+		GameState.add_xp(8)
 		if is_champion:
 			_drop_champion_loot()
 		else:
@@ -461,9 +422,9 @@ func _do_split() -> void:
 func _drop_gold() -> void:
 	var gold := GOLD_PICKUP_SCENE.instantiate()
 	gold.global_position = global_position
-	gold.value = int(randi_range(1, 5) * (3 if is_elite else 1) * GameState.loot_multiplier)
+	gold.value = int(randi_range(3, 8) * (3 if is_elite else 1) * GameState.loot_multiplier)
 	get_tree().current_scene.call_deferred("add_child", gold)
-	if is_elite or randi() % 100 < 30:
+	if is_elite or randi() % 100 < 45:
 		var bag := LOOT_BAG_SCENE.instantiate()
 		bag.global_position = global_position + Vector2(randf_range(-20, 20), randf_range(-20, 20))
 		get_tree().current_scene.call_deferred("add_child", bag)
@@ -473,4 +434,4 @@ func _update_health_bar() -> void:
 	if bar == null:
 		return
 	var ratio := clampf(float(health) / float(max_health), 0.0, 1.0)
-	bar.offset_right = -20.0 + 40.0 * ratio
+	bar.offset_right = -22.0 + 44.0 * ratio

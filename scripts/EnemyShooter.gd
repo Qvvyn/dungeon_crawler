@@ -9,8 +9,15 @@ const LOOT_BAG_SCENE    := preload("res://scenes/LootBag.tscn")
 @export var max_health: int           = 5
 @export var projectile_scene: PackedScene
 
+# ASCII art frames — spider
+const SHOOTER_F0 := "\\(o.o)/\n  [*]  \n / | \\"
+const SHOOTER_F1 := "-(o.o)-\n  [*]  \n \\ | /"
+
 var health: int                = 5
+var passive: bool              = false
 var _player: Node2D            = null
+var _anim_timer: float         = 0.0
+var _anim_frame: int           = 0
 var _shoot_timer: float        = 1.0
 var _speed_multiplier: float   = 1.0
 var _buff_timer: float         = 0.0
@@ -25,7 +32,12 @@ var _sight_timer: float  = 0.0
 var _wander_dir: Vector2 = Vector2.ZERO
 var _wander_timer: float = 0.0
 
-var is_elite: bool = false
+var _patrol_pts:  Array = []
+var _patrol_idx:  int   = 0
+var _patrol_wait: float = 0.0
+
+var is_elite: bool    = false
+var is_champion: bool = false
 
 # Elite modifiers (0=none 1=shielded 2=splitting 3=enraged)
 var elite_modifier: int     = 0
@@ -56,6 +68,8 @@ var _poison_stacks: int    = 0
 var _poisoned: bool        = false
 var _poison_timer: float   = 0.0
 var _poison_tick: float    = 0.0
+var _hit_flash_t: float    = 0.0
+var _telegraphing: bool    = false
 
 func _ready() -> void:
 	health = max_health
@@ -64,9 +78,23 @@ func _ready() -> void:
 	_update_health_bar()
 	if projectile_scene == null:
 		projectile_scene = load("res://scenes/Projectile.tscn")
-	_pick_wander_dir()
+	_setup_patrol()
 	if elite_modifier == 1:
 		_shield_active = true
+	var lbl := get_node_or_null("AsciiChar")
+	if lbl:
+		var mono := SystemFont.new()
+		mono.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
+		lbl.add_theme_font_override("font", mono)
+		lbl.add_theme_font_size_override("font_size", 13)
+		lbl.add_theme_constant_override("line_separation", -4)
+		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		lbl.vertical_alignment   = VERTICAL_ALIGNMENT_TOP
+		lbl.offset_left   = -34
+		lbl.offset_top    = -44
+		lbl.offset_right  =  38
+		lbl.offset_bottom =  14
+		lbl.text = SHOOTER_F0
 
 func _physics_process(delta: float) -> void:
 	if _buff_timer > 0.0:
@@ -93,12 +121,10 @@ func _physics_process(delta: float) -> void:
 		_move_combat()
 		_tick_shoot(delta)
 	else:
-		_wander(delta)
+		_patrol(delta)
 
 	move_and_slide()
-
-	if not _has_aggro and get_slide_collision_count() > 0:
-		_pick_wander_dir()
+	_tick_anim(delta)
 
 # ── Status ticking ────────────────────────────────────────────────────────────
 
@@ -232,6 +258,30 @@ func _move_combat() -> void:
 	else:
 		velocity = Vector2.ZERO
 
+func _setup_patrol() -> void:
+	_patrol_pts.clear()
+	var count := randi_range(2, 3)
+	for i in count:
+		var angle := float(i) / float(count) * TAU + randf_range(-0.4, 0.4)
+		var dist  := randf_range(48.0, 108.0)
+		_patrol_pts.append(global_position + Vector2(cos(angle), sin(angle)) * dist)
+	_patrol_pts.append(global_position)
+
+func _patrol(delta: float) -> void:
+	if _patrol_wait > 0.0:
+		_patrol_wait -= delta
+		velocity = Vector2.ZERO
+		return
+	var slow_mult := clampf(1.0 - float(_chill_stacks) * 0.1, 0.0, 1.0)
+	var target: Vector2 = _patrol_pts[_patrol_idx]
+	var to_pt: Vector2  = target - global_position
+	if to_pt.length() < 10.0 or get_slide_collision_count() > 0:
+		_patrol_idx  = (_patrol_idx + 1) % _patrol_pts.size()
+		_patrol_wait = randf_range(0.5, 1.5)
+		velocity = Vector2.ZERO
+		return
+	velocity = to_pt.normalized() * move_speed * 0.45 * _speed_multiplier * slow_mult
+
 func _wander(delta: float) -> void:
 	_wander_timer -= delta
 	if _wander_timer <= 0.0:
@@ -251,9 +301,53 @@ func _pick_wander_dir() -> void:
 		_wander_dir   = Vector2(cos(angle), sin(angle))
 		_wander_timer = randf_range(0.7, 2.2)
 
+func _tick_anim(delta: float) -> void:
+	var lbl := get_node_or_null("AsciiChar")
+	if lbl == null:
+		return
+	_anim_timer += delta
+	if _anim_timer >= 0.35:
+		_anim_timer = 0.0
+		_anim_frame = 1 - _anim_frame
+	lbl.text = SHOOTER_F0 if _anim_frame == 0 else SHOOTER_F1
+	if _hit_flash_t > 0.0:
+		_hit_flash_t -= delta
+		lbl.modulate = Color(1.0, 0.3, 0.3)
+	elif _telegraphing:
+		var blink := sin(Time.get_ticks_msec() * 0.013) * 0.5 + 0.5
+		lbl.modulate = Color(1.0, lerpf(0.8, 0.1, blink), lerpf(0.7, 0.0, blink))
+	else:
+		lbl.modulate = _get_status_modulate()
+
+func _get_status_modulate() -> Color:
+	if _frozen:
+		return Color(0.55, 0.82, 1.0)
+	if _stun_timer > 0.0:
+		return Color(0.9, 0.9, 0.3)
+	if _poisoned:
+		return Color(0.45, 1.0, 0.55)
+	if _enflamed:
+		var flicker := sin(Time.get_ticks_msec() * 0.025) * 0.12 + 0.88
+		return Color(1.0, flicker * 0.35, 0.05)
+	if _chill_stacks > 0:
+		var t := float(_chill_stacks) / 10.0
+		return Color(lerpf(1.0, 0.55, t), lerpf(1.0, 0.82, t), 1.0)
+	if _burn_stacks > 0:
+		var t2 := float(_burn_stacks) / 10.0
+		return Color(1.0, lerpf(1.0, 0.35, t2), lerpf(1.0, 0.05, t2))
+	if _shock_stacks > 0:
+		var t3 := float(_shock_stacks) / 10.0
+		return Color(1.0, 1.0, lerpf(1.0, 0.2, t3))
+	if _poison_stacks > 0:
+		var t4 := float(_poison_stacks) / 10.0
+		return Color(lerpf(1.0, 0.45, t4), 1.0, lerpf(1.0, 0.55, t4))
+	return Color.WHITE
+
 # ── Sight ─────────────────────────────────────────────────────────────────────
 
 func _check_sight() -> void:
+	if passive:
+		return
 	if global_position.distance_squared_to(_player.global_position) > SIGHT_RANGE * SIGHT_RANGE:
 		return
 	var space  := get_world_2d().direct_space_state
@@ -268,7 +362,12 @@ func _check_sight() -> void:
 
 func _tick_shoot(delta: float) -> void:
 	_shoot_timer -= delta
+	if _shoot_timer <= 0.3 and not _telegraphing and _stun_timer <= 0.0 and _no_attack_timer <= 0.0:
+		_telegraphing = true
+	if _stun_timer > 0.0 or _no_attack_timer > 0.0:
+		_telegraphing = false
 	if _shoot_timer <= 0.0 and _stun_timer <= 0.0 and _no_attack_timer <= 0.0:
+		_telegraphing = false
 		_fire()
 		_shoot_timer = _effective_interval
 
@@ -302,11 +401,12 @@ func take_damage(amount: int) -> void:
 		_shield_active = false
 		FloatingText.spawn_str(global_position, "BLOCKED!", Color(0.4, 0.9, 1.0), get_tree().current_scene)
 		return
-	if not _has_aggro:
+	if not passive and not _has_aggro:
 		_has_aggro = true
 		FloatingText.spawn_str(global_position, "!", Color(1.0, 0.9, 0.0), get_tree().current_scene)
 	var actual := int(float(amount) * 1.25) if (_frozen or _chill_stacks > 0) else amount
 	health -= actual
+	_hit_flash_t = 0.14
 	FloatingText.spawn(global_position, actual, false, get_tree().current_scene)
 	_update_health_bar()
 	if elite_modifier == 3 and not _enrage_triggered and health > 0 and health * 2 <= max_health:
@@ -320,10 +420,21 @@ func take_damage(amount: int) -> void:
 	if health <= 0:
 		GameState.kills += 1
 		GameState.add_xp(5)
-		if elite_modifier == 2 and _split_scene != null:
-			_do_split()
-		_drop_gold()
+		if is_champion:
+			_drop_champion_loot()
+		else:
+			if elite_modifier == 2 and _split_scene != null:
+				_do_split()
+			_drop_gold()
 		queue_free()
+
+func _drop_champion_loot() -> void:
+	_drop_gold()
+	for _i in 2:
+		var bag := LOOT_BAG_SCENE.instantiate()
+		bag.global_position = global_position + Vector2(randf_range(-32, 32), randf_range(-32, 32))
+		bag.items = [ItemDB.random_legendary()]
+		get_tree().current_scene.call_deferred("add_child", bag)
 
 func _do_split() -> void:
 	FloatingText.spawn_str(global_position, "SPLIT!", Color(0.9, 0.4, 1.0), get_tree().current_scene)
@@ -342,7 +453,7 @@ func _do_split() -> void:
 func _drop_gold() -> void:
 	var gold := GOLD_PICKUP_SCENE.instantiate()
 	gold.global_position = global_position
-	gold.value = randi_range(1, 5) * (3 if is_elite else 1)
+	gold.value = int(randi_range(1, 5) * (3 if is_elite else 1) * GameState.loot_multiplier)
 	get_tree().current_scene.call_deferred("add_child", gold)
 	if is_elite or randi() % 100 < 30:
 		var bag := LOOT_BAG_SCENE.instantiate()
