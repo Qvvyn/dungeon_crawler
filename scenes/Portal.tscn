@@ -1,0 +1,43 @@
+[gd_scene load_steps=3 format=3 uid="uid://portal_scene"]
+
+[ext_resource type="Script" path="res://scripts/Portal.gd" id="1_portal"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_1"]
+size = Vector2(80, 70)
+
+[node name="Portal" type="Area2D"]
+script = ExtResource("1_portal")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("RectangleShape2D_1")
+
+[node name="Visual" type="ColorRect" parent="."]
+visible = false
+offset_left = -25.0
+offset_top = -30.0
+offset_right = 25.0
+offset_bottom = 30.0
+color = Color(0, 0.85, 1, 1)
+
+[node name="AsciiArt" type="Label" parent="."]
+z_index = 2
+offset_left = -48.0
+offset_top = -42.0
+offset_right = 48.0
+offset_bottom = 42.0
+text = "  ,-===-.  \n /  >>>  \\ \n|>> [<>] >>|\n \\  >>>  / \n  `-===-'  "
+horizontal_alignment = 1
+vertical_alignment = 1
+theme_override_colors/font_color = Color(0.3, 0.9, 1.0, 1)
+theme_override_colors/font_outline_color = Color(0.45, 0.0, 0.85, 1)
+theme_override_constants/outline_size = 2
+
+[node name="InteractHint" type="Label" parent="."]
+visible = false
+offset_left = -70.0
+offset_top = 34.0
+offset_right = 70.0
+offset_bottom = 54.0
+text = "Press E to enter"
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 13

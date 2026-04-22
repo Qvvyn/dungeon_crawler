@@ -1,0 +1,19 @@
+[gd_scene format=3 uid="uid://clootbag"]
+
+[ext_resource type="Script" path="res://scripts/LootBag.gd" id="1_lootbag"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_1"]
+radius = 18.0
+
+[node name="LootBag" type="Area2D"]
+script = ExtResource("1_lootbag")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("CircleShape2D_1")
+
+[node name="Visual" type="ColorRect" parent="."]
+offset_left = -10.0
+offset_top = -10.0
+offset_right = 10.0
+offset_bottom = 10.0
+color = Color(0.55, 0.4, 0.15, 1)

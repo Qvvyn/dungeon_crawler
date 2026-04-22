@@ -1,0 +1,43 @@
+[gd_scene load_steps=3 format=3 uid="uid://enemyboss_scene"]
+
+[ext_resource type="Script" path="res://scripts/EnemyBoss.gd" id="1_boss"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_boss"]
+radius = 22.0
+
+[node name="EnemyBoss" type="CharacterBody2D" groups=["enemy"]]
+script = ExtResource("1_boss")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("CircleShape2D_boss")
+
+[node name="AsciiChar" type="Label" parent="."]
+z_index = 2
+offset_left = -22.0
+offset_top = -22.0
+offset_right = 22.0
+offset_bottom = 22.0
+text = "B"
+horizontal_alignment = 1
+vertical_alignment = 1
+theme_override_font_sizes/font_size = 40
+theme_override_colors/font_color = Color(1.0, 0.25, 0.05, 1)
+theme_override_colors/font_outline_color = Color(0.5, 0.0, 0.0, 1)
+theme_override_constants/outline_size = 4
+
+[node name="HealthBar" type="Node2D" parent="."]
+position = Vector2(0, -34)
+
+[node name="Background" type="ColorRect" parent="HealthBar"]
+offset_left = -30.0
+offset_top = -4.0
+offset_right = 30.0
+offset_bottom = 4.0
+color = Color(0.15, 0.0, 0.0, 1)
+
+[node name="Foreground" type="ColorRect" parent="HealthBar"]
+offset_left = -30.0
+offset_top = -4.0
+offset_right = 30.0
+offset_bottom = 4.0
+color = Color(1.0, 0.15, 0.05, 1)

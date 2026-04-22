@@ -1,12 +1,9 @@
-[gd_scene load_steps=4 format=3 uid="uid://player_scene"]
+[gd_scene load_steps=3 format=3 uid="uid://player_scene"]
 
 [ext_resource type="Script" path="res://scripts/Player.gd" id="1_player"]
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_1"]
 size = Vector2(40, 40)
-
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_1"]
-bg_color = Color(0.2, 0.6, 1, 1)
 
 [node name="Player" type="CharacterBody2D" groups=["player"]]
 script = ExtResource("1_player")
@@ -15,8 +12,105 @@ script = ExtResource("1_player")
 shape = SubResource("RectangleShape2D_1")
 
 [node name="Visual" type="ColorRect" parent="."]
+visible = false
 offset_left = -20.0
 offset_top = -20.0
 offset_right = 20.0
 offset_bottom = 20.0
 color = Color(0.2, 0.6, 1, 1)
+
+[node name="AsciiChar" type="Label" parent="."]
+z_index = 2
+offset_left = -20.0
+offset_top = -22.0
+offset_right = 20.0
+offset_bottom = 24.0
+text = "(o)"
+horizontal_alignment = 1
+vertical_alignment = 1
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.45, 0.75, 1.0, 1)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
+theme_override_constants/outline_size = 2
+
+[node name="Camera2D" type="Camera2D" parent="."]
+limit_left = 0
+limit_top = 0
+limit_right = 2100
+limit_bottom = 2400
+position_smoothing_enabled = true
+position_smoothing_speed = 8.0
+
+[node name="HUD" type="CanvasLayer" parent="."]
+
+[node name="HealthBarBG" type="ColorRect" parent="HUD"]
+offset_left = 10.0
+offset_top = 10.0
+offset_right = 212.0
+offset_bottom = 30.0
+color = Color(0.25, 0.05, 0.05, 1)
+
+[node name="HealthBarFG" type="ColorRect" parent="HUD"]
+offset_left = 11.0
+offset_top = 11.0
+offset_right = 211.0
+offset_bottom = 29.0
+color = Color(0.2, 0.85, 0.2, 1)
+
+[node name="HPLabel" type="Label" parent="HUD"]
+offset_left = 10.0
+offset_top = 32.0
+offset_right = 212.0
+offset_bottom = 50.0
+text = "HP"
+theme_override_font_sizes/font_size = 13
+
+[node name="KillsLabel" type="Label" parent="HUD"]
+offset_left = 220.0
+offset_top = 10.0
+offset_right = 380.0
+offset_bottom = 30.0
+text = "Kills: 0"
+theme_override_font_sizes/font_size = 13
+
+[node name="DeathMenu" type="Control" parent="HUD"]
+visible = false
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="Overlay" type="ColorRect" parent="HUD/DeathMenu"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0, 0, 0, 0.7)
+
+[node name="Title" type="Label" parent="HUD/DeathMenu"]
+offset_left = 600.0
+offset_top = 280.0
+offset_right = 1000.0
+offset_bottom = 370.0
+text = "YOU DIED"
+horizontal_alignment = 1
+vertical_alignment = 1
+theme_override_font_sizes/font_size = 56
+theme_override_colors/font_color = Color(0.9, 0.2, 0.2, 1)
+
+[node name="RetryButton" type="Button" parent="HUD/DeathMenu"]
+offset_left = 700.0
+offset_top = 400.0
+offset_right = 900.0
+offset_bottom = 460.0
+text = "Retry"
+
+[node name="QuitButton" type="Button" parent="HUD/DeathMenu"]
+offset_left = 700.0
+offset_top = 475.0
+offset_right = 900.0
+offset_bottom = 535.0
+text = "Quit"
+
+[node name="TitleButton" type="Button" parent="HUD/DeathMenu"]
+offset_left = 700.0
+offset_top = 550.0
+offset_right = 900.0
+offset_bottom = 610.0
+text = "Title Screen"

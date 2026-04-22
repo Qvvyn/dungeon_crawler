@@ -1,56 +1,8 @@
-[gd_scene load_steps=5 format=3 uid="uid://world_scene"]
+[gd_scene load_steps=2 format=3 uid="uid://world_scene"]
 
-[ext_resource type="PackedScene" path="res://scenes/Player.tscn" id="1_player"]
-
-[sub_resource type="RectangleShape2D" id="RectangleShape2D_1"]
-size = Vector2(60, 60)
-
-[sub_resource type="RectangleShape2D" id="RectangleShape2D_2"]
-size = Vector2(60, 60)
-
-[sub_resource type="RectangleShape2D" id="RectangleShape2D_3"]
-size = Vector2(60, 60)
+[ext_resource type="Script" path="res://scripts/World.gd" id="1_world"]
 
 [node name="World" type="Node2D"]
+script = ExtResource("1_world")
 
-[node name="Player" parent="." instance=ExtResource("1_player")]
-position = Vector2(640, 360)
-
-[node name="TargetA" type="Area2D" parent="." groups=["target"]]
-position = Vector2(300, 200)
-
-[node name="CollisionShape2D" type="CollisionShape2D" parent="TargetA"]
-shape = SubResource("RectangleShape2D_1")
-
-[node name="Visual" type="ColorRect" parent="TargetA"]
-offset_left = -30.0
-offset_top = -30.0
-offset_right = 30.0
-offset_bottom = 30.0
-color = Color(1, 0.2, 0.2, 1)
-
-[node name="TargetB" type="Area2D" parent="." groups=["target"]]
-position = Vector2(900, 250)
-
-[node name="CollisionShape2D" type="CollisionShape2D" parent="TargetB"]
-shape = SubResource("RectangleShape2D_2")
-
-[node name="Visual" type="ColorRect" parent="TargetB"]
-offset_left = -30.0
-offset_top = -30.0
-offset_right = 30.0
-offset_bottom = 30.0
-color = Color(1, 0.2, 0.2, 1)
-
-[node name="TargetC" type="Area2D" parent="." groups=["target"]]
-position = Vector2(600, 500)
-
-[node name="CollisionShape2D" type="CollisionShape2D" parent="TargetC"]
-shape = SubResource("RectangleShape2D_3")
-
-[node name="Visual" type="ColorRect" parent="TargetC"]
-offset_left = -30.0
-offset_top = -30.0
-offset_right = 30.0
-offset_bottom = 30.0
-color = Color(1, 0.2, 0.2, 1)
+[node name="Enemies" type="Node2D" parent="."]
