@@ -14,7 +14,7 @@ var color: Color
 var icon_char: String = "?"
 var sell_value: int = 5
 var rarity: int = RARITY_COMMON
-# Flat bonuses applied while equipped. Keys: "speed", "max_health", "fire_rate_reduction", "block_chance", "projectile_count"
+# Flat bonuses applied while equipped. Keys: "speed", "max_health", "fire_rate_reduction", "DEF", "projectile_count"
 var stat_bonuses: Dictionary = {}
 var set_tag: String = ""   # "arcane" | "iron" | "swift" | ""
 
@@ -26,7 +26,6 @@ var wand_fire_rate: float    = 0.20       # seconds between shots
 var wand_proj_speed: float   = 600.0
 var wand_pierce: int         = 0          # enemies passed through
 var wand_ricochet: int       = 0          # wall bounces
-var wand_chain: int          = 0          # chain-jump targets
 var wand_status_stacks: int  = 1          # stacks applied per hit (freeze/fire)
 var wand_flaws: Array        = []         # backwards/drift/clunky/mana_guzzle/slow_shots/erratic
 

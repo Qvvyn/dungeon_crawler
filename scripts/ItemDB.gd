@@ -84,6 +84,28 @@ static func all_items() -> Array[Item]:
 		_make(Item.Type.RING, "Sage's Band",    "+8 wisdom, shoot faster.",
 			Color(0.5, 0.7, 1.0), "o", 24, {"wisdom": 8.0, "fire_rate_reduction": 0.01}),
 
+		# ── Stat rings (one per stat, RARE) ───────────────────────────────────
+		_make(Item.Type.RING, "Bronze Fist Ring",  "+3 STR.",
+			Color(1.0, 0.45, 0.25), "o", 36, {"STR": 3.0}, Item.RARITY_RARE),
+		_make(Item.Type.RING, "Quicksilver Ring",  "+3 DEX.",
+			Color(1.0, 0.85, 0.30), "o", 36, {"DEX": 3.0}, Item.RARITY_RARE),
+		_make(Item.Type.RING, "Sprinter's Ring",   "+3 AGI.",
+			Color(0.50, 1.00, 0.40), "o", 36, {"AGI": 3.0}, Item.RARITY_RARE),
+		_make(Item.Type.RING, "Heart Ring",        "+3 VIT.",
+			Color(0.85, 0.20, 0.30), "o", 36, {"VIT": 3.0}, Item.RARITY_RARE),
+		_make(Item.Type.RING, "Marathon Ring",     "+3 END.",
+			Color(0.30, 0.85, 0.55), "o", 36, {"END": 3.0}, Item.RARITY_RARE),
+		_make(Item.Type.RING, "Sage's Eye",        "+3 INT.",
+			Color(0.45, 0.55, 1.00), "o", 36, {"INT": 3.0}, Item.RARITY_RARE),
+		_make(Item.Type.RING, "Mystic Ring",       "+3 WIS.",
+			Color(0.20, 0.55, 1.00), "o", 36, {"WIS": 3.0}, Item.RARITY_RARE),
+		_make(Item.Type.RING, "Soul Ring",         "+3 SPR.",
+			Color(0.85, 0.65, 1.00), "o", 36, {"SPR": 3.0}, Item.RARITY_RARE),
+		_make(Item.Type.RING, "Bulwark Ring",      "+3 DEF.",
+			Color(0.55, 0.55, 0.65), "o", 36, {"DEF": 3.0}, Item.RARITY_RARE),
+		_make(Item.Type.RING, "Lucky Coin Ring",   "+3 LCK.",
+			Color(1.00, 0.95, 0.40), "o", 36, {"LCK": 3.0}, Item.RARITY_RARE),
+
 		# ── Necklaces ─────────────────────────────────────────────────────────
 		_make(Item.Type.NECKLACE, "Arcane Pendant", "Shoot faster.",
 			Color(0.8, 0.4, 1.0), "-", 20, {"fire_rate_reduction": 0.03}, Item.RARITY_COMMON, "arcane"),
@@ -95,14 +117,20 @@ static func all_items() -> Array[Item]:
 			Color(0.15, 0.6, 1.0), "-", 28, {"wisdom": 20.0}),
 		_make(Item.Type.NECKLACE, "Runic Chain",    "+1 HP, +12 wisdom.",
 			Color(0.5, 0.3, 0.9), "-", 24, {"max_health": 1, "wisdom": 12.0}),
+		_make(Item.Type.NECKLACE, "Warlord's Talisman", "+6 STR, +4 VIT.",
+			Color(1.00, 0.30, 0.20), "-", 80, {"STR": 6.0, "VIT": 4.0}, Item.RARITY_LEGENDARY),
+		_make(Item.Type.NECKLACE, "Archmage's Sigil",  "+6 INT, +4 WIS.",
+			Color(0.40, 0.55, 1.00), "-", 80, {"INT": 6.0, "WIS": 4.0}, Item.RARITY_LEGENDARY),
+		_make(Item.Type.NECKLACE, "Trickster's Charm", "+5 LCK, +5 DEX.",
+			Color(1.00, 0.85, 0.30), "-", 80, {"LCK": 5.0, "DEX": 5.0}, Item.RARITY_LEGENDARY),
 
 		# ── Shields ───────────────────────────────────────────────────────────
-		_make(Item.Type.SHIELD, "Wooden Shield",   "15% block.",
-			Color(0.55, 0.38, 0.18), "D", 15, {"block_chance": 0.15}),
-		_make(Item.Type.SHIELD, "Iron Shield",     "25% block.",
-			Color(0.55, 0.55, 0.60), "D", 28, {"block_chance": 0.25}, Item.RARITY_COMMON, "iron"),
-		_make(Item.Type.SHIELD, "Arcane Ward",     "20% block, +10 wisdom.",
-			Color(0.55, 0.20, 0.80), "D", 26, {"block_chance": 0.20, "wisdom": 10.0}),
+		_make(Item.Type.SHIELD, "Wooden Shield",   "+15 DEF.",
+			Color(0.55, 0.38, 0.18), "D", 15, {"DEF": 15.0}),
+		_make(Item.Type.SHIELD, "Iron Shield",     "+25 DEF.",
+			Color(0.55, 0.55, 0.60), "D", 28, {"DEF": 25.0}, Item.RARITY_COMMON, "iron"),
+		_make(Item.Type.SHIELD, "Arcane Ward",     "+20 DEF, +10 wisdom.",
+			Color(0.55, 0.20, 0.80), "D", 26, {"DEF": 20.0, "wisdom": 10.0}),
 
 		# ── Tomes ─────────────────────────────────────────────────────────────
 		_make(Item.Type.TOME, "Tome of Twins",   "Fire 2 projectiles.",
@@ -133,9 +161,14 @@ static func random_item() -> Item:
 
 static func random_drop() -> Item:
 	# Weighted: 10% wand, 40% gear, 30% valuable, 20% potion
+	# Legendaries are gated out of the standard table — they only come from
+	# dedicated paths (SellChest etc), never from regular drops.
 	var roll := randi() % 100
 	var pool: Array = []
-	var all := all_items()
+	var all: Array[Item] = []
+	for it in all_items():
+		if it.rarity != Item.RARITY_LEGENDARY:
+			all.append(it)
 	if roll < 10:
 		for item in all:
 			if item.type == Item.Type.WAND:
@@ -172,27 +205,27 @@ static func generate_wand(rarity: int = Item.RARITY_COMMON) -> Item:
 		Item.RARITY_COMMON:
 			shoot_types = ["regular", "regular", "regular", "pierce", "ricochet"]
 		Item.RARITY_RARE:
-			shoot_types = ["regular", "pierce", "ricochet", "chain", "freeze", "fire", "shock"]
+			shoot_types = ["regular", "pierce", "ricochet", "freeze", "fire", "shock"]
 		Item.RARITY_LEGENDARY:
-			shoot_types = ["chain", "freeze", "fire", "shock", "beam", "pierce", "ricochet"]
+			shoot_types = ["freeze", "fire", "shock", "beam", "pierce", "ricochet"]
 		_:
 			shoot_types = ["regular"]
 	item.wand_shoot_type = shoot_types[randi() % shoot_types.size()]
 
-	# Base stats by rarity
+	# Base stats by rarity (bumped for the late-game balance pass)
 	match rarity:
 		Item.RARITY_COMMON:
-			item.wand_damage     = randi_range(1, 2)
+			item.wand_damage     = randi_range(2, 3)
 			item.wand_fire_rate  = randf_range(0.18, 0.32)
 			item.wand_mana_cost  = randf_range(3.0, 7.0)
 			item.wand_proj_speed = randf_range(500.0, 650.0)
 		Item.RARITY_RARE:
-			item.wand_damage     = randi_range(2, 4)
+			item.wand_damage     = randi_range(3, 5)
 			item.wand_fire_rate  = randf_range(0.12, 0.24)
 			item.wand_mana_cost  = randf_range(6.0, 12.0)
 			item.wand_proj_speed = randf_range(580.0, 750.0)
 		Item.RARITY_LEGENDARY:
-			item.wand_damage     = randi_range(4, 8)
+			item.wand_damage     = randi_range(5, 10)
 			item.wand_fire_rate  = randf_range(0.08, 0.16)
 			item.wand_mana_cost  = randf_range(10.0, 20.0)
 			item.wand_proj_speed = randf_range(650.0, 900.0)
@@ -205,9 +238,6 @@ static func generate_wand(rarity: int = Item.RARITY_COMMON) -> Item:
 		"ricochet":
 			item.wand_ricochet  = randi_range(1, 2 + rarity)
 			item.wand_mana_cost *= 1.2
-		"chain":
-			item.wand_chain     = randi_range(2, 3 + rarity)
-			item.wand_mana_cost *= 1.5
 		"freeze", "fire", "shock":
 			item.wand_status_stacks = randi_range(1, 1 + rarity)
 			item.wand_mana_cost *= 1.2
@@ -219,7 +249,6 @@ static func generate_wand(rarity: int = Item.RARITY_COMMON) -> Item:
 	var power: float = float(item.wand_damage) * (1.0 / maxf(item.wand_fire_rate, 0.01))
 	power += float(item.wand_pierce) * 3.0
 	power += float(item.wand_ricochet) * 2.0
-	power += float(item.wand_chain) * 5.0
 	if item.wand_shoot_type == "beam":
 		power += 15.0
 	if item.wand_shoot_type in ["freeze", "fire", "shock"]:
@@ -238,6 +267,23 @@ static func generate_wand(rarity: int = Item.RARITY_COMMON) -> Item:
 	for i in num_flaws:
 		item.wand_flaws.append(flaw_pool[i])
 
+	# Difficulty scaling — wands rolled on later floors hit harder, fire faster,
+	# and have more pierce/ricochet/stacks. Damage gets the biggest bump so
+	# loot keeps pace with the +0.15 enemy HP scaling per difficulty tier.
+	var diff: float = maxf(GameState.difficulty - 1.0, 0.0)
+	if diff > 0.0:
+		var dmg_scale: float = 1.0 + diff * 0.20
+		item.wand_damage = int(round(float(item.wand_damage) * dmg_scale))
+		item.wand_fire_rate = maxf(0.04, item.wand_fire_rate * (1.0 - diff * 0.04))
+		item.wand_proj_speed = item.wand_proj_speed * (1.0 + diff * 0.05)
+		# Stacks/pierce/ricochet creep up too at higher floors
+		if item.wand_pierce > 0:
+			item.wand_pierce += int(diff * 0.5)
+		if item.wand_ricochet > 0:
+			item.wand_ricochet += int(diff * 0.5)
+		if item.wand_status_stacks > 0:
+			item.wand_status_stacks += int(diff * 0.4)
+
 	item.display_name = _wand_name(item)
 	item.description  = _wand_desc(item)
 	item.color        = _wand_color(item)
@@ -249,7 +295,6 @@ static func _wand_name(wand: Item) -> String:
 		"regular":  ["Wand", "Rod", "Stick"],
 		"pierce":   ["Piercing Rod", "Needle Wand", "Skewer Staff"],
 		"ricochet": ["Bouncing Rod", "Ricochet Wand", "Echo Staff"],
-		"chain":    ["Chain Staff", "Arc Rod", "Lightning Wand"],
 		"freeze":   ["Frost Wand", "Ice Rod", "Chill Staff"],
 		"fire":     ["Ember Rod", "Fire Wand", "Blaze Staff"],
 		"shock":    ["Thunder Rod", "Shock Wand", "Storm Staff"],
@@ -266,7 +311,6 @@ static func _wand_desc(wand: Item) -> String:
 		"regular":   parts.append("Basic shot")
 		"pierce":    parts.append("Pierces %d enemi%s" % [wand.wand_pierce, "es" if wand.wand_pierce > 1 else ""])
 		"ricochet":  parts.append("Bounces %d time%s" % [wand.wand_ricochet, "s" if wand.wand_ricochet > 1 else ""])
-		"chain":     parts.append("Chains to %d target%s" % [wand.wand_chain, "s" if wand.wand_chain > 1 else ""])
 		"freeze":    parts.append("Stacks chill → FROZEN")
 		"fire":      parts.append("Stacks burn → ENFLAMED")
 		"shock":     parts.append("Stacks shock → ELECTRIFIED")
@@ -280,7 +324,6 @@ static func _wand_color(wand: Item) -> Color:
 		"regular":   return Color(0.75, 0.60, 0.35)
 		"pierce":    return Color(0.95, 0.95, 0.30)
 		"ricochet":  return Color(0.35, 1.00, 0.50)
-		"chain":     return Color(0.55, 0.80, 1.00)
 		"freeze":    return Color(0.30, 0.75, 1.00)
 		"fire":      return Color(1.00, 0.40, 0.10)
 		"shock":     return Color(0.90, 0.95, 0.30)
@@ -322,9 +365,9 @@ static func legendary_items() -> Array[Item]:
 
 		# ── Legendary Hats ─────────────────────────────────────────────────────
 		_make(Item.Type.HAT, "Crown of Dominion",
-			"+6 HP. 20% block. Absolute authority.",
+			"+6 HP. +20 DEF. Absolute authority.",
 			Color(0.9, 0.75, 0.0), "^", 200,
-			{"max_health": 6, "block_chance": 0.20},
+			{"max_health": 6, "DEF": 20.0},
 			Item.RARITY_LEGENDARY),
 		_make(Item.Type.HAT, "Mindweave Circlet",
 			"+60 wisdom. Mana practically infinite.",
@@ -339,19 +382,19 @@ static func legendary_items() -> Array[Item]:
 
 		# ── Legendary Robes ────────────────────────────────────────────────────
 		_make(Item.Type.ROBES, "Shroud of the Undying",
-			"+1000 HP, 15% block, move faster.",
+			"+1000 HP, +15 DEF, move faster.",
 			Color(0.1, 0.55, 0.35), "%", 190,
-			{"max_health": 1000, "block_chance": 0.15, "speed": 15.0},
+			{"max_health": 1000, "DEF": 15.0, "speed": 15.0},
 			Item.RARITY_LEGENDARY),
 		_make(Item.Type.ROBES, "Phantom Wrap",
 			"Ghost-silk. Near impossible to hit.",
 			Color(0.5, 0.2, 0.8), "%", 170,
-			{"speed": 70.0, "block_chance": 0.25},
+			{"speed": 70.0, "DEF": 25.0},
 			Item.RARITY_LEGENDARY),
 		_make(Item.Type.ROBES, "Robes of the Eternal Mage",
-			"+2 HP, +55 wisdom, 10% block.",
+			"+2 HP, +55 wisdom, +10 DEF.",
 			Color(0.15, 0.3, 0.85), "%", 230,
-			{"max_health": 2, "wisdom": 55.0, "block_chance": 0.10},
+			{"max_health": 2, "wisdom": 55.0, "DEF": 10.0},
 			Item.RARITY_LEGENDARY),
 
 		# ── Legendary Feet ─────────────────────────────────────────────────────
@@ -373,9 +416,9 @@ static func legendary_items() -> Array[Item]:
 			{"projectile_count": 2, "fire_rate_reduction": 0.05, "max_health": 2},
 			Item.RARITY_LEGENDARY),
 		_make(Item.Type.RING, "Ouroboros Sigil",
-			"+4 HP. 30% block. Eternal.",
+			"+4 HP. +30 DEF. Eternal.",
 			Color(0.85, 0.6, 0.05), "o", 165,
-			{"max_health": 4, "block_chance": 0.30},
+			{"max_health": 4, "DEF": 30.0},
 			Item.RARITY_LEGENDARY),
 		_make(Item.Type.RING, "Ring of Infinite Flow",
 			"+50 wisdom. Mana never runs dry.",
@@ -393,12 +436,12 @@ static func legendary_items() -> Array[Item]:
 			"Every stat. A bargain with darkness.",
 			Color(0.1, 0.05, 0.2), "-", 220,
 			{"max_health": 2, "speed": 20.0, "fire_rate_reduction": 0.04,
-			 "block_chance": 0.10, "projectile_count": 1, "wisdom": 20.0},
+			 "DEF": 10.0, "projectile_count": 1, "wisdom": 20.0},
 			Item.RARITY_LEGENDARY),
 		_make(Item.Type.NECKLACE, "Soulstone Pendant",
-			"+8 HP. 25% block. Pulsates with life.",
+			"+8 HP. +25 DEF. Pulsates with life.",
 			Color(0.9, 0.1, 0.35), "-", 210,
-			{"max_health": 8, "block_chance": 0.25},
+			{"max_health": 8, "DEF": 25.0},
 			Item.RARITY_LEGENDARY),
 		_make(Item.Type.NECKLACE, "Archmage's Pendant",
 			"Wisdom flows through it. Mana floods back.",
@@ -413,14 +456,14 @@ static func legendary_items() -> Array[Item]:
 
 		# ── Legendary Shields ──────────────────────────────────────────────────
 		_make(Item.Type.SHIELD, "Void Aegis",
-			"50% block. +3 HP. Drinks strikes whole.",
+			"+50 DEF. +3 HP. Drinks strikes whole.",
 			Color(0.0, 0.05, 0.3), "D", 180,
-			{"block_chance": 0.50, "max_health": 3},
+			{"DEF": 50.0, "max_health": 3},
 			Item.RARITY_LEGENDARY),
 		_make(Item.Type.SHIELD, "Manaweave Buckler",
-			"30% block, +40 wisdom.",
+			"+30 DEF, +40 wisdom.",
 			Color(0.2, 0.4, 0.9), "D", 190,
-			{"block_chance": 0.30, "wisdom": 40.0},
+			{"DEF": 30.0, "wisdom": 40.0},
 			Item.RARITY_LEGENDARY),
 
 		# ── Legendary Tomes ────────────────────────────────────────────────────
@@ -433,6 +476,33 @@ static func legendary_items() -> Array[Item]:
 			"+4 proj, +45 wisdom. Cast without cost.",
 			Color(0.2, 0.5, 1.0), "=", 240,
 			{"projectile_count": 3, "wisdom": 45.0, "fire_rate_reduction": 0.06},
+			Item.RARITY_LEGENDARY),
+
+		# ── Synergy Legendaries ────────────────────────────────────────────────
+		_make(Item.Type.RING, "Pyromaniac Sigil",
+			"Fire bolts leave larger, longer-lasting patches.",
+			Color(1.0, 0.3, 0.05), "o", 195,
+			{"syn_pyromaniac": 1.0},
+			Item.RARITY_LEGENDARY),
+		_make(Item.Type.NECKLACE, "Glacial Core",
+			"Freeze bolts deal bonus damage to chilled foes.",
+			Color(0.5, 0.85, 1.0), "-", 200,
+			{"syn_glacial": 1.0},
+			Item.RARITY_LEGENDARY),
+		_make(Item.Type.HAT, "Arc Conductor",
+			"Shock bolts pierce once, auto-chaining from each hit.",
+			Color(0.9, 0.95, 0.1), "^", 205,
+			{"syn_arc_conductor": 1.0},
+			Item.RARITY_LEGENDARY),
+		_make(Item.Type.TOME, "Void Lens",
+			"Nova detonates into 16 piercing shards.",
+			Color(0.5, 0.0, 0.9), "=", 210,
+			{"syn_void_lens": 1.0},
+			Item.RARITY_LEGENDARY),
+		_make(Item.Type.FEET, "Assassin's Mark",
+			"Homing bolts strike for double damage.",
+			Color(0.6, 0.1, 0.8), "n", 200,
+			{"syn_assassin_mark": 1.0},
 			Item.RARITY_LEGENDARY),
 	]
 

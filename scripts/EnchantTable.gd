@@ -21,7 +21,6 @@ const AFFIX_POOL := [
 	{"name": "+1 Damage",    "stat": "wand_damage",     "val": 1},
 	{"name": "+1 Pierce",    "stat": "wand_pierce",     "val": 1},
 	{"name": "+1 Ricochet",  "stat": "wand_ricochet",   "val": 1},
-	{"name": "+1 Chain",     "stat": "wand_chain",      "val": 1},
 	{"name": "Faster Fire",  "stat": "wand_fire_rate",  "val": -0.02},
 	{"name": "-15% Mana",    "stat": "wand_mana_cost",  "val": -0.15},
 	{"name": "+60 ProjSpd",  "stat": "wand_proj_speed", "val": 60.0},
@@ -32,7 +31,7 @@ const STAT_RANGES := {
 	"speed":              [10.0,  60.0],
 	"max_health":         [1.0,   4.0],
 	"fire_rate_reduction":[0.01,  0.09],
-	"block_chance":       [0.05,  0.35],
+	"DEF":                [5.0,   35.0],
 	"projectile_count":   [1.0,   3.0],
 }
 
@@ -504,7 +503,6 @@ func _forge_wand() -> void:
 		"wand_damage":     wand.wand_damage     = maxi(1, wand.wand_damage + int(affix["val"]))
 		"wand_pierce":     wand.wand_pierce     = mini(8, wand.wand_pierce + int(affix["val"]))
 		"wand_ricochet":   wand.wand_ricochet   = mini(8, wand.wand_ricochet + int(affix["val"]))
-		"wand_chain":      wand.wand_chain      = mini(10, wand.wand_chain + int(affix["val"]))
 		"wand_fire_rate":  wand.wand_fire_rate  = maxf(0.04, wand.wand_fire_rate + affix["val"])
 		"wand_mana_cost":  wand.wand_mana_cost  = maxf(1.0, wand.wand_mana_cost * (1.0 + affix["val"]))
 		"wand_proj_speed": wand.wand_proj_speed = minf(1200.0, wand.wand_proj_speed + affix["val"])

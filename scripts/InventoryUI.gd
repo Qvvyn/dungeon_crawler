@@ -302,8 +302,6 @@ func _format_item_tooltip(item: Item) -> String:
 			parts.append("+%d pierce" % item.wand_pierce)
 		if item.wand_ricochet > 0:
 			parts.append("+%d bounce" % item.wand_ricochet)
-		if item.wand_chain > 0:
-			parts.append("+%d chain" % item.wand_chain)
 		if not item.wand_flaws.is_empty():
 			parts.append("FLAW: " + ", ".join(item.wand_flaws))
 	elif not item.stat_bonuses.is_empty():
@@ -314,7 +312,7 @@ func _format_item_tooltip(item: Item) -> String:
 				"speed":               parts.append("+%.0f spd" % val)
 				"max_health":          parts.append("+%d max HP" % int(val))
 				"fire_rate_reduction": parts.append("-%dms cooldown" % int(val * 1000.0))
-				"block_chance":        parts.append("%.0f%% block" % (val * 100.0))
+				"DEF":                 parts.append("+%d DEF" % int(val))
 				"projectile_count":    parts.append("+%d projectiles" % int(val))
 				"wisdom":              parts.append("+%.0f mana/s" % val)
 	else:
