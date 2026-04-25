@@ -1,5 +1,7 @@
 extends Node2D
 
+const NOVA_SPAWNER_SCR := preload("res://scripts/NovaSpawner.gd")
+
 var target_pos: Vector2    = Vector2.ZERO
 var proj_scene: PackedScene = null
 var _detonated: bool       = false
@@ -47,21 +49,15 @@ func _detonate() -> void:
 	_detonated = true
 	FloatingText.spawn_str(global_position, "★ NOVA ★", Color(0.9, 0.2, 1.0), get_tree().current_scene)
 	if proj_scene != null:
+		var spawner := Node2D.new()
+		spawner.set_script(NOVA_SPAWNER_SCR)
+		spawner._spawn_pos  = global_position
+		spawner._source     = "player"
+		spawner._damage     = NOVA_DAMAGE
+		spawner._speed      = 380.0
+		spawner._shoot_type = "nova_shard"
 		for i in NOVA_COUNT:
 			var angle := float(i) / float(NOVA_COUNT) * TAU
-			var proj := proj_scene.instantiate()
-			proj.global_position = global_position
-			proj.set("direction",          Vector2(cos(angle), sin(angle)))
-			proj.set("source",             "player")
-			proj.set("damage",             NOVA_DAMAGE)
-			proj.set("speed",              380.0)
-			proj.set("pierce_remaining",   0)
-			proj.set("ricochet_remaining", 0)
-			proj.set("chain_remaining",    0)
-			proj.set("shoot_type",         "")
-			proj.set("apply_freeze",       false)
-			proj.set("apply_burn",         false)
-			proj.set("apply_shock",        false)
-			proj.set("drift_speed",        0.0)
-			get_tree().current_scene.add_child(proj)
+			spawner._queue.append(Vector2(cos(angle), sin(angle)))
+		get_tree().current_scene.add_child(spawner)
 	queue_free()

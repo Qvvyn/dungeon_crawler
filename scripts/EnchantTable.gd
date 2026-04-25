@@ -13,6 +13,7 @@ var _fuse_cell_indices: Array = []
 const REROLL_COST := 40
 const FORGE_COST  := 60
 const FUSE_COST   := 80
+const REFINE_COST := 110   # transforms one flaw into a stronger perk affix
 const CELL_W := 110.0
 const CELL_H := 90.0
 const GAP    := 8.0
@@ -98,7 +99,7 @@ func _build_ui() -> void:
 	var row_w   := float(cols) * CELL_W + float(cols - 1) * GAP
 	var panel_w := maxf(row_w + 48.0, 380.0)
 	var cells_h := float(rows) * (CELL_H + GAP) if count > 0 else 28.0
-	var panel_h := 30.0 + 56.0 + cells_h + 24.0 + (72.0 if has_wand else 0.0)
+	var panel_h := 30.0 + 56.0 + cells_h + 24.0 + (108.0 if has_wand else 0.0)
 	var ox      := (1600.0 - panel_w) / 2.0
 	var oy      := (900.0 - panel_h) / 2.0
 
@@ -217,7 +218,7 @@ func _build_ui() -> void:
 
 	# ── Forge section ─────────────────────────────────────────────────────────
 	if has_wand:
-		var sep_y := oy + panel_h - 72.0
+		var sep_y := oy + panel_h - 108.0
 		var sep := ColorRect.new()
 		sep.color = Color(0.45, 0.2, 0.7, 0.5)
 		sep.position = Vector2(ox + 8.0, sep_y)
@@ -225,7 +226,7 @@ func _build_ui() -> void:
 		_popup.add_child(sep)
 
 		var forge_title := Label.new()
-		forge_title.text = "⚒  FORGE AFFIX  —  %dg  —  also removes one flaw" % FORGE_COST
+		forge_title.text = "⚒  FORGE AFFIX  —  %dg  —  adds a stat (no flaw effect)" % FORGE_COST
 		forge_title.position = Vector2(ox, sep_y + 6.0)
 		forge_title.size = Vector2(panel_w, 20.0)
 		forge_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -236,10 +237,10 @@ func _build_ui() -> void:
 		var can_forge := GameState.gold >= FORGE_COST
 		var forge_lbl := Label.new()
 		forge_lbl.text = "[ FORGE WAND ]"
-		forge_lbl.position = Vector2(ox, sep_y + 30.0)
-		forge_lbl.size = Vector2(panel_w, 30.0)
+		forge_lbl.position = Vector2(ox, sep_y + 26.0)
+		forge_lbl.size = Vector2(panel_w, 26.0)
 		forge_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		forge_lbl.add_theme_font_size_override("font_size", 16)
+		forge_lbl.add_theme_font_size_override("font_size", 15)
 		forge_lbl.add_theme_color_override("font_color",
 			Color(0.9, 0.6, 0.15) if can_forge else Color(0.35, 0.3, 0.25))
 		_popup.add_child(forge_lbl)
@@ -247,8 +248,8 @@ func _build_ui() -> void:
 		var forge_btn := Button.new()
 		forge_btn.flat = true
 		forge_btn.text = ""
-		forge_btn.position = Vector2(ox, sep_y + 30.0)
-		forge_btn.size = Vector2(panel_w, 30.0)
+		forge_btn.position = Vector2(ox, sep_y + 26.0)
+		forge_btn.size = Vector2(panel_w, 26.0)
 		forge_btn.pressed.connect(_forge_wand)
 		forge_btn.mouse_entered.connect(func() -> void:
 			if GameState.gold >= FORGE_COST:
@@ -257,6 +258,44 @@ func _build_ui() -> void:
 			forge_lbl.add_theme_color_override("font_color",
 				Color(0.9, 0.6, 0.15) if GameState.gold >= FORGE_COST else Color(0.35, 0.3, 0.25)))
 		_popup.add_child(forge_btn)
+
+		# Refine — separate action that re-rolls one flaw into a stronger affix
+		var has_flaws: bool = not (wand.wand_flaws as Array).is_empty()
+		var can_refine := GameState.gold >= REFINE_COST and has_flaws
+		var refine_title := Label.new()
+		refine_title.text = "✦  REFINE FLAW  —  %dg  —  removes a flaw and grants a perk" % REFINE_COST
+		refine_title.position = Vector2(ox, sep_y + 56.0)
+		refine_title.size = Vector2(panel_w, 20.0)
+		refine_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		refine_title.add_theme_font_size_override("font_size", 11)
+		refine_title.add_theme_color_override("font_color",
+			Color(0.65, 0.4, 1.0) if has_flaws else Color(0.4, 0.3, 0.55))
+		_popup.add_child(refine_title)
+
+		var refine_lbl := Label.new()
+		refine_lbl.text = "[ REFINE WAND ]" if has_flaws else "[ NO FLAWS ]"
+		refine_lbl.position = Vector2(ox, sep_y + 76.0)
+		refine_lbl.size = Vector2(panel_w, 26.0)
+		refine_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		refine_lbl.add_theme_font_size_override("font_size", 15)
+		refine_lbl.add_theme_color_override("font_color",
+			Color(0.75, 0.5, 1.0) if can_refine else Color(0.35, 0.28, 0.45))
+		_popup.add_child(refine_lbl)
+
+		var refine_btn := Button.new()
+		refine_btn.flat = true
+		refine_btn.text = ""
+		refine_btn.position = Vector2(ox, sep_y + 76.0)
+		refine_btn.size = Vector2(panel_w, 26.0)
+		refine_btn.disabled = not can_refine
+		refine_btn.pressed.connect(_refine_wand)
+		refine_btn.mouse_entered.connect(func() -> void:
+			if can_refine:
+				refine_lbl.add_theme_color_override("font_color", Color(0.95, 0.7, 1.0)))
+		refine_btn.mouse_exited.connect(func() -> void:
+			refine_lbl.add_theme_color_override("font_color",
+				Color(0.75, 0.5, 1.0) if can_refine else Color(0.35, 0.28, 0.45)))
+		_popup.add_child(refine_btn)
 
 func _build_fuse_content(ox: float, oy: float, panel_w: float, _panel_h: float) -> void:
 	var fusable: Array = []
@@ -498,18 +537,47 @@ func _forge_wand() -> void:
 				"Need %dg" % FORGE_COST, Color(1.0, 0.3, 0.3), get_tree().current_scene)
 		return
 	GameState.gold -= FORGE_COST
-	var affix: Dictionary = AFFIX_POOL[randi() % AFFIX_POOL.size()]
-	match affix["stat"]:
-		"wand_damage":     wand.wand_damage     = maxi(1, wand.wand_damage + int(affix["val"]))
-		"wand_pierce":     wand.wand_pierce     = mini(8, wand.wand_pierce + int(affix["val"]))
-		"wand_ricochet":   wand.wand_ricochet   = mini(8, wand.wand_ricochet + int(affix["val"]))
-		"wand_fire_rate":  wand.wand_fire_rate  = maxf(0.04, wand.wand_fire_rate + affix["val"])
-		"wand_mana_cost":  wand.wand_mana_cost  = maxf(1.0, wand.wand_mana_cost * (1.0 + affix["val"]))
-		"wand_proj_speed": wand.wand_proj_speed = minf(1200.0, wand.wand_proj_speed + affix["val"])
-	if not wand.wand_flaws.is_empty():
-		wand.wand_flaws.remove_at(0)
+	_apply_affix(wand, AFFIX_POOL[randi() % AFFIX_POOL.size()], 1.0)
 	if player:
 		FloatingText.spawn_str(player.global_position,
-			"FORGED: %s" % affix["name"], Color(1.0, 0.75, 0.2), get_tree().current_scene)
+			"FORGED!", Color(1.0, 0.75, 0.2), get_tree().current_scene)
 	InventoryManager.inventory_changed.emit()
 	_build_ui()
+
+# Re-rolls one of the wand's flaws into a stronger-than-forge affix. Costs
+# more than a plain forge but only when the wand actually has a flaw to trade.
+func _refine_wand() -> void:
+	var wand: Item = InventoryManager.equipped.get("wand") as Item
+	if wand == null or wand.type != Item.Type.WAND:
+		return
+	if (wand.wand_flaws as Array).is_empty():
+		return
+	var player := InventoryManager._player_ref
+	if GameState.gold < REFINE_COST:
+		if player:
+			FloatingText.spawn_str(player.global_position,
+				"Need %dg" % REFINE_COST, Color(1.0, 0.3, 0.3), get_tree().current_scene)
+		return
+	GameState.gold -= REFINE_COST
+	var removed: String = String(wand.wand_flaws[0])
+	wand.wand_flaws.remove_at(0)
+	# Refine grants a 1.6× scaled affix — meaningfully better than a forge.
+	_apply_affix(wand, AFFIX_POOL[randi() % AFFIX_POOL.size()], 1.6)
+	if player:
+		FloatingText.spawn_str(player.global_position,
+			"REFINED: -%s" % removed.to_upper(), Color(0.85, 0.55, 1.0), get_tree().current_scene)
+	InventoryManager.inventory_changed.emit()
+	_build_ui()
+
+# Shared affix-application helper — `scale` multiplies the affix's value so
+# REFINE can grant a stronger version than FORGE while reusing the same pool.
+func _apply_affix(wand: Item, affix: Dictionary, scale: float) -> void:
+	var v_int: int = int(round(float(affix["val"]) * scale))
+	var v_flt: float = float(affix["val"]) * scale
+	match affix["stat"]:
+		"wand_damage":     wand.wand_damage     = maxi(1, wand.wand_damage + v_int)
+		"wand_pierce":     wand.wand_pierce     = mini(8, wand.wand_pierce + v_int)
+		"wand_ricochet":   wand.wand_ricochet   = mini(8, wand.wand_ricochet + v_int)
+		"wand_fire_rate":  wand.wand_fire_rate  = maxf(0.04, wand.wand_fire_rate + v_flt)
+		"wand_mana_cost":  wand.wand_mana_cost  = maxf(1.0, wand.wand_mana_cost * (1.0 + v_flt))
+		"wand_proj_speed": wand.wand_proj_speed = minf(1200.0, wand.wand_proj_speed + v_flt)

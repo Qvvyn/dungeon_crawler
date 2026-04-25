@@ -2,6 +2,7 @@ extends CharacterBody2D
 
 const GOLD_PICKUP_SCENE := preload("res://scenes/GoldPickup.tscn")
 const LOOT_BAG_SCENE    := preload("res://scenes/LootBag.tscn")
+const FIRE_PATCH_SCRIPT = preload("res://scripts/FirePatch.gd")
 
 @export var move_speed: float         = 70.0
 @export var max_health: int           = 6
@@ -11,7 +12,7 @@ const LOOT_BAG_SCENE    := preload("res://scenes/LootBag.tscn")
 const SNIPER_F0 := "  ._. \n (-_-)\n  ||\\ \n  /\\ "
 const SNIPER_F1 := "  ._. \n (>_-)\n  ||\\ \n  /\\ "
 
-const SIGHT_RANGE    := 500.0
+const SIGHT_RANGE    := 900.0
 const SIGHT_INTERVAL := 0.2
 const SHOOT_INTERVAL := 5.0
 const WINDUP_TIME    := 1.5
@@ -48,6 +49,9 @@ var _retreat_timer: float  = 0.0
 var _stun_timer: float      = 0.0
 var _no_attack_timer: float = 0.0
 
+var _prev_player_pos: Vector2 = Vector2.ZERO
+var _player_vel_est: Vector2  = Vector2.ZERO
+
 var _chill_stacks: int    = 0
 var _chill_decay_t: float = 0.0
 var _frozen: bool         = false
@@ -61,29 +65,41 @@ var _poison_stacks: int   = 0
 var _poisoned: bool       = false
 var _poison_timer: float  = 0.0
 var _poison_tick: float   = 0.0
-var _hit_flash_t: float   = 0.0
+var _hit_flash_t: float    = 0.0
+var _dmg_text_cd: float    = 0.0
+var _lbl: Label             = null
+var _health_bar_fg: Control = null
+
+static var _shared_font: Font = null
 
 func _ready() -> void:
+	collision_layer = 2
+	collision_mask  = 1
 	health = max_health
 	_player = get_tree().get_first_node_in_group("player")
+	if is_instance_valid(_player):
+		_prev_player_pos = _player.global_position
 	_update_health_bar()
 	_setup_patrol()
 	if elite_modifier == 1:
 		_shield_active = true
-	var lbl := get_node_or_null("AsciiChar")
-	if lbl:
-		var mono := SystemFont.new()
-		mono.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
-		lbl.add_theme_font_override("font", mono)
-		lbl.add_theme_font_size_override("font_size", 13)
-		lbl.add_theme_constant_override("line_separation", -4)
-		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		lbl.vertical_alignment   = VERTICAL_ALIGNMENT_TOP
-		lbl.offset_left   = -30
-		lbl.offset_top    = -44
-		lbl.offset_right  =  32
-		lbl.offset_bottom =  14
-		lbl.text = SNIPER_F0
+	_health_bar_fg = get_node_or_null("HealthBar/Foreground")
+	_lbl = get_node_or_null("AsciiChar")
+	if _lbl:
+		if _shared_font == null:
+			var f := SystemFont.new()
+			f.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
+			_shared_font = f
+		_lbl.add_theme_font_override("font", _shared_font)
+		_lbl.add_theme_font_size_override("font_size", 13)
+		_lbl.add_theme_constant_override("line_separation", -4)
+		_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_TOP
+		_lbl.offset_left   = -30
+		_lbl.offset_top    = -44
+		_lbl.offset_right  =  32
+		_lbl.offset_bottom =  14
+		_lbl.text = SNIPER_F0
 
 func _physics_process(delta: float) -> void:
 	if _buff_timer > 0.0:
@@ -95,6 +111,10 @@ func _physics_process(delta: float) -> void:
 		_player = get_tree().get_first_node_in_group("player")
 	if not is_instance_valid(_player):
 		return
+
+	var raw_vel := (_player.global_position - _prev_player_pos) / delta
+	_player_vel_est = _player_vel_est.lerp(raw_vel, 0.15)
+	_prev_player_pos = _player.global_position
 
 	if not _has_aggro:
 		_sight_timer -= delta
@@ -177,17 +197,16 @@ func _pick_wander_dir() -> void:
 		_wander_timer = randf_range(1.0, 3.0)
 
 func _tick_anim(delta: float) -> void:
-	var lbl := get_node_or_null("AsciiChar")
-	if lbl == null:
+	if _lbl == null:
 		return
 	if _hit_flash_t > 0.0:
 		_hit_flash_t -= delta
-		lbl.modulate = Color(1.0, 0.3, 0.3)
+		_lbl.modulate = Color(1.0, 0.3, 0.3)
 	elif _winding_up:
 		var progress := _windup_elapsed / WINDUP_TIME
-		lbl.modulate = Color(1.0, lerpf(1.0, 0.08, progress), lerpf(1.0, 0.0, progress))
+		_lbl.modulate = Color(1.0, lerpf(1.0, 0.08, progress), lerpf(1.0, 0.0, progress))
 	else:
-		lbl.modulate = _get_status_modulate()
+		_lbl.modulate = _get_status_modulate()
 
 func _get_status_modulate() -> Color:
 	if _frozen:
@@ -231,13 +250,42 @@ func _check_sight() -> void:
 func _tick_shoot(delta: float) -> void:
 	if _winding_up:
 		_windup_elapsed += delta
+		# Cancel windup the moment LOS is broken — no firing through walls
+		if not _has_los_to_player():
+			_abort_windup()
+			return
 		_update_windup_visual()
 		if _windup_elapsed >= WINDUP_TIME:
 			_finish_windup()
 		return
 	_shoot_timer -= delta
 	if _shoot_timer <= 0.0 and _stun_timer <= 0.0 and _no_attack_timer <= 0.0:
-		_start_windup()
+		# Only commit to a shot when we actually have line of sight
+		if _has_los_to_player():
+			_start_windup()
+
+func _has_los_to_player() -> bool:
+	if not is_instance_valid(_player):
+		return false
+	var space := get_world_2d().direct_space_state
+	var query := PhysicsRayQueryParameters2D.create(global_position, _player.global_position)
+	query.exclude = [get_rid()]
+	query.collision_mask = 1   # walls (layer 1), not other enemies (layer 2)
+	var hit := space.intersect_ray(query)
+	if hit.is_empty():
+		return true
+	return hit.get("collider") == _player
+
+func _abort_windup() -> void:
+	_winding_up = false
+	_windup_elapsed = 0.0
+	_shoot_timer = 0.4   # short recheck delay so we re-engage quickly when LOS returns
+	if _aim_line != null:
+		_aim_line.queue_free()
+		_aim_line = null
+	var lbl := get_node_or_null("AsciiChar")
+	if lbl:
+		lbl.text = SNIPER_F0
 
 func _start_windup() -> void:
 	_winding_up    = true
@@ -258,8 +306,9 @@ func _update_windup_visual() -> void:
 		return
 	var progress := _windup_elapsed / WINDUP_TIME
 	_aim_line.default_color = Color(1.0, lerpf(0.5, 0.05, progress), 0.0, lerpf(0.15, 0.9, progress))
-	var dir := (_player.global_position - global_position).normalized()
-	_aim_line.set_point_position(1, to_local(global_position + dir * 640.0))
+	var predicted := _player.global_position + _player_vel_est * 0.2
+	var dir := (predicted - global_position).normalized()
+	_aim_line.set_point_position(1, to_local(global_position + dir * 1200.0))
 
 func _finish_windup() -> void:
 	_winding_up     = false
@@ -274,9 +323,10 @@ func _finish_windup() -> void:
 	if not is_instance_valid(_player):
 		return
 
-	# Instant beam — raycast to find hit point
-	var dir := (_player.global_position - global_position).normalized()
-	var beam_end := global_position + dir * 680.0
+	# Instant beam — raycast to find hit point (aim at predicted position)
+	var predicted := _player.global_position + _player_vel_est * 0.2
+	var dir := (predicted - global_position).normalized()
+	var beam_end := global_position + dir * 1200.0
 	var space  := get_world_2d().direct_space_state
 	var params := PhysicsRayQueryParameters2D.create(global_position, beam_end)
 	params.exclude = [get_rid()]
@@ -340,6 +390,8 @@ func _tick_status(delta: float) -> void:
 		_stun_timer -= delta
 	if _no_attack_timer > 0.0:
 		_no_attack_timer -= delta
+	if _dmg_text_cd > 0.0:
+		_dmg_text_cd -= delta
 	if _poisoned:
 		_poison_timer -= delta
 		if _poison_timer <= 0.0:
@@ -361,29 +413,21 @@ func apply_status(effect: String, _duration: float) -> void:
 				_frozen = true
 				_frozen_timer = 4.5
 				FloatingText.spawn_str(global_position, "FROZEN!", Color(0.7, 0.95, 1.0), get_tree().current_scene)
-			else:
-				FloatingText.spawn_str(global_position, "CHILL %d/10" % _chill_stacks, Color(0.45, 0.82, 1.0), get_tree().current_scene)
 		"burn_hit":
 			_burn_stacks = mini(_burn_stacks + 1, 10)
 			if _burn_stacks >= 10:
 				_burn_stacks = 0
 				_trigger_enflamed()
-			else:
-				FloatingText.spawn_str(global_position, "BURN %d/10" % _burn_stacks, Color(1.0, 0.55, 0.2), get_tree().current_scene)
 		"shock_hit":
 			_shock_stacks = mini(_shock_stacks + 1, 10)
 			if _shock_stacks >= 10:
 				_shock_stacks = 0
 				_trigger_electrified()
-			else:
-				FloatingText.spawn_str(global_position, "SHOCK %d/10" % _shock_stacks, Color(0.7, 0.85, 1.0), get_tree().current_scene)
 		"poison_hit":
 			_poison_stacks = mini(_poison_stacks + 1, 10)
 			if _poison_stacks >= 10:
 				_poison_stacks = 0
 				_trigger_poisoned()
-			else:
-				FloatingText.spawn_str(global_position, "VENOM %d/10" % _poison_stacks, Color(0.35, 1.0, 0.4), get_tree().current_scene)
 
 func _add_burn_stacks(count: int) -> void:
 	_burn_stacks = mini(_burn_stacks + count, 9)
@@ -392,6 +436,10 @@ func _trigger_enflamed() -> void:
 	FloatingText.spawn_str(global_position, "ENFLAMED!", Color(1.0, 0.3, 0.0), get_tree().current_scene)
 	_enflamed      = true
 	_enflame_timer = 5.0
+	var fp := Node2D.new()
+	fp.set_script(FIRE_PATCH_SCRIPT)
+	fp.global_position = global_position
+	get_tree().current_scene.add_child(fp)
 	_enflame_tick  = 0.0
 	take_damage(12)
 	if not is_instance_valid(self): return
@@ -437,15 +485,16 @@ func take_damage(amount: int) -> void:
 	var actual := int(float(amount) * 1.25) if (_frozen or _chill_stacks > 0) else amount
 	health -= actual
 	_hit_flash_t = 0.14
-	FloatingText.spawn(global_position, actual, false, get_tree().current_scene)
+	if _dmg_text_cd <= 0.0:
+		FloatingText.spawn(global_position, actual, false, get_tree().current_scene)
+		_dmg_text_cd = 0.22
 	_update_health_bar()
 	if elite_modifier == 3 and not _enrage_triggered and health > 0 and health * 2 <= max_health:
 		_enrage_triggered = true
 		move_speed *= 1.5
 		FloatingText.spawn_str(global_position, "ENRAGED!", Color(1.0, 0.15, 0.0), get_tree().current_scene)
-		var lbl := get_node_or_null("AsciiChar")
-		if lbl:
-			lbl.add_theme_color_override("font_color", Color(1.0, 0.2, 0.0))
+		if _lbl:
+			_lbl.add_theme_color_override("font_color", Color(1.0, 0.2, 0.0))
 	if health <= 0:
 		GameState.kills += 1
 		GameState.add_xp(6)
@@ -462,7 +511,7 @@ func _drop_champion_loot() -> void:
 	for _i in 2:
 		var bag := LOOT_BAG_SCENE.instantiate()
 		bag.global_position = global_position + Vector2(randf_range(-32, 32), randf_range(-32, 32))
-		bag.items = [ItemDB.random_legendary()]
+		bag.items = [ItemDB.random_drop()]
 		get_tree().current_scene.call_deferred("add_child", bag)
 
 func _do_split() -> void:
@@ -480,18 +529,20 @@ func _do_split() -> void:
 		enemies_node.call_deferred("add_child", clone)
 
 func _drop_gold() -> void:
+	if GameState.test_mode:
+		GameState.gold += int(randi_range(2, 6) * (3 if is_elite else 1) * GameState.loot_multiplier)
+		return
 	var gold := GOLD_PICKUP_SCENE.instantiate()
 	gold.global_position = global_position
 	gold.value = int(randi_range(2, 6) * (3 if is_elite else 1) * GameState.loot_multiplier)
 	get_tree().current_scene.call_deferred("add_child", gold)
-	if is_elite or randi() % 100 < 35:
+	if (is_elite and randi() % 100 < 55) or randi() % 100 < 10:
 		var bag := LOOT_BAG_SCENE.instantiate()
 		bag.global_position = global_position + Vector2(randf_range(-20, 20), randf_range(-20, 20))
 		get_tree().current_scene.call_deferred("add_child", bag)
 
 func _update_health_bar() -> void:
-	var bar := get_node_or_null("HealthBar/Foreground")
-	if bar == null:
+	if _health_bar_fg == null:
 		return
 	var ratio := clampf(float(health) / float(max_health), 0.0, 1.0)
-	bar.offset_right = -20.0 + 40.0 * ratio
+	_health_bar_fg.offset_right = -20.0 + 40.0 * ratio

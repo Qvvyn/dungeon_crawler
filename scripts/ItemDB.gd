@@ -217,17 +217,17 @@ static func generate_wand(rarity: int = Item.RARITY_COMMON) -> Item:
 		Item.RARITY_COMMON:
 			item.wand_damage     = randi_range(2, 3)
 			item.wand_fire_rate  = randf_range(0.18, 0.32)
-			item.wand_mana_cost  = randf_range(3.0, 7.0)
+			item.wand_mana_cost  = randf_range(2.0, 5.0)
 			item.wand_proj_speed = randf_range(500.0, 650.0)
 		Item.RARITY_RARE:
 			item.wand_damage     = randi_range(3, 5)
 			item.wand_fire_rate  = randf_range(0.12, 0.24)
-			item.wand_mana_cost  = randf_range(6.0, 12.0)
+			item.wand_mana_cost  = randf_range(4.0, 8.5)
 			item.wand_proj_speed = randf_range(580.0, 750.0)
 		Item.RARITY_LEGENDARY:
 			item.wand_damage     = randi_range(5, 10)
 			item.wand_fire_rate  = randf_range(0.08, 0.16)
-			item.wand_mana_cost  = randf_range(10.0, 20.0)
+			item.wand_mana_cost  = randf_range(7.0, 14.0)
 			item.wand_proj_speed = randf_range(650.0, 900.0)
 
 	# Shoot-type specific adjustments
@@ -243,7 +243,7 @@ static func generate_wand(rarity: int = Item.RARITY_COMMON) -> Item:
 			item.wand_mana_cost *= 1.2
 		"beam":
 			item.wand_damage    = randi_range(2, 3 + rarity)
-			item.wand_mana_cost = randf_range(15.0, 30.0)   # per second
+			item.wand_mana_cost = randf_range(11.0, 22.0)   # per second
 
 	# Power score → flaw count
 	var power: float = float(item.wand_damage) * (1.0 / maxf(item.wand_fire_rate, 0.01))

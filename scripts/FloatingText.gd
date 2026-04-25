@@ -2,6 +2,14 @@ class_name FloatingText
 # Static utility — call FloatingText.spawn() from any script.
 # No autoload needed; class_name makes it globally visible once the file is parsed.
 
+# Hard cap on concurrent floaters so busy combat rooms don't spawn hundreds of
+# Labels + Tweens per second. Excess spawn calls are silently dropped.
+const MAX_ACTIVE := 32
+static var _active_count: int = 0
+
+static func _decrement() -> void:
+	_active_count = maxi(0, _active_count - 1)
+
 static func _setup_label(label: Label, col: Color) -> void:
 	label.size = Vector2(160, 28)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -12,6 +20,9 @@ static func _setup_label(label: Label, col: Color) -> void:
 	label.z_index = 100
 
 static func spawn_str(world_pos: Vector2, text: String, col: Color, parent: Node) -> void:
+	if _active_count >= MAX_ACTIVE:
+		return
+	_active_count += 1
 	var label := Label.new()
 	label.text = text
 	_setup_label(label, col)
@@ -20,9 +31,13 @@ static func spawn_str(world_pos: Vector2, text: String, col: Color, parent: Node
 	var tween := label.create_tween()
 	tween.tween_property(label, "position", label.position + Vector2(0.0, -50.0), 0.85)
 	tween.parallel().tween_property(label, "modulate:a", 0.0, 0.85)
+	tween.tween_callback(_decrement)
 	tween.tween_callback(label.queue_free)
 
 static func spawn(world_pos: Vector2, value: int, is_heal: bool, parent: Node, custom_color: Color = Color.TRANSPARENT) -> void:
+	if _active_count >= MAX_ACTIVE:
+		return
+	_active_count += 1
 	var label := Label.new()
 	label.text = ("+" if is_heal else "") + str(value)
 	var col: Color
@@ -37,4 +52,5 @@ static func spawn(world_pos: Vector2, value: int, is_heal: bool, parent: Node, c
 	var tween := label.create_tween()
 	tween.tween_property(label, "position", label.position + Vector2(0.0, -50.0), 0.85)
 	tween.parallel().tween_property(label, "modulate:a", 0.0, 0.85)
+	tween.tween_callback(_decrement)
 	tween.tween_callback(label.queue_free)

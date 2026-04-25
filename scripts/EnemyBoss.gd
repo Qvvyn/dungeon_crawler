@@ -3,6 +3,7 @@ extends CharacterBody2D
 const GOLD_PICKUP_SCENE  := preload("res://scenes/GoldPickup.tscn")
 const LOOT_BAG_SCENE     := preload("res://scenes/LootBag.tscn")
 const PROJECTILE_SCENE   := preload("res://scenes/Projectile.tscn")
+const FIRE_PATCH_SCRIPT  := preload("res://scripts/FirePatch.gd")
 
 @export var max_health: int = 40
 
@@ -18,6 +19,19 @@ var _shoot_timer: float     = 0.5
 var _teleport_timer: float  = 10.0
 var _phase: int             = 1
 
+# Phase 2+ charge attack — mirrors the Charger enemy
+enum ChargeState { IDLE, TELEGRAPH, DASH, COOLDOWN }
+var _charge_state: int     = ChargeState.IDLE
+var _charge_t: float       = 9.0   # initial delay before first charge
+var _charge_dir: Vector2   = Vector2.ZERO
+var _charge_line: Line2D   = null
+var _charge_hit: bool      = false
+const CHARGE_INTERVAL: float  = 7.0
+const CHARGE_TELEGRAPH: float = 0.55
+const CHARGE_DURATION: float  = 0.50
+const CHARGE_SPEED: float     = 720.0
+const CHARGE_DAMAGE: int      = 3
+
 const SPEED_P1       := 100.0
 const SPEED_P2       := 160.0
 const SPEED_P3       := 220.0
@@ -29,6 +43,8 @@ const PREFERRED_DIST := 250.0
 var _spiral_angle: float  = 0.0
 var _boss_canvas: CanvasLayer = null
 var _boss_bar_fg: ColorRect   = null
+var _fire_telegraph_ring: Line2D = null
+const FIRE_TELEGRAPH_LEAD: float = 0.45
 
 # ── Status effects (15-stack threshold for boss) ──────────────────────────────
 # FREEZE
@@ -60,10 +76,15 @@ const BOSS_STACK_THRESHOLD := 15
 func _ready() -> void:
 	health = max_health
 	add_to_group("enemy")
+	add_to_group("boss")
+	collision_layer = 2
+	collision_mask  = 1
 	_player = get_tree().get_first_node_in_group("player")
 	_update_health_bar()
 	_create_boss_bar()
 	FloatingText.spawn_str(global_position, "BOSS!", Color(1.0, 0.2, 0.0), get_tree().current_scene)
+	if SoundManager:
+		SoundManager.play("boss_roar")
 	var lbl := get_node_or_null("AsciiChar")
 	if lbl:
 		var mono := SystemFont.new()
@@ -91,14 +112,45 @@ func _physics_process(delta: float) -> void:
 	if _phase == 1 and health * 2 <= max_health:
 		_phase = 2
 		FloatingText.spawn_str(global_position, "ENRAGED!", Color(1.0, 0.0, 0.0), get_tree().current_scene)
+		if SoundManager: SoundManager.play("boss_phase")
 	if _phase == 2 and health * 4 <= max_health:
 		_phase = 3
 		FloatingText.spawn_str(global_position, "PHASE 3!", Color(1.0, 0.0, 0.5), get_tree().current_scene)
+		if SoundManager: SoundManager.play("boss_phase")
 
 	if _frozen or _stun_timer > 0.0:
 		velocity = Vector2.ZERO
 		move_and_slide()
 		return
+
+	# Phase 2+ charge attack overrides normal movement while active
+	if _phase >= 2:
+		_charge_t -= delta
+		match _charge_state:
+			ChargeState.IDLE:
+				if _charge_t <= 0.0 and _no_attack_timer <= 0.0:
+					_enter_charge_telegraph()
+			ChargeState.TELEGRAPH:
+				velocity = Vector2.ZERO
+				move_and_slide()
+				_update_charge_line()
+				if _charge_t <= 0.0:
+					_enter_charge_dash()
+				return
+			ChargeState.DASH:
+				velocity = _charge_dir * CHARGE_SPEED
+				move_and_slide()
+				if not _charge_hit and global_position.distance_to(_player.global_position) <= 34.0:
+					if _player.has_method("take_damage"):
+						_player.take_damage(CHARGE_DAMAGE)
+					_charge_hit = true
+				if _charge_t <= 0.0 or get_slide_collision_count() > 0:
+					_enter_charge_cooldown()
+				return
+			ChargeState.COOLDOWN:
+				if _charge_t <= 0.0:
+					_charge_state = ChargeState.IDLE
+					_charge_t = CHARGE_INTERVAL
 
 	var slow_mult := clampf(1.0 - float(_chill_stacks) * 0.067, 0.0, 1.0)  # 15 stacks = full stop
 	var spd := SPEED_P3 if _phase == 3 else (SPEED_P2 if _phase == 2 else SPEED_P1)
@@ -114,9 +166,13 @@ func _physics_process(delta: float) -> void:
 
 	var interval := SHOOT_INT_P3 if _phase == 3 else (SHOOT_INT_P2 if _phase == 2 else SHOOT_INT_P1)
 	_shoot_timer -= delta
+	# Telegraph the upcoming burst with a pulsing ring around the boss so the
+	# player can pre-position before pellets spray out.
+	_update_fire_telegraph()
 	if _shoot_timer <= 0.0 and _stun_timer <= 0.0 and _no_attack_timer <= 0.0:
 		_shoot_timer = interval
 		_fire()
+		_clear_fire_telegraph()
 
 	_teleport_timer -= delta
 	if _teleport_timer <= 0.0:
@@ -221,6 +277,10 @@ func _trigger_enflamed() -> void:
 	_enflamed      = true
 	_enflame_timer = 5.0
 	_enflame_tick  = 0.0
+	var fp := Node2D.new()
+	fp.set_script(FIRE_PATCH_SCRIPT)
+	fp.global_position = global_position
+	get_tree().current_scene.add_child(fp)
 	take_damage(12)
 	if not is_instance_valid(self): return
 	for enemy in get_tree().get_nodes_in_group("enemy"):
@@ -297,10 +357,76 @@ func _fire() -> void:
 		proj.set("speed", 240.0)
 		get_tree().current_scene.add_child(proj)
 
+func _update_fire_telegraph() -> void:
+	if _shoot_timer > FIRE_TELEGRAPH_LEAD or _stun_timer > 0.0 or _no_attack_timer > 0.0:
+		_clear_fire_telegraph()
+		return
+	if _fire_telegraph_ring == null:
+		_fire_telegraph_ring = Line2D.new()
+		_fire_telegraph_ring.width = 3.0
+		_fire_telegraph_ring.z_index = -1
+		var radius := 32.0
+		var segs := 28
+		for i in segs + 1:
+			var a := (TAU / float(segs)) * float(i)
+			_fire_telegraph_ring.add_point(Vector2(cos(a), sin(a)) * radius)
+		add_child(_fire_telegraph_ring)
+	# Color: dim red far from firing → bright red just before the burst.
+	var t: float = clampf(1.0 - (_shoot_timer / FIRE_TELEGRAPH_LEAD), 0.0, 1.0)
+	_fire_telegraph_ring.default_color = Color(1.0, lerpf(0.4, 0.05, t), 0.05,
+		0.35 + 0.55 * t)
+
+func _clear_fire_telegraph() -> void:
+	if is_instance_valid(_fire_telegraph_ring):
+		_fire_telegraph_ring.queue_free()
+	_fire_telegraph_ring = null
+
 func _teleport() -> void:
 	var offset := Vector2(randf_range(-240.0, 240.0), randf_range(-240.0, 240.0))
 	global_position += offset
 	FloatingText.spawn_str(global_position, "!", Color(0.8, 0.1, 1.0), get_tree().current_scene)
+
+# ── Charge attack (phase 2+) ──────────────────────────────────────────────────
+func _enter_charge_telegraph() -> void:
+	_charge_state = ChargeState.TELEGRAPH
+	_charge_t = CHARGE_TELEGRAPH
+	_charge_hit = false
+	if _charge_line == null:
+		_charge_line = Line2D.new()
+		_charge_line.width = 4.0
+		_charge_line.default_color = Color(1.0, 0.2, 0.0, 0.7)
+		_charge_line.z_index = -1
+		get_tree().current_scene.add_child(_charge_line)
+	_update_charge_line()
+
+func _update_charge_line() -> void:
+	if _charge_line == null or not is_instance_valid(_player):
+		return
+	_charge_dir = (_player.global_position - global_position).normalized()
+	_charge_line.clear_points()
+	_charge_line.add_point(global_position)
+	_charge_line.add_point(global_position + _charge_dir * (CHARGE_SPEED * CHARGE_DURATION))
+
+func _enter_charge_dash() -> void:
+	_charge_state = ChargeState.DASH
+	_charge_t = CHARGE_DURATION
+	if is_instance_valid(_charge_line):
+		_charge_line.queue_free()
+	_charge_line = null
+	if SoundManager:
+		SoundManager.play("whoosh", randf_range(0.85, 1.0))
+
+func _enter_charge_cooldown() -> void:
+	_charge_state = ChargeState.COOLDOWN
+	_charge_t = 1.2
+	if is_instance_valid(_charge_line):
+		_charge_line.queue_free()
+	_charge_line = null
+
+func _exit_tree() -> void:
+	if is_instance_valid(_charge_line):
+		_charge_line.queue_free()
+	_charge_line = null
 
 # ── Shared ────────────────────────────────────────────────────────────────────
 
@@ -359,7 +485,7 @@ func _drop_loot() -> void:
 		get_tree().current_scene.call_deferred("add_child", gold)
 	var bag := LOOT_BAG_SCENE.instantiate()
 	bag.global_position = global_position
-	bag.items = [ItemDB.random_legendary(), ItemDB.random_legendary()]
+	bag.items = [ItemDB.random_drop(), ItemDB.random_drop(), ItemDB.random_drop()]
 	get_tree().current_scene.call_deferred("add_child", bag)
 
 func _update_health_bar() -> void:

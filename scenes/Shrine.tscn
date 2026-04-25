@@ -1,0 +1,27 @@
+[gd_scene load_steps=3 format=3 uid="uid://shrine_scene"]
+
+[ext_resource type="Script" path="res://scripts/Shrine.gd" id="1_shrine"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_shrine"]
+size = Vector2(28, 28)
+
+[node name="Shrine" type="Area2D"]
+script = ExtResource("1_shrine")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("RectangleShape2D_shrine")
+
+[node name="AsciiChar" type="Label" parent="."]
+z_index = 1
+offset_left = -22.0
+offset_top = -22.0
+offset_right = 22.0
+offset_bottom = 22.0
+text = "+"
+horizontal_alignment = 1
+vertical_alignment = 1
+theme_override_font_sizes/font_size = 14
+theme_override_constants/line_separation = -3
+theme_override_colors/font_color = Color(0.85, 0.9, 1.0, 1)
+theme_override_colors/font_outline_color = Color(0.05, 0.05, 0.15, 0.8)
+theme_override_constants/outline_size = 2

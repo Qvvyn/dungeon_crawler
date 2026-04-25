@@ -1,0 +1,51 @@
+[gd_scene load_steps=3 format=3 uid="uid://enemy_missile_turret"]
+
+[ext_resource type="Script" path="res://scripts/EnemyMissileTurret.gd" id="1_mturret"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_1"]
+size = Vector2(40, 40)
+
+[node name="EnemyMissileTurret" type="CharacterBody2D" groups=["enemy"]]
+script = ExtResource("1_mturret")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("RectangleShape2D_1")
+
+[node name="Visual" type="ColorRect" parent="."]
+visible = false
+offset_left = -20.0
+offset_top = -20.0
+offset_right = 20.0
+offset_bottom = 20.0
+color = Color(0.7, 0.7, 0.75, 1)
+
+[node name="AsciiChar" type="Label" parent="."]
+z_index = 2
+offset_left = -20.0
+offset_top = -20.0
+offset_right = 20.0
+offset_bottom = 20.0
+text = "T"
+horizontal_alignment = 1
+vertical_alignment = 1
+theme_override_font_sizes/font_size = 36
+theme_override_colors/font_color = Color(0.85, 0.55, 0.55, 1)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
+theme_override_constants/outline_size = 3
+
+[node name="HealthBar" type="Node2D" parent="."]
+position = Vector2(0, 30)
+
+[node name="Background" type="ColorRect" parent="HealthBar"]
+offset_left = -20.0
+offset_top = -3.0
+offset_right = 20.0
+offset_bottom = 3.0
+color = Color(0.25, 0.05, 0.05, 1)
+
+[node name="Foreground" type="ColorRect" parent="HealthBar"]
+offset_left = -20.0
+offset_top = -3.0
+offset_right = 20.0
+offset_bottom = 3.0
+color = Color(0.85, 0.55, 0.55, 1)

@@ -16,10 +16,8 @@ func _ready() -> void:
 		var count := randi_range(1, 3)
 		for _i in count:
 			items.append(ItemDB.random_drop())
-		# At difficulty 3+ a rare legendary can appear (~5–15% chance, scaling with difficulty)
-		var leg_chance := clampf((GameState.difficulty - 2.0) * 0.05, 0.0, 0.20)
-		if leg_chance > 0.0 and randf() < leg_chance:
-			items.append(ItemDB.random_legendary())
+
+	_recolor_by_rarity()
 
 	_hint = Label.new()
 	_hint.text = "[E] Loot"
@@ -113,9 +111,36 @@ func _open_popup() -> void:
 
 func receive_item(item: Item) -> void:
 	items.append(item)
+	_recolor_by_rarity()
 	if _popup != null:
 		_close_popup()
 		_open_popup()
+
+# Tints the ASCII glyph by the highest-rarity item still in the bag, so the
+# player can spot good drops at a glance:
+#   LEGENDARY → purple "$", RARE → white "$", COMMON → bronze "$".
+func _recolor_by_rarity() -> void:
+	var visual := get_node_or_null("Visual") as Label
+	if visual == null:
+		return
+	var max_r: int = -1
+	for it in items:
+		if it is Item and (it as Item).rarity > max_r:
+			max_r = (it as Item).rarity
+	var col: Color
+	var glyph: String = "$"
+	match max_r:
+		Item.RARITY_LEGENDARY:
+			col = Color(0.78, 0.32, 1.00)   # purple — top tier
+		Item.RARITY_RARE:
+			col = Color(0.95, 0.95, 0.95)   # white — second tier
+		Item.RARITY_COMMON:
+			col = Color(0.85, 0.55, 0.15)   # bronze — common (brighter so it reads on dark floors)
+		_:
+			col = Color(0.55, 0.55, 0.55)   # empty/unknown — gray
+	visual.text = glyph
+	visual.add_theme_color_override("font_color", col)
+	visual.add_theme_color_override("font_outline_color", col.darkened(0.7))
 
 func _close_popup() -> void:
 	if _popup:

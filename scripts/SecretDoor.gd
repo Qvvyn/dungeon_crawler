@@ -9,6 +9,7 @@ var _player_nearby: bool = false
 var _hint: Label = null
 
 func _ready() -> void:
+	add_to_group("secret_door")
 	# Tint the visual to match the current wall colour
 	var vis := get_node_or_null("Visual")
 	if vis:
@@ -29,19 +30,25 @@ func _ready() -> void:
 
 func _process(_delta: float) -> void:
 	if _player_nearby and Input.is_action_just_pressed("interact"):
-		FloatingText.spawn_str(global_position, "SECRET FOUND!",
-			Color(1.0, 0.9, 0.2), get_tree().current_scene)
-		if not loot_items.is_empty():
-			var bag := LOOT_BAG_SCENE.instantiate()
-			bag.position = loot_world_pos
-			bag.set("items", loot_items)
-			get_tree().current_scene.add_child(bag)
-		queue_free()
+		_trigger_open()
+
+func _trigger_open() -> void:
+	FloatingText.spawn_str(global_position, "SECRET FOUND!",
+		Color(1.0, 0.9, 0.2), get_tree().current_scene)
+	if not loot_items.is_empty():
+		var bag := LOOT_BAG_SCENE.instantiate()
+		bag.position = loot_world_pos
+		bag.set("items", loot_items)
+		get_tree().current_scene.add_child(bag)
+	queue_free()
 
 func _on_detect_entered(body: Node2D) -> void:
 	if body.is_in_group("player"):
 		_player_nearby = true
 		_hint.visible = true
+		# Autoplay auto-triggers so it doesn't get hung up on the door body
+		if body.get("_autoplay") == true:
+			_trigger_open()
 
 func _on_detect_exited(body: Node2D) -> void:
 	if body.is_in_group("player"):

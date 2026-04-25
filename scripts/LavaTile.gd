@@ -9,6 +9,7 @@ var _pulse_t: float      = 0.0
 var _label: Label        = null
 
 func _ready() -> void:
+	add_to_group("hazard")
 	var cshape := CollisionShape2D.new()
 	var shape  := CircleShape2D.new()
 	shape.radius = 12.0

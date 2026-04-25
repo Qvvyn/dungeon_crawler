@@ -12,6 +12,12 @@ var _shoot_cooldown: float = 0.0
 var _is_dead: bool = false
 var _is_paused: bool = false
 var _pause_menu: CanvasLayer = null
+var _pause_weapons_label: Label = null
+# Current sort key for the pause-menu weapon panel — "damage" / "kills" / "floors" / "type".
+var _pause_weapons_sort: String = "damage"
+# Settings sub-panel — overlays the main pause panel when visible.
+var _settings_root: Node = null
+var _pause_main_buttons: Array = []   # nodes hidden when settings is open
 var _buff_timer: float = 0.0
 var _speed_multiplier: float = 1.0
 var _fire_rate_multiplier: float = 1.0
@@ -62,7 +68,7 @@ var _is_invincible:    bool = false
 const DASH_SPEED           := 900.0
 const DASH_DURATION        := 0.18
 var _dash_base_cooldown: float = 1.5
-const BASE_SHOT_MANA_COST  := 3.0   # mana cost when firing without a wand equipped
+const BASE_SHOT_MANA_COST  := 2.0   # mana cost when firing without a wand equipped
 
 # Stamina
 var stamina:           float = 100.0
@@ -138,6 +144,9 @@ var _autoplay_enemy_dmg_t: float = 0.0
 # World positions the bot has decided to route around (e.g. teleporter pads it
 # has already triggered once). Marked solid in the A* grid on rebuild.
 var _autoplay_avoid_positions: Array = []
+# Sprint mode normally ignores loot. We allow one detour per floor for a
+# clearly-worth-it bag (rare+) — counter resets when scene reloads.
+var _autoplay_sprint_detours_used: int = 0
 
 # Knockback
 var _knockback_vel:   Vector2 = Vector2.ZERO
@@ -495,13 +504,53 @@ func _setup_pause_menu() -> void:
 	stats_title.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
 	_pause_menu.add_child(stats_title)
 	var stats_help := Label.new()
-	stats_help.text = "STR  +1 damage per point\nDEX  faster firing per point\nAGI  +4 move speed per point\nVIT  +1 max HP per point\nEND  +4 max stamina per point\nINT  scales elemental effects\nWIS  +1.5 mana/sec per point\nSPR  +0.05 HP/sec per point\nDEF  +1% block per point\nLCK  +0.5% crit per point"
+	stats_help.text = "STR  +1 damage per point\nDEX  faster firing per point\nAGI  +4 move speed per point\nVIT  +1 max HP per point\nEND  +4 max stamina per point\nINT  scales elemental effects\nWIS  +2 mana/sec per point\nSPR  +0.05 HP/sec per point\nDEF  +1% block per point\nLCK  +0.5% crit per point"
 	stats_help.position = Vector2(1048, 282)
 	stats_help.size     = Vector2(260, 320)
 	stats_help.add_theme_font_size_override("font_size", 13)
 	stats_help.add_theme_color_override("font_color", Color(0.85, 0.9, 1.0))
 	stats_help.add_theme_constant_override("line_separation", 8)
 	_pause_menu.add_child(stats_help)
+
+	# Per-weapon usage panel — sits to the left of the main pause panel.
+	# Lists kills, damage, and floors used for each shoot_type the player has
+	# touched this run. Refreshed every time the menu opens.
+	var w_border := ColorRect.new()
+	w_border.color    = Color(0.35, 0.22, 0.20, 0.9)
+	w_border.position = Vector2(280, 230)
+	w_border.size     = Vector2(290, 380)
+	_pause_menu.add_child(w_border)
+	var w_inner := ColorRect.new()
+	w_inner.color    = Color(0.07, 0.04, 0.04, 0.97)
+	w_inner.position = Vector2(283, 233)
+	w_inner.size     = Vector2(284, 374)
+	_pause_menu.add_child(w_inner)
+	var w_title := Label.new()
+	w_title.text = "— WEAPON USE —  (click to cycle sort)"
+	w_title.position = Vector2(283, 244)
+	w_title.size     = Vector2(284, 24)
+	w_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	w_title.add_theme_font_size_override("font_size", 12)
+	w_title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.6))
+	_pause_menu.add_child(w_title)
+	# Click anywhere on the title bar to cycle the sort key.
+	var sort_btn := Button.new()
+	sort_btn.flat = true
+	sort_btn.position = Vector2(283, 244)
+	sort_btn.size     = Vector2(284, 24)
+	sort_btn.pressed.connect(_cycle_pause_weapons_sort)
+	_pause_menu.add_child(sort_btn)
+	_pause_weapons_label = Label.new()
+	_pause_weapons_label.position = Vector2(296, 280)
+	_pause_weapons_label.size     = Vector2(264, 320)
+	_pause_weapons_label.add_theme_font_size_override("font_size", 12)
+	_pause_weapons_label.add_theme_color_override("font_color", Color(0.95, 0.9, 0.85))
+	_pause_weapons_label.add_theme_constant_override("line_separation", 4)
+	# Monospace font so the kill/damage/floor columns line up
+	var mono := SystemFont.new()
+	mono.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
+	_pause_weapons_label.add_theme_font_override("font", mono)
+	_pause_menu.add_child(_pause_weapons_label)
 
 	var title := Label.new()
 	title.text     = "— PAUSED —"
@@ -512,15 +561,14 @@ func _setup_pause_menu() -> void:
 	title.add_theme_color_override("font_color", Color(0.85, 0.75, 1.0))
 	_pause_menu.add_child(title)
 
-	_pause_btn("RESUME",       Vector2(640, 308), Color(0.4, 0.9, 0.5),  _resume_game)
-	_pause_btn("SAVE RUN",     Vector2(640, 368), Color(0.5, 0.75, 1.0), _save_run)
-	_pause_btn("TITLE SCREEN", Vector2(640, 428), Color(0.7, 0.55, 1.0), _on_title)
-	_pause_btn("QUIT",         Vector2(640, 488), Color(0.55, 0.55, 0.6),_on_quit)
-	_add_crt_toggle(Vector2(640, 548))
-	_add_volume_slider(612)
-	_add_difficulty_slider(672)
+	_pause_btn("RESUME",       Vector2(640, 308), Color(0.4, 0.9, 0.5),  _resume_game,    true)
+	_pause_btn("SAVE RUN",     Vector2(640, 368), Color(0.5, 0.75, 1.0), _save_run,       true)
+	_pause_btn("SETTINGS",     Vector2(640, 428), Color(0.85, 0.7, 1.0), _open_settings,  true)
+	_pause_btn("TITLE SCREEN", Vector2(640, 488), Color(0.7, 0.55, 1.0), _on_title,       true)
+	_pause_btn("QUIT",         Vector2(640, 548), Color(0.55, 0.55, 0.6),_on_quit,        true)
+	_build_settings_panel()
 
-func _pause_btn(txt: String, pos: Vector2, col: Color, cb: Callable) -> void:
+func _pause_btn(txt: String, pos: Vector2, col: Color, cb: Callable, is_main: bool = false) -> void:
 	var lbl := Label.new()
 	lbl.text     = "[ %s ]" % txt
 	lbl.position = pos
@@ -541,8 +589,79 @@ func _pause_btn(txt: String, pos: Vector2, col: Color, cb: Callable) -> void:
 		lbl.add_theme_color_override("font_color", col))
 	btn.pressed.connect(cb)
 	_pause_menu.add_child(btn)
+	if is_main:
+		_pause_main_buttons.append(lbl)
+		_pause_main_buttons.append(btn)
 
-func _add_crt_toggle(pos: Vector2) -> void:
+# Builds the settings sub-panel inside the pause menu — initially hidden.
+# Pressing the SETTINGS button toggles it on; BACK toggles it off.
+func _build_settings_panel() -> void:
+	_settings_root = Control.new()
+	_settings_root.position = Vector2.ZERO
+	_settings_root.size = Vector2(1600, 900)
+	_settings_root.visible = false
+	_settings_root.mouse_filter = Control.MOUSE_FILTER_PASS
+	_pause_menu.add_child(_settings_root)
+
+	var bg := ColorRect.new()
+	bg.color = Color(0.06, 0.04, 0.1, 0.97)
+	bg.position = Vector2(583, 290)
+	bg.size = Vector2(434, 460)
+	_settings_root.add_child(bg)
+
+	var title := Label.new()
+	title.text = "— SETTINGS —"
+	title.position = Vector2(586, 304)
+	title.size     = Vector2(428, 32)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 22)
+	title.add_theme_color_override("font_color", Color(0.85, 0.7, 1.0))
+	_settings_root.add_child(title)
+
+	_add_crt_toggle(Vector2(640, 360), _settings_root)
+	_add_volume_slider(420, _settings_root)
+	_add_difficulty_slider(496, _settings_root)
+
+	# BACK button
+	var back_lbl := Label.new()
+	back_lbl.text = "[ BACK ]"
+	back_lbl.position = Vector2(640, 678)
+	back_lbl.size = Vector2(320, 36)
+	back_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	back_lbl.add_theme_font_size_override("font_size", 20)
+	var back_col := Color(0.6, 0.85, 1.0)
+	back_lbl.add_theme_color_override("font_color", back_col)
+	_settings_root.add_child(back_lbl)
+	var back_btn := Button.new()
+	back_btn.flat = true
+	back_btn.position = Vector2(636, 676)
+	back_btn.size = Vector2(328, 40)
+	back_btn.mouse_entered.connect(func() -> void:
+		back_lbl.add_theme_color_override("font_color", back_col.lightened(0.35)))
+	back_btn.mouse_exited.connect(func() -> void:
+		back_lbl.add_theme_color_override("font_color", back_col))
+	back_btn.pressed.connect(_close_settings)
+	_settings_root.add_child(back_btn)
+
+func _open_settings() -> void:
+	if _settings_root == null:
+		return
+	_settings_root.visible = true
+	for n in _pause_main_buttons:
+		if is_instance_valid(n):
+			(n as CanvasItem).visible = false
+
+func _close_settings() -> void:
+	if _settings_root == null:
+		return
+	_settings_root.visible = false
+	for n in _pause_main_buttons:
+		if is_instance_valid(n):
+			(n as CanvasItem).visible = true
+
+func _add_crt_toggle(pos: Vector2, parent: Node = null) -> void:
+	if parent == null:
+		parent = _pause_menu
 	var col_on  := Color(0.55, 1.0, 0.55)
 	var col_off := Color(0.45, 0.45, 0.55)
 	var lbl := Label.new()
@@ -552,7 +671,7 @@ func _add_crt_toggle(pos: Vector2) -> void:
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lbl.add_theme_font_size_override("font_size", 17)
 	lbl.add_theme_color_override("font_color", col_on if GameState.crt_enabled else col_off)
-	_pause_menu.add_child(lbl)
+	parent.add_child(lbl)
 	var btn := Button.new()
 	btn.flat = true
 	btn.position = pos - Vector2(4, 2)
@@ -569,9 +688,11 @@ func _add_crt_toggle(pos: Vector2) -> void:
 		var scene := get_tree().current_scene
 		if scene.has_method("_apply_crt_state"):
 			scene._apply_crt_state())
-	_pause_menu.add_child(btn)
+	parent.add_child(btn)
 
-func _add_volume_slider(y: float) -> void:
+func _add_volume_slider(y: float, parent: Node = null) -> void:
+	if parent == null:
+		parent = _pause_menu
 	var col := Color(0.6, 0.85, 1.0)
 	var lbl := Label.new()
 	lbl.position = Vector2(640, y)
@@ -580,7 +701,7 @@ func _add_volume_slider(y: float) -> void:
 	lbl.add_theme_font_size_override("font_size", 15)
 	lbl.add_theme_color_override("font_color", col)
 	lbl.text = "VOLUME: %d%%" % int(GameState.master_volume * 100.0)
-	_pause_menu.add_child(lbl)
+	parent.add_child(lbl)
 
 	var slider := HSlider.new()
 	slider.min_value    = 0.0
@@ -590,14 +711,16 @@ func _add_volume_slider(y: float) -> void:
 	slider.position     = Vector2(608, y + 26)
 	slider.size         = Vector2(384, 24)
 	slider.process_mode = Node.PROCESS_MODE_ALWAYS
-	_pause_menu.add_child(slider)
+	parent.add_child(slider)
 	slider.value_changed.connect(func(v: float) -> void:
 		GameState.master_volume = v / 100.0
 		GameState._apply_volume()
 		GameState.save_settings()
 		lbl.text = "VOLUME: %d%%" % int(v))
 
-func _add_difficulty_slider(y: float) -> void:
+func _add_difficulty_slider(y: float, parent: Node = null) -> void:
+	if parent == null:
+		parent = _pause_menu
 	var col := Color(1.0, 0.72, 0.35)
 	var lbl := Label.new()
 	lbl.position = Vector2(640, y)
@@ -607,7 +730,7 @@ func _add_difficulty_slider(y: float) -> void:
 	lbl.add_theme_color_override("font_color", col)
 	var cur_diff := GameState.test_difficulty if GameState.test_mode else GameState.difficulty
 	lbl.text = "DIFFICULTY: %.1fx" % cur_diff
-	_pause_menu.add_child(lbl)
+	parent.add_child(lbl)
 
 	var slider := HSlider.new()
 	slider.min_value    = 0.5
@@ -617,7 +740,7 @@ func _add_difficulty_slider(y: float) -> void:
 	slider.position     = Vector2(608, y + 26)
 	slider.size         = Vector2(384, 24)
 	slider.process_mode = Node.PROCESS_MODE_ALWAYS
-	_pause_menu.add_child(slider)
+	parent.add_child(slider)
 	slider.value_changed.connect(func(v: float) -> void:
 		if GameState.test_mode:
 			GameState.test_difficulty = v
@@ -631,6 +754,59 @@ func _toggle_pause() -> void:
 	get_tree().paused = _is_paused
 	if _inventory_ui:
 		_inventory_ui.visible = false
+	if _is_paused:
+		_refresh_weapon_stats_panel()
+	else:
+		# Make sure the settings sub-panel doesn't linger on next pause-open.
+		_close_settings()
+
+# Formats GameState.weapon_stats into the pause-menu label. Sorted by total
+# damage so the most-used weapons appear first.
+func _refresh_weapon_stats_panel() -> void:
+	if _pause_weapons_label == null:
+		return
+	if GameState.weapon_stats.is_empty():
+		_pause_weapons_label.text = "(no weapons used yet)"
+		return
+	var rows: Array = []
+	for k in GameState.weapon_stats.keys():
+		var s: Dictionary = GameState.weapon_stats[k]
+		rows.append({
+			"type":   String(k),
+			"kills":  int(s.get("kills", 0)),
+			"damage": int(s.get("damage", 0)),
+			"floors": int((s.get("floors", {}) as Dictionary).size()),
+		})
+	var sort_key: String = _pause_weapons_sort
+	if sort_key == "type":
+		rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return String(a["type"]) < String(b["type"]))
+	else:
+		rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return int(a[sort_key]) > int(b[sort_key]))
+	# Header marks the active sort column with "*"
+	var col_marker := func(col: String) -> String:
+		return "*" if col == sort_key else " "
+	var lines: Array = ["%-9s%s%4s%s%6s%s%3s" % [
+			"TYPE",   col_marker.call("type"),
+			"KILL",   col_marker.call("kills"),
+			"DMG",    col_marker.call("damage"),
+			"FL",     col_marker.call("floors"),
+		]]
+	for r in rows:
+		var t: String = String(r["type"]).to_upper()
+		if t.length() > 9:
+			t = t.substr(0, 9)
+		lines.append("%-9s %4d  %6d  %3d" % [t, int(r["kills"]), int(r["damage"]), int(r["floors"])])
+	_pause_weapons_label.text = "\n".join(lines)
+
+# Cycles through sort keys — called by the weapon panel header button.
+func _cycle_pause_weapons_sort() -> void:
+	const ORDER := ["damage", "kills", "floors", "type"]
+	var idx := ORDER.find(_pause_weapons_sort)
+	idx = (idx + 1) % ORDER.size()
+	_pause_weapons_sort = ORDER[idx]
+	_refresh_weapon_stats_panel()
 
 func _resume_game() -> void:
 	_is_paused = false
@@ -832,10 +1008,14 @@ func _trigger_damage_flash(amount: int) -> void:
 	_damage_flash_tween = create_tween()
 	_damage_flash_tween.tween_property(_damage_flash, "color:a", 0.0, 0.32)
 
+const _SHAKE_INTENSITY_CAP: float = 22.0
 func camera_shake(intensity: float, duration: float) -> void:
 	var cam: Camera2D = get_node_or_null("Camera2D") as Camera2D
 	if cam == null:
 		return
+	# Hard cap on peak amplitude so back-to-back hits don't compound into a
+	# screen-flinging jitter — better feel than unbounded stacking.
+	intensity = minf(intensity, _SHAKE_INTENSITY_CAP)
 	if is_instance_valid(_shake_tween) and _shake_tween.is_running():
 		if cam.offset.length() > intensity:
 			return
@@ -865,7 +1045,7 @@ func _process(_delta: float) -> void:
 		_autoplay_perk_t -= _delta
 		if _autoplay_perk_t <= 0.0:
 			_autoplay_perk_t = 0.5
-			_apply_perk(PERKS[randi() % PERKS.size()])
+			_apply_perk(_autoplay_pick_perk())
 			return
 	if _is_paused:
 		return
@@ -998,6 +1178,7 @@ func _input(event: InputEvent) -> void:
 			if _autoplay:
 				_autoplay_sprint = not _autoplay_sprint
 				GameState.autoplay_sprint = _autoplay_sprint
+				GameState.save_settings()
 				FloatingText.spawn_str(global_position,
 					"SPRINT: " + ("ON" if _autoplay_sprint else "OFF"),
 					Color(0.6, 1.0, 0.4), get_tree().current_scene)
@@ -1012,8 +1193,11 @@ func _physics_process(delta: float) -> void:
 			_speed_multiplier = 1.0
 			_fire_rate_multiplier = 1.0
 	# Mana regen
-	var wisdom := BASE_WISDOM + _equip_wisdom_bonus + float(GameState.get_stat_bonus("WIS")) * 1.5
-	var mana_mult := 2.0 if GameState.floor_modifier == "arcane" else 1.0
+	var wisdom := BASE_WISDOM + _equip_wisdom_bonus + float(GameState.get_stat_bonus("WIS")) * 2.0
+	# ARCANE floor scales with difficulty — 2× at low diff, up to 3× at high.
+	var mana_mult: float = 1.0
+	if GameState.floor_modifier == "arcane":
+		mana_mult = 2.0 + 0.20 * maxf(0.0, GameState.difficulty - 1.0)
 	mana = minf(mana + wisdom * delta * mana_mult, max_mana)
 	# Stamina regen
 	stamina = minf(stamina + (STAMINA_REGEN + _stam_regen_bonus) * delta, max_stamina)
@@ -1266,7 +1450,14 @@ func _get_aim_pos() -> Vector2:
 		var flight_time: float = dist / max(proj_speed, 100.0)
 		# Cap lookahead so very fast/distant enemies don't make us aim at the wall
 		flight_time = clampf(flight_time, 0.0, 0.6)
-		return enemy_pos + enemy_vel * flight_time
+		var aim_target: Vector2 = enemy_pos + enemy_vel * flight_time
+		# "backwards" flaw flips the fire direction in _fire(); pre-mirror the
+		# aim point through the player so the reversed shot still reaches the
+		# enemy. Mirror: aim' = 2P - aim → fire dir = (aim' - P).normalized() =
+		# (P - aim).normalized(), which after the flaw's negation lands on aim.
+		if w != null and "backwards" in w.wand_flaws:
+			aim_target = global_position * 2.0 - aim_target
+		return aim_target
 	return get_global_mouse_position()
 
 func _wants_shoot() -> bool:
@@ -1329,10 +1520,46 @@ func _autoplay_find_visible_enemy() -> Node2D:
 			var max_hp_e: float = maxf(1.0, float(ne.get("max_health")))
 			var hp_ratio: float = float(ne.get("health")) / max_hp_e
 			score += (1.0 - hp_ratio) * 800.0
+		# Support enemies are force multipliers — kill them first so they stop
+		# buffing/spawning waves of others. Identify by script path.
+		var script_ref: Script = ne.get_script() as Script
+		if script_ref != null:
+			var path := script_ref.resource_path
+			if path.contains("EnemyEnchanter") or path.contains("EnemySummoner"):
+				score += 1200.0
+		# Frozen / chilled enemies take +25% damage (see EnemyBase.take_damage),
+		# and stunned ones can't fight back — both are great kill priorities.
+		if "_frozen" in ne and bool(ne.get("_frozen")):
+			score += 700.0
+		elif "_chill_stacks" in ne and int(ne.get("_chill_stacks")) > 0:
+			score += 250.0
+		if "_stun_timer" in ne and float(ne.get("_stun_timer")) > 0.0:
+			score += 400.0
 		if score > best_score:
 			best_score = score
 			best = ne
 	return best
+
+# Sprint mode only detours for clearly-valuable bags: any wand, or a rare /
+# legendary equipment upgrade. Cheaper commons aren't worth pausing the run.
+func _autoplay_bag_worth_sprint_detour(bag: Node) -> bool:
+	if not "items" in bag:
+		return false
+	for it in bag.get("items"):
+		if not (it is Item):
+			continue
+		var item: Item = it as Item
+		if item.type == Item.Type.WAND:
+			return true
+		var slot := item.get_equip_slot_name()
+		if slot == "":
+			continue
+		if item.rarity < Item.RARITY_RARE:
+			continue
+		var current: Item = InventoryManager.equipped.get(slot) as Item
+		if current == null or item.rarity > current.rarity:
+			return true
+	return false
 
 # True if the bag contains anything worth detouring for: any wand (always
 # considered) or any equipment piece that beats the current slot by rarity.
@@ -1411,6 +1638,12 @@ func _autoplay_try_loot() -> void:
 				resolved_any = true
 	# Immediately re-pick a target so the bot doesn't loiter on a freed/blacklisted bag
 	if resolved_any:
+		# Prune right after pickup so the next bag has somewhere to land
+		_autoplay_clear_junk()
+		# In sprint mode, count this as our one allowed detour for the floor
+		# so the bot doesn't keep diverting.
+		if _autoplay_sprint:
+			_autoplay_sprint_detours_used += 1
 		_autoplay_refresh_targets()
 		_autoplay_loot_target_t = 0.0
 
@@ -1425,6 +1658,61 @@ func _autoplay_clear_dir(dir: Vector2, dist: float) -> bool:
 	if hit.is_empty():
 		return true
 	return not (hit.get("collider") is StaticBody2D)
+
+# Defensive stance — triggered when HP drops below half in non-sprint runs.
+# Skips the close-range wand override, weights dodge force more heavily, and
+# adds an enemy-pressure repulsion force so the bot peels away from chasers.
+func _autoplay_is_defensive() -> bool:
+	if not _autoplay or _autoplay_sprint:
+		return false
+	var max_hp := _max_hp()
+	if max_hp <= 0:
+		return false
+	return float(health) / float(max_hp) < 0.50
+
+# Sums an away-from-nearby-enemies vector. Closer enemies push harder; far
+# enemies don't contribute. Used as an extra term in defensive movement.
+func _autoplay_enemy_pressure_force() -> Vector2:
+	var total := Vector2.ZERO
+	const PRESSURE_R := 220.0
+	const PRESSURE_R_SQ := PRESSURE_R * PRESSURE_R
+	for e in get_tree().get_nodes_in_group("enemy"):
+		if not is_instance_valid(e):
+			continue
+		var ne := e as Node2D
+		var to_e: Vector2 = ne.global_position - global_position
+		var d_sq := to_e.length_squared()
+		if d_sq > PRESSURE_R_SQ or d_sq < 0.0001:
+			continue
+		var d := sqrt(d_sq)
+		var weight := clampf(1.0 - d / PRESSURE_R, 0.0, 1.0)
+		total -= (to_e / d) * weight
+	return total
+
+# Boss orbit movement — strafe tangentially around the boss at a fixed
+# radius. Direction (CW vs CCW) flips occasionally so the bot doesn't get
+# pinned in a corner from rotating one way forever. If we're far from the
+# orbit band we close in / back off until we're at the right distance.
+const _BOSS_ORBIT_RADIUS: float = 220.0
+var _boss_orbit_sign: int = 1
+var _boss_orbit_flip_t: float = 0.0
+func _autoplay_boss_orbit_dir(boss: Node2D) -> Vector2:
+	var to_boss: Vector2 = boss.global_position - global_position
+	var dist: float = to_boss.length()
+	if dist < 0.001:
+		return Vector2.ZERO
+	# Periodically flip rotation so we don't rail into a wall
+	_boss_orbit_flip_t -= get_physics_process_delta_time()
+	if _boss_orbit_flip_t <= 0.0:
+		_boss_orbit_flip_t = randf_range(2.5, 4.5)
+		_boss_orbit_sign = -_boss_orbit_sign
+	var radial: Vector2 = to_boss / dist
+	var tangent: Vector2 = radial.rotated(PI * 0.5) * float(_boss_orbit_sign)
+	# Mix: outside band → step in, inside band → step out, in band → strafe
+	var error: float = dist - _BOSS_ORBIT_RADIUS
+	var inward_weight: float = clampf(error / 80.0, -1.0, 1.0)
+	# When inward_weight > 0 we move toward the boss; < 0 we move away.
+	return (tangent * 0.85 + radial * inward_weight * 0.6).normalized()
 
 func _autoplay_avoid_walls(dir: Vector2) -> Vector2:
 	if dir == Vector2.ZERO:
@@ -1455,6 +1743,20 @@ func _autoplay_move_dir() -> Vector2:
 		var jitter: float = randf_range(-amp, amp)
 		return goal_dir.rotated(jitter)
 	var base := Vector2.ZERO
+	# Boss orbit stance — when fighting a boss, hold a fixed radius around it
+	# instead of charging in. Strafes tangentially with a small random drift
+	# so projectiles passing through the centre miss us most of the time.
+	if is_instance_valid(_autoplay_move_to) and (_autoplay_move_to as Node2D).is_in_group("boss"):
+		base = _autoplay_boss_orbit_dir(_autoplay_move_to as Node2D)
+		if base != Vector2.ZERO:
+			# Same dodge blend as below
+			var dodge_b := _autoplay_dodge_force()
+			var ds_b := dodge_b.length()
+			if ds_b > 0.55:
+				return (base * 0.4 + dodge_b.normalized()).normalized()
+			if ds_b > 0.0:
+				return (base + dodge_b.normalized() * 0.7).normalized()
+			return base
 	# Follow A* path waypoints when one is computed
 	var pdir := _autoplay_path_dir()
 	if pdir != Vector2.ZERO:
@@ -1464,10 +1766,30 @@ func _autoplay_move_dir() -> Vector2:
 		if to_t.length() > 4.0:
 			base = _autoplay_avoid_walls(to_t.normalized())
 	if base == Vector2.ZERO:
+		# Even with no goal direction, defensive mode still tries to peel away
+		# from any enemy crowding us so we don't sit still being chewed on.
+		if _autoplay_is_defensive():
+			var pressure_only := _autoplay_enemy_pressure_force()
+			if pressure_only.length() > 0.05:
+				return pressure_only.normalized()
 		return Vector2.ZERO
-	# Blend in projectile-dodge force — heavier weighting when shots are close
+	# Blend in projectile-dodge force — heavier weighting when shots are close.
+	# Defensive mode bumps both the dodge weighting and adds an enemy-pressure
+	# repulsion so the bot keeps distance instead of sticking to its goal.
+	var defensive: bool = _autoplay_is_defensive()
 	var dodge := _autoplay_dodge_force()
 	var ds := dodge.length()
+	if defensive:
+		var pressure := _autoplay_enemy_pressure_force()
+		if pressure.length() > 0.0:
+			# Enemy-repulsion pulls us off the direct path proportionally; clamp
+			# so we still make progress toward the goal even when surrounded.
+			base = (base * 0.55 + pressure.normalized() * 0.55).normalized()
+		if ds > 0.55:
+			return (base * 0.20 + dodge.normalized()).normalized()
+		if ds > 0.0:
+			return (base + dodge.normalized() * 1.1).normalized()
+		return base
 	if ds > 0.55:
 		return (base * 0.35 + dodge.normalized()).normalized()
 	if ds > 0.0:
@@ -1528,6 +1850,11 @@ func _autoplay_refresh_targets() -> void:
 	# wander off mid-fight to grab a bag.
 	if boss == null and not _autoplay_sprint and not force_sprint:
 		loot = _autoplay_find_nearest_loot()
+	# Sprint detour budget — one rare+/wand bag per floor is worth pausing for.
+	elif boss == null and _autoplay_sprint and not force_sprint and _autoplay_sprint_detours_used == 0:
+		var candidate: Node2D = _autoplay_find_nearest_loot()
+		if is_instance_valid(candidate) and _autoplay_bag_worth_sprint_detour(candidate):
+			loot = candidate
 	var goal: Node2D = portal as Node2D
 	if boss != null:
 		goal = boss
@@ -1543,10 +1870,75 @@ func _autoplay_refresh_targets() -> void:
 			goal = loot
 	if goal == null and is_instance_valid(loot):
 		goal = loot
+	# Wand-aware close-quarters override — for melee, shotgun, or wands whose
+	# projectiles drift / spray erratically, the bot can't reliably hit at
+	# range. When such a wand is equipped and a visible enemy is too far,
+	# pivot the movement goal onto the enemy so we close the gap. Bosses
+	# already pull us in, so we don't override that target. Defensive mode
+	# also skips this — we don't want to charge in while wounded.
+	if boss == null and is_instance_valid(_autoplay_enemy) and not _autoplay_is_defensive():
+		var close_r: float = _autoplay_wand_close_range()
+		if close_r > 0.0:
+			var d_enemy: float = global_position.distance_to((_autoplay_enemy as Node2D).global_position)
+			if d_enemy > close_r and _autoplay_path_reachable((_autoplay_enemy as Node2D).global_position):
+				goal = _autoplay_enemy
+			elif d_enemy > close_r:
+				# Unreachable target with a close-range wand — blacklist briefly
+				# so we don't keep firing into the void from across a wall.
+				_autoplay_skipped_enemies[(_autoplay_enemy as Node).get_instance_id()] = true
+				_autoplay_enemy = _autoplay_find_visible_enemy()
 	if goal != _autoplay_move_to:
 		_autoplay_move_to = goal
 		if is_instance_valid(goal):
 			_autoplay_compute_path((goal as Node2D).global_position)
+
+# True when an A* path exists from our tile to the target world position.
+# Used to gate close-range overrides so we don't try to chase an enemy that
+# sits behind solid walls.
+func _autoplay_path_reachable(target_world: Vector2) -> bool:
+	_autoplay_build_astar()
+	if _astar == null:
+		return true   # no astar = no info, fall back to permissive
+	var world := get_tree().current_scene
+	if world == null or not "TILE" in world:
+		return true
+	var tile: int   = int(world.TILE)
+	var grid_w: int = int(world.GRID_W)
+	var grid_h: int = int(world.GRID_H)
+	var s := Vector2i(int(global_position.x / float(tile)), int(global_position.y / float(tile)))
+	var e := Vector2i(int(target_world.x / float(tile)), int(target_world.y / float(tile)))
+	s.x = clampi(s.x, 0, grid_w - 1)
+	s.y = clampi(s.y, 0, grid_h - 1)
+	e.x = clampi(e.x, 0, grid_w - 1)
+	e.y = clampi(e.y, 0, grid_h - 1)
+	if _astar.is_point_solid(s) or _astar.is_point_solid(e):
+		return false
+	var path: PackedVector2Array = _astar.get_point_path(s, e)
+	return not path.is_empty()
+
+# Effective max distance at which the equipped wand can reliably hit. Returns
+# 0.0 for "any range works" (regular ranged shots, beam, homing, nova, etc.).
+# A positive value means we should close to within that distance before we
+# expect to land hits — used to override the autoplay movement goal.
+func _autoplay_wand_close_range() -> float:
+	var w: Item = InventoryManager.equipped.get("wand") as Item
+	if w == null:
+		return 0.0
+	# Drift flaw is the "swirly shot" — projectile curves sideways, so any
+	# distance lets the curve carry the shot off-target. Hug the enemy.
+	if "drift" in w.wand_flaws:
+		return 110.0
+	if "erratic" in w.wand_flaws:
+		return 130.0
+	if "slow_shots" in w.wand_flaws:
+		# Slow projectiles let mobile enemies sidestep — close in to shorten flight.
+		return 220.0
+	match w.wand_shoot_type:
+		"melee":
+			return 56.0
+		"shotgun":
+			return 170.0   # spread arc means close range hits all pellets
+	return 0.0
 
 func _autoplay_nearest_boss() -> Node2D:
 	var best: Node2D = null
@@ -1799,10 +2191,11 @@ func _autoplay_tick(delta: float) -> void:
 		_autoplay_potion_t = 0.6
 		_autoplay_try_potion()
 	# Periodically clear junk so the inventory doesn't fill up with valuables
-	# / worse-tier duplicates and block new pickups
+	# / worse-tier duplicates and block new pickups. Runs frequently because
+	# we also want to enforce the minimum-free-slots invariant.
 	_autoplay_clean_t -= delta
 	if _autoplay_clean_t <= 0.0:
-		_autoplay_clean_t = 4.0
+		_autoplay_clean_t = 1.0
 		_autoplay_clear_junk()
 	# Loot-pursuit timeout — if we've been chasing the same bag for too long
 	# without successfully looting it, blacklist and move on
@@ -1913,8 +2306,8 @@ func _autoplay_auto_equip() -> void:
 	if InventoryManager == null:
 		return
 	# For each equipment slot, equip the highest-rarity item that beats what's
-	# currently slotted. Wand variety is handled by Portal mutating the
-	# equipped wand's shoot_type on each floor — no fresh-type preference here.
+	# currently slotted. Wands are scored on effective DPS so a flawed
+	# legendary doesn't displace a clean rare with better real damage output.
 	var dirty := false
 	for it in InventoryManager.grid:
 		var item: Item = it as Item
@@ -1924,12 +2317,56 @@ func _autoplay_auto_equip() -> void:
 		if slot == "":
 			continue
 		var current: Item = InventoryManager.equipped.get(slot) as Item
-		if current == null or item.rarity > current.rarity:
-			InventoryManager.equipped[slot] = item
-			dirty = true
+		if slot == "wand":
+			if current == null or _wand_score(item) > _wand_score(current):
+				InventoryManager.equipped[slot] = item
+				dirty = true
+		else:
+			if current == null or item.rarity > current.rarity:
+				InventoryManager.equipped[slot] = item
+				dirty = true
 	if dirty:
 		InventoryManager.inventory_changed.emit()
 		update_equip_stats()
+
+# Heuristic damage-per-second score for a wand. Folds rarity, raw DPS, pierce
+# / ricochet / status-stack bonuses, and flaw penalties so the auto-equipper
+# can pick the genuinely-stronger wand instead of just the higher rarity.
+# Also granted a small "novelty" bonus when the equipped shoot_type has no
+# weapon-stat history this run, encouraging variety in the death recap.
+func _wand_score(w: Item) -> float:
+	if w == null or w.type != Item.Type.WAND:
+		return 0.0
+	var rate: float = maxf(0.04, w.wand_fire_rate)
+	var dps: float = float(w.wand_damage) / rate
+	# Variety bonus — push fresh shoot_types over near-equal current pick.
+	if not GameState.weapon_stats.has(w.wand_shoot_type):
+		dps *= 1.10
+	# Multi-hit & status modifiers — rough multipliers, not exact.
+	dps *= 1.0 + 0.30 * float(w.wand_pierce)
+	dps *= 1.0 + 0.20 * float(w.wand_ricochet)
+	if w.wand_shoot_type in ["fire", "freeze", "shock"]:
+		dps *= 1.0 + 0.10 * float(w.wand_status_stacks)
+	if w.wand_shoot_type == "beam":
+		dps *= 1.4   # continuous, pierces all
+	if w.wand_shoot_type == "shotgun":
+		dps *= 1.6   # 5 pellets per shot
+	if w.wand_shoot_type == "nova":
+		dps *= 1.3
+	if w.wand_shoot_type == "homing":
+		dps *= 1.15
+	# Flaw penalties — drift / erratic / backwards / slow_shots all hurt
+	# real-world hit rate; clunky doubles fire delay; mana_guzzle saps regen.
+	for f in w.wand_flaws:
+		match String(f):
+			"backwards":   dps *= 0.50
+			"drift":       dps *= 0.65
+			"erratic":     dps *= 0.65
+			"slow_shots":  dps *= 0.75
+			"clunky":      dps *= 0.55
+			"mana_guzzle": dps *= 0.85
+	# Rarity tie-break — equal-DPS comparison favours the higher rarity.
+	return dps + float(w.rarity) * 0.001
 
 # Nova-bombs the room when a meaningful cluster of enemies is in range.
 func _autoplay_try_nova() -> void:
@@ -1947,10 +2384,43 @@ func _autoplay_try_nova() -> void:
 				break
 	if cluster >= 4:
 		_cast_nova_spell()
+	# Heavily-pressured panic — when 5+ enemies are right on top of us, dash
+	# away from the cluster centroid the moment cooldowns allow. Bypasses
+	# _start_dash's movement-input read by setting _dash_dir directly.
+	if cluster >= 5 and stamina >= DASH_STAMINA_COST and _autoplay_dash_t <= 0.0 and _dash_timer <= 0.0:
+		_autoplay_panic_dash()
+
+# Computes the centroid of nearby enemies and dashes opposite that vector.
+func _autoplay_panic_dash() -> void:
+	var centroid := Vector2.ZERO
+	var n := 0
+	for e in get_tree().get_nodes_in_group("enemy"):
+		if not is_instance_valid(e):
+			continue
+		var ne := e as Node2D
+		if global_position.distance_to(ne.global_position) < 230.0:
+			centroid += ne.global_position
+			n += 1
+	if n == 0:
+		return
+	centroid /= float(n)
+	var away := global_position - centroid
+	if away.length_squared() < 1.0:
+		away = Vector2.RIGHT.rotated(randf_range(0.0, TAU))
+	_dash_dir   = away.normalized()
+	_dash_timer = DASH_DURATION
+	stamina    -= DASH_STAMINA_COST
+	_is_invincible = true
+	modulate    = Color(0.5, 0.8, 1.0, 0.6)
+	_spawn_dash_afterimages()
+	_autoplay_dash_t = 1.5
 
 # Sweeps the inventory grid: keeps only items that are useful to the bot.
 # Caps potions at MAX_POTIONS so they don't fill the grid and block new pickups.
+# After the first pass, enforces AUTOPLAY_MIN_FREE_SLOTS by discarding the
+# lowest-value remaining items so there's always headroom for fresh loot.
 const AUTOPLAY_MAX_POTIONS: int = 2
+const AUTOPLAY_MIN_FREE_SLOTS: int = 5
 func _autoplay_clear_junk() -> void:
 	if InventoryManager == null:
 		return
@@ -1979,8 +2449,73 @@ func _autoplay_clear_junk() -> void:
 		# Junk — drop it
 		InventoryManager.grid[i] = null
 		changed = true
+	# Headroom enforcement — pick the lowest-value items still held and drop
+	# them until we hit AUTOPLAY_MIN_FREE_SLOTS. Wands are never discarded here
+	# (auto-equip swaps to the best one and a backup wand is fine to carry).
+	var free := _autoplay_count_free_slots()
+	if free < AUTOPLAY_MIN_FREE_SLOTS:
+		var candidates: Array = []
+		for i in InventoryManager.grid.size():
+			var it: Item = InventoryManager.grid[i] as Item
+			if it == null:
+				continue
+			if it.type == Item.Type.WAND:
+				continue
+			# Score lower = drop sooner. Rarity dominates so we never trash a
+			# legendary, then sell value tie-breaks among same-rarity items.
+			candidates.append({"idx": i, "score": int(it.rarity) * 1000 + int(it.sell_value)})
+		candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return int(a["score"]) < int(b["score"]))
+		var need: int = AUTOPLAY_MIN_FREE_SLOTS - free
+		for c in candidates:
+			if need <= 0:
+				break
+			InventoryManager.grid[int(c["idx"])] = null
+			changed = true
+			need -= 1
 	if changed:
 		InventoryManager.inventory_changed.emit()
+
+func _autoplay_count_free_slots() -> int:
+	if InventoryManager == null:
+		return 0
+	var c := 0
+	for i in InventoryManager.grid.size():
+		if InventoryManager.grid[i] == null:
+			c += 1
+	return c
+
+# Late-game mana stays meaningful — wand mana costs scale up with difficulty
+# so player WIS investment matters at the higher tiers.
+func _difficulty_mana_multiplier() -> float:
+	var d: float = GameState.test_difficulty if GameState.test_mode else GameState.difficulty
+	return 1.0 + maxf(0.0, d - 1.0) * 0.18
+
+# Picks the perk most useful right now. Heals when HP is low, otherwise leans
+# into long-term survival/DPS multipliers; falls back to any perk so the bot
+# never stalls if the preferred ones aren't in PERKS.
+func _autoplay_pick_perk() -> Dictionary:
+	var max_hp := _max_hp()
+	var hp_ratio: float = 1.0 if max_hp <= 0 else float(health) / float(max_hp)
+	# Order from highest to lowest preference. The first matching id from PERKS wins.
+	var preference: Array = []
+	if hp_ratio < 0.55:
+		preference.append("heal_now")
+	preference.append_array([
+		"hp_up",
+		"fire_rate_up",
+		"wisdom_up",
+		"mana_up",
+		"dash_up",
+		"speed_up",
+		"proj_up",
+		"heal_now",
+	])
+	for pid in preference:
+		for p: Dictionary in PERKS:
+			if String(p.get("id", "")) == String(pid):
+				return p
+	return PERKS[randi() % PERKS.size()]
 
 # Drinks a Health Potion when the bot drops below 35% HP.
 func _autoplay_try_potion() -> void:
@@ -2098,7 +2633,10 @@ func _handle_movement() -> void:
 	if _disorient_angle != 0.0 and direction != Vector2.ZERO and not _autoplay:
 		direction = direction.rotated(_disorient_angle)
 	var slow_mult := 0.5 if _slow_timer > 0.0 else 1.0
-	var haste_mult := 1.3 if GameState.floor_modifier == "haste" else 1.0
+	# HASTE floor scales with difficulty — base 30% bump, +5% per diff step.
+	var haste_mult: float = 1.0
+	if GameState.floor_modifier == "haste":
+		haste_mult = 1.3 + 0.05 * maxf(0.0, GameState.difficulty - 1.0)
 	var agi_bonus := float(GameState.get_stat_bonus("AGI")) * 4.0
 	velocity = direction * (speed + _equip_speed_bonus + agi_bonus) * _speed_multiplier * slow_mult * haste_mult
 	move_and_slide()
@@ -2140,6 +2678,7 @@ func _handle_shooting(delta: float) -> void:
 				mana_cost *= 2.0
 		else:
 			mana_cost = BASE_SHOT_MANA_COST
+		mana_cost *= _difficulty_mana_multiplier()
 		if mana >= mana_cost:
 			mana -= mana_cost
 			_fire(wand)
@@ -2154,6 +2693,7 @@ func _handle_beam(delta: float, wand: Item) -> void:
 	var drain: float = wand.wand_mana_cost
 	if "mana_guzzle" in wand.wand_flaws:
 		drain *= 2.0
+	drain *= _difficulty_mana_multiplier()
 	var drain_this_frame := drain * delta
 	if mana < drain_this_frame:
 		if _beam_line:
@@ -2202,6 +2742,9 @@ func _handle_beam(delta: float, wand: Item) -> void:
 			if collider.has_method("take_damage"):
 				collider.take_damage(dmg_to_deal)
 				GameState.damage_dealt += dmg_to_deal
+				GameState.record_weapon_damage("beam", dmg_to_deal)
+				if (collider as Node).is_queued_for_deletion():
+					GameState.record_weapon_kill("beam")
 			if crit and collider is Node2D:
 				FloatingText.spawn_str((collider as Node2D).global_position, "CRIT %d" % dmg_to_deal, Color(1.0, 0.85, 0.1), get_tree().current_scene)
 			if collider.has_method("apply_status"):
@@ -2352,6 +2895,9 @@ func _fire_melee(wand: Item, _base_dir: Vector2) -> void:
 				actual *= 2
 			(body as Node).take_damage(actual)
 			GameState.damage_dealt += actual
+			GameState.record_weapon_damage("melee", actual)
+			if (body as Node).is_queued_for_deletion():
+				GameState.record_weapon_kill("melee")
 			any_hit = true
 			if crit:
 				FloatingText.spawn_str((body as Node2D).global_position, "CRIT %d" % actual, Color(1.0, 0.85, 0.1), get_tree().current_scene)
@@ -2404,6 +2950,12 @@ func take_damage(amount: int) -> void:
 		return
 	if _is_invincible:
 		return
+	# Higher difficulties make enemies more deadly — scale incoming damage
+	# before shield/DEF so both sources of mitigation apply consistently.
+	var diff_for_dmg: float = GameState.test_difficulty if GameState.test_mode else GameState.difficulty
+	var dmg_mult: float = 1.0 + maxf(0.0, diff_for_dmg - 1.0) * 0.40
+	if dmg_mult > 1.0:
+		amount = max(1, int(round(float(amount) * dmg_mult)))
 	if _is_shielding:
 		var cost := float(amount) * SHIELD_MANA_PER_DMG
 		if mana >= cost:
@@ -2642,50 +3194,127 @@ func _respawn_test() -> void:
 func _build_death_leaderboard(ranks: Dictionary) -> void:
 	var dm := $HUD/DeathMenu
 
-	# Panel that sits below the existing retry/quit buttons
+	# Panel that sits below the existing retry/quit buttons. Tall enough to
+	# host run stats, leaderboard, run summary, and weapon panel side-by-side.
 	var panel := ColorRect.new()
 	panel.color = Color(0.03, 0.03, 0.08, 0.97)
-	panel.position = Vector2(100, 548)
-	panel.size = Vector2(1400, 336)
+	panel.position = Vector2(40, 488)
+	panel.size = Vector2(1520, 396)
 	dm.add_child(panel)
 
-	# Current run stats
+	# Current run stats — top line, full-width
+	var biome_name: String = "Dungeon"
+	const BIOMES := ["Dungeon", "Catacombs", "Ice Cavern", "Lava Rift"]
+	if GameState.biome >= 0 and GameState.biome < BIOMES.size():
+		biome_name = BIOMES[GameState.biome]
+	var run_secs: float = GameState.run_seconds()
 	var summary := Label.new()
-	summary.text = "Kills: %d    Portals: %d    Gold: %d    Damage: %d" % [
+	summary.text = "Biome: %s    Kills: %d    Portals: %d    Gold: %d    Damage: %d    Time: %s" % [
+		biome_name,
 		GameState.kills, GameState.portals_used,
-		GameState.gold, GameState.damage_dealt
+		GameState.gold, GameState.damage_dealt,
+		_format_run_time(run_secs)
 	]
 	summary.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	summary.position = Vector2(100, 558)
-	summary.size = Vector2(1400, 22)
+	summary.position = Vector2(40, 498)
+	summary.size = Vector2(1520, 22)
 	summary.add_theme_font_size_override("font_size", 14)
 	summary.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
 	dm.add_child(summary)
 
+	var rates := Label.new()
+	rates.text = "Gold/sec: %.2f    Damage/sec: %.1f    Avg dmg/kill: %.1f" % [
+		float(GameState.gold) / run_secs,
+		float(GameState.damage_dealt) / run_secs,
+		float(GameState.damage_dealt) / maxf(1.0, float(GameState.kills)),
+	]
+	rates.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	rates.position = Vector2(40, 522)
+	rates.size = Vector2(1520, 18)
+	rates.add_theme_font_size_override("font_size", 12)
+	rates.add_theme_color_override("font_color", Color(0.55, 0.7, 0.85))
+	dm.add_child(rates)
+
 	# Thin separator
 	var sep := ColorRect.new()
 	sep.color = Color(0.35, 0.2, 0.55)
-	sep.position = Vector2(130, 585)
-	sep.size = Vector2(1340, 2)
+	sep.position = Vector2(70, 548)
+	sep.size = Vector2(1460, 2)
 	dm.add_child(sep)
 
 	# Leaderboard heading
 	var lb_title := Label.new()
 	lb_title.text = "- LEADERBOARD -"
 	lb_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lb_title.position = Vector2(100, 593)
-	lb_title.size = Vector2(1400, 24)
-	lb_title.add_theme_font_size_override("font_size", 16)
+	lb_title.position = Vector2(40, 558)
+	lb_title.size = Vector2(1100, 22)
+	lb_title.add_theme_font_size_override("font_size", 14)
 	lb_title.add_theme_color_override("font_color", Color(0.9, 0.7, 0.2))
 	dm.add_child(lb_title)
 
-	# Three columns: x positions calculated for equal thirds across 1400px panel (100-1500)
-	_add_lb_column(dm, "PORTALS USED",      Leaderboard.get_top("portals", 5), Vector2(130,  624), ranks.get("portals", -1))
-	_add_lb_column(dm, "GOLD (SINGLE RUN)", Leaderboard.get_top("gold",    5), Vector2(600,  624), ranks.get("gold",    -1))
-	_add_lb_column(dm, "DAMAGE DEALT",      Leaderboard.get_top("damage",  5), Vector2(1070, 624), ranks.get("damage",  -1))
+	# Three leaderboard columns occupy left ~1100px; weapon panel occupies the right
+	_add_lb_column(dm, "PORTALS",       Leaderboard.get_top("portals", 5), Vector2(70,  584), ranks.get("portals", -1))
+	_add_lb_column(dm, "GOLD",          Leaderboard.get_top("gold",    5), Vector2(420, 584), ranks.get("gold",    -1))
+	_add_lb_column(dm, "DAMAGE",        Leaderboard.get_top("damage",  5), Vector2(770, 584), ranks.get("damage",  -1))
+
+	# Weapon panel on the right
+	_build_death_weapon_panel(dm, Vector2(1170, 558), Vector2(360, 316))
+
+func _format_run_time(secs: float) -> String:
+	var s: int = int(round(secs))
+	@warning_ignore("integer_division")
+	var m: int = s / 60
+	var rs: int = s - m * 60
+	return "%d:%02d" % [m, rs]
+
+# Mirrors the pause menu's weapon stats — kills/damage/floors per shoot type,
+# sorted by damage. Rendered into the death-menu panel.
+func _build_death_weapon_panel(parent: Node, pos: Vector2, size: Vector2) -> void:
+	var title := Label.new()
+	title.text = "- WEAPON USE -"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.position = pos
+	title.size = Vector2(size.x, 22)
+	title.add_theme_font_size_override("font_size", 14)
+	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.6))
+	parent.add_child(title)
+
+	var body := Label.new()
+	body.position = pos + Vector2(8.0, 26.0)
+	body.size     = Vector2(size.x - 16.0, size.y - 28.0)
+	body.add_theme_font_size_override("font_size", 12)
+	body.add_theme_color_override("font_color", Color(0.95, 0.9, 0.85))
+	body.add_theme_constant_override("line_separation", 4)
+	# Monospace so the columns line up
+	var mono := SystemFont.new()
+	mono.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
+	body.add_theme_font_override("font", mono)
+	parent.add_child(body)
+
+	if GameState.weapon_stats.is_empty():
+		body.text = "(no weapons used)"
+		return
+	var rows: Array = []
+	for k in GameState.weapon_stats.keys():
+		var s: Dictionary = GameState.weapon_stats[k]
+		rows.append({
+			"type":   String(k),
+			"kills":  int(s.get("kills", 0)),
+			"damage": int(s.get("damage", 0)),
+			"floors": int((s.get("floors", {}) as Dictionary).size()),
+		})
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return int(a["damage"]) > int(b["damage"]))
+	var lines: Array = ["%-9s  %4s  %6s  %2s" % ["TYPE", "KILL", "DMG", "FL"]]
+	for r in rows:
+		var t: String = String(r["type"]).to_upper()
+		if t.length() > 9:
+			t = t.substr(0, 9)
+		lines.append("%-9s  %4d  %6d  %2d" % [t, int(r["kills"]), int(r["damage"]), int(r["floors"])])
+	body.text = "\n".join(lines)
 
 func _add_lb_column(parent: Node, title: String, entries: Array, pos: Vector2, highlight_rank: int = -1) -> void:
-	var col_w := 400.0
+	var col_w := 320.0
 
 	var header := Label.new()
 	header.text = title

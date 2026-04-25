@@ -226,6 +226,7 @@ func _show_dungeon_select() -> void:
 			GameState.starting_difficulty = _d
 			GameState.difficulty          = _d
 			GameState.loot_multiplier     = _l
+			GameState.save_settings()
 			get_tree().change_scene_to_file("res://scenes/World.tscn"))
 		overlay.add_child(row_btn)
 

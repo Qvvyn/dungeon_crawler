@@ -3,6 +3,7 @@ extends CharacterBody2D
 const GOLD_PICKUP_SCENE := preload("res://scenes/GoldPickup.tscn")
 const LOOT_BAG_SCENE    := preload("res://scenes/LootBag.tscn")
 const MINION_SCENE      := preload("res://scenes/EnemyChaser.tscn")
+const FIRE_PATCH_SCRIPT = preload("res://scripts/FirePatch.gd")
 
 @export var move_speed: float      = 55.0
 @export var max_health: int        = 4
@@ -51,6 +52,8 @@ var _poison_timer: float  = 0.0
 var _poison_tick: float   = 0.0
 
 func _ready() -> void:
+	collision_layer = 2
+	collision_mask  = 1
 	health = max_health
 	_player = get_tree().get_first_node_in_group("player")
 	_update_health_bar()
@@ -145,6 +148,8 @@ func _try_summon() -> void:
 	if enemies_node == null:
 		return
 	FloatingText.spawn_str(global_position, "SUMMON!", Color(0.75, 0.2, 1.0), get_tree().current_scene)
+	if SoundManager:
+		SoundManager.play("summon", randf_range(0.95, 1.08))
 	for _i in randi_range(1, 2):
 		var minion := MINION_SCENE.instantiate()
 		minion.position = global_position + Vector2(randf_range(-60.0, 60.0), randf_range(-60.0, 60.0))
@@ -229,6 +234,10 @@ func _trigger_enflamed() -> void:
 	FloatingText.spawn_str(global_position, "ENFLAMED!", Color(1.0, 0.3, 0.0), get_tree().current_scene)
 	_enflamed      = true
 	_enflame_timer = 5.0
+	var fp := Node2D.new()
+	fp.set_script(FIRE_PATCH_SCRIPT)
+	fp.global_position = global_position
+	get_tree().current_scene.add_child(fp)
 	_enflame_tick  = 0.0
 	take_damage(12)
 	if not is_instance_valid(self): return
@@ -298,7 +307,7 @@ func _drop_champion_loot() -> void:
 	for _i in 2:
 		var bag := LOOT_BAG_SCENE.instantiate()
 		bag.global_position = global_position + Vector2(randf_range(-32, 32), randf_range(-32, 32))
-		bag.items = [ItemDB.random_legendary()]
+		bag.items = [ItemDB.random_drop()]
 		get_tree().current_scene.call_deferred("add_child", bag)
 
 func _do_split() -> void:
@@ -316,11 +325,14 @@ func _do_split() -> void:
 		enemies_node.call_deferred("add_child", clone)
 
 func _drop_gold() -> void:
+	if GameState.test_mode:
+		GameState.gold += int(randi_range(1, 5) * (3 if is_elite else 1) * GameState.loot_multiplier)
+		return
 	var gold := GOLD_PICKUP_SCENE.instantiate()
 	gold.global_position = global_position
 	gold.value = int(randi_range(1, 5) * (3 if is_elite else 1) * GameState.loot_multiplier)
 	get_tree().current_scene.call_deferred("add_child", gold)
-	if is_elite or randi() % 100 < 30:
+	if (is_elite and randi() % 100 < 50) or randi() % 100 < 8:
 		var bag := LOOT_BAG_SCENE.instantiate()
 		bag.global_position = global_position + Vector2(randf_range(-20, 20), randf_range(-20, 20))
 		get_tree().current_scene.call_deferred("add_child", bag)
