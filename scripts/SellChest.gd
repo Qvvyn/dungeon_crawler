@@ -51,6 +51,9 @@ func _on_body_entered(body: Node2D) -> void:
 		_player_nearby = true
 		if _hint:
 			_hint.visible = true
+		# Autoplay: sell junk and buy any affordable upgrade automatically.
+		if body.get("_autoplay") == true:
+			_auto_use(body)
 
 func _on_body_exited(body: Node2D) -> void:
 	if body.is_in_group("player"):
@@ -58,6 +61,77 @@ func _on_body_exited(body: Node2D) -> void:
 		if _hint:
 			_hint.visible = false
 		_close_popup()
+
+# Autoplay handler — silently runs the optimal actions at this chest:
+#   1) Buy any legendary in stock that is a strict upgrade for its slot
+#      (compared with whatever's currently equipped). Wands use the
+#      player's _wand_score so flaws/cost are factored in.
+#   2) Sell anything in the bag that isn't an upgrade for its slot, isn't
+#      a wand (handled separately by the wand cap / shatter sweep), and
+#      isn't a stack of potions.
+func _auto_use(player: Node) -> void:
+	# --- Buy upgrades first so we don't sell off gold we'd need ---
+	for i in _shop_stock.size():
+		if _shop_bought[i]:
+			continue
+		var item: Item = _shop_stock[i]
+		var price: int = int(round(float(item.sell_value) * 2.0 * GameState.price_multiplier()))
+		if GameState.gold < price:
+			continue
+		var slot := item.get_equip_slot_name()
+		if slot == "":
+			continue   # offhand etc. — currently disabled
+		var current: Item = InventoryManager.equipped.get(slot) as Item
+		var is_upgrade := false
+		if slot == "wand" and player.has_method("_wand_score"):
+			# Wand comparison via the bot's own scoring — rarity alone misses
+			# flaw-laden legendaries that a clean rare actually beats.
+			is_upgrade = current == null \
+				or float(player.call("_wand_score", item)) > float(player.call("_wand_score", current)) * 1.05
+		else:
+			is_upgrade = current == null or item.rarity > current.rarity
+		if is_upgrade:
+			GameState.gold -= price
+			_shop_bought[i] = true
+			InventoryManager.add_item(item)
+			FloatingText.spawn_str(player.global_position,
+				"BOUGHT %s" % item.display_name,
+				Color(1.0, 0.85, 0.25), get_tree().current_scene)
+	# --- Sell junk ---
+	# Build a set of equipped item ids so we never sell something currently
+	# slotted (auto-equip leaves the equipped wand mirrored in the grid).
+	var eq_ids := {}
+	for slot in InventoryManager.EQUIP_SLOTS:
+		var it: Item = InventoryManager.equipped.get(slot)
+		if it != null:
+			eq_ids[it.get_instance_id()] = true
+	var sold_total := 0
+	for i in InventoryManager.grid.size():
+		var item: Item = InventoryManager.grid[i] as Item
+		if item == null:
+			continue
+		if eq_ids.has(item.get_instance_id()):
+			continue
+		# Hold onto wands — the wand cap / shatter sweep manages those.
+		# Hold onto potion stacks (they're our heal supply).
+		if item.type == Item.Type.WAND or item.type == Item.Type.POTION:
+			continue
+		# If this item is a strict upgrade for its slot, skip — auto-equip
+		# may use it next tick. Otherwise, sell.
+		var slot2 := item.get_equip_slot_name()
+		if slot2 != "":
+			var cur2: Item = InventoryManager.equipped.get(slot2) as Item
+			if cur2 == null or item.rarity > cur2.rarity:
+				continue
+		GameState.gold += item.sell_value
+		sold_total += item.sell_value
+		InventoryManager.grid[i] = null
+	if sold_total > 0:
+		FloatingText.spawn(player.global_position, sold_total, true,
+			get_tree().current_scene, Color(1.0, 0.85, 0.1))
+	InventoryManager.inventory_changed.emit()
+	if player.has_method("update_equip_stats"):
+		player.update_equip_stats()
 
 # ── Popup ─────────────────────────────────────────────────────────────────────
 
@@ -146,7 +220,7 @@ func _build_ui() -> void:
 	for i in shop_count:
 		var item: Item = _shop_stock[i]
 		var bought: bool = _shop_bought[i]
-		var buy_price := item.sell_value * 2
+		var buy_price := int(round(float(item.sell_value) * 2.0 * GameState.price_multiplier()))
 		var can_afford := (not bought) and (GameState.gold >= buy_price)
 
 		var ix := shop_ox + float(i) * (CELL_W + GAP)
@@ -300,7 +374,7 @@ func _input(event: InputEvent) -> void:
 		if r.has_point(mp):
 			if i < _shop_stock.size() and not _shop_bought[i]:
 				var item: Item = _shop_stock[i]
-				var price := item.sell_value * 2
+				var price := int(round(float(item.sell_value) * 2.0 * GameState.price_multiplier()))
 				if GameState.gold >= price:
 					GameState.gold -= price
 					_shop_bought[i] = true
@@ -314,7 +388,7 @@ func _input(event: InputEvent) -> void:
 				else:
 					var player := InventoryManager._player_ref
 					if player:
-						var price_val := item.sell_value * 2
+						var price_val := int(round(float(item.sell_value) * 2.0 * GameState.price_multiplier()))
 						FloatingText.spawn_str(player.global_position,
 							"Need " + str(price_val) + "g",
 							Color(1.0, 0.3, 0.3), get_tree().current_scene)

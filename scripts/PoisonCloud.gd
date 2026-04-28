@@ -1,11 +1,12 @@
 extends Area2D
 
-# Catacombs biome hazard — applies poison status to the player while they
-# stand inside, ticks small direct damage too.
+# Catacombs biome hazard — applies the player's poison status while they
+# stand inside the cloud. The DOT itself (10% max HP over 10s) is dealt by
+# Player._tick_status' poison handler; this cloud just keeps refreshing the
+# status timer so contact-grazing still ticks for the full duration.
 
-const POISON_DURATION := 5.0
+const POISON_DURATION := 10.0
 const TICK_INTERVAL   := 0.8
-const TICK_DAMAGE     := 1
 
 var _player_inside: bool = false
 var _tick_t: float       = 0.0
@@ -51,8 +52,5 @@ func _process(delta: float) -> void:
 	if _tick_t <= 0.0:
 		_tick_t = TICK_INTERVAL
 		var ply: Node2D = get_tree().get_first_node_in_group("player")
-		if is_instance_valid(ply):
-			if ply.has_method("apply_status"):
-				ply.apply_status("poison", POISON_DURATION)
-			if ply.has_method("take_damage"):
-				ply.take_damage(TICK_DAMAGE)
+		if is_instance_valid(ply) and ply.has_method("apply_status"):
+			ply.apply_status("poison", POISON_DURATION)

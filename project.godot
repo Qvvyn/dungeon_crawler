@@ -18,7 +18,6 @@ config/name="DungeonCrawler"
 config/description="A procedurally generated dungeon crawler"
 run/main_scene="res://scenes/TitleScreen.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
-config/icon="res://icon.svg"
 
 [autoload]
 
@@ -27,15 +26,15 @@ Leaderboard="*res://scripts/Leaderboard.gd"
 InventoryManager="*res://scripts/InventoryManager.gd"
 RunHistory="*res://scripts/RunHistory.gd"
 SoundManager="*res://scripts/SoundManager.gd"
+OnlineLeaderboard="*res://scripts/OnlineLeaderboard.gd"
+PersistentStash="*res://scripts/PersistentStash.gd"
 
 [display]
 
 window/size/viewport_width=1600
 window/size/viewport_height=900
-
-[dotnet]
-
-project/assembly_name="DungeonCrawler"
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
 
 [input]
 

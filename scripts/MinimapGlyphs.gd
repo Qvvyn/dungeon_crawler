@@ -23,9 +23,7 @@ func setup(grid: Array, grid_w: int, grid_h: int, cell_w: float, cell_h: float) 
 	_grid_h = grid_h
 	_cell_w = cell_w
 	_cell_h = cell_h
-	var f := SystemFont.new()
-	f.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
-	_font = f
+	_font = MonoFont.get_font()
 	# Pick a font_size that visually approximates the cell dimensions.
 	_font_size = maxi(4, int(round(_cell_h * 1.5)))
 	queue_redraw()

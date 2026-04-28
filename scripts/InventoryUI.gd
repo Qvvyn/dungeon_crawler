@@ -302,6 +302,13 @@ func _format_item_tooltip(item: Item) -> String:
 			parts.append("+%d pierce" % item.wand_pierce)
 		if item.wand_ricochet > 0:
 			parts.append("+%d bounce" % item.wand_ricochet)
+		if item.is_limited_use():
+			# Pip strip — visible-at-a-glance charge bar. Filled = remaining,
+			# empty = spent. Tail count keeps the exact numbers handy.
+			var pips := ""
+			for ci in item.wand_max_charges:
+				pips += ("■" if ci < item.wand_charges else "□")
+			parts.append("⚡ %s  (%d/%d)" % [pips, item.wand_charges, item.wand_max_charges])
 		if not item.wand_flaws.is_empty():
 			parts.append("FLAW: " + ", ".join(item.wand_flaws))
 	elif not item.stat_bonuses.is_empty():
@@ -315,6 +322,15 @@ func _format_item_tooltip(item: Item) -> String:
 				"DEF":                 parts.append("+%d DEF" % int(val))
 				"projectile_count":    parts.append("+%d projectiles" % int(val))
 				"wisdom":              parts.append("+%.0f mana/s" % val)
+				"VIT":                 parts.append("+%d VIT (+%d max HP)" % [int(val), int(val) * 5])
+				"INT":                 parts.append("+%d INT" % int(val))
+				"DEX":                 parts.append("+%d DEX" % int(val))
+				"AGI":                 parts.append("+%d AGI" % int(val))
+				"END":                 parts.append("+%d END" % int(val))
+				"WIS":                 parts.append("+%d WIS" % int(val))
+				"SPR":                 parts.append("+%d SPR" % int(val))
+				"LCK":                 parts.append("+%d LCK" % int(val))
+				_:                     parts.append("+%g %s" % [val, stat])
 	else:
 		# No stats (valuables, potions) — show the description text
 		if item.description != "":
@@ -347,7 +363,8 @@ func _refresh() -> void:
 		var lbl: Label = _grid_labels[i]
 		if item:
 			cell.color = _rarity_cell_color(item, false)
-			lbl.text = item.icon_char + "\n" + item.display_name
+			var stack_suffix := "  x%d" % item.quantity if item.quantity > 1 else ""
+			lbl.text = item.icon_char + stack_suffix + "\n" + item.display_name
 			lbl.add_theme_color_override("font_color", _rarity_name_color(item))
 		else:
 			cell.color = Color(0.11, 0.11, 0.20)

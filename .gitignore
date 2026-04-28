@@ -12,6 +12,15 @@
 *.x86_64
 *.app/
 
+# Web export build output (HTML5 .pck/.wasm/.js artifacts)
+walk/
+DungeonCrawler.html
+DungeonCrawler.pck
+DungeonCrawler.wasm
+DungeonCrawler.js
+DungeonCrawler.audio.worklet.js
+DungeonCrawler.audio.position.worklet.js
+
 # macOS
 .DS_Store
 

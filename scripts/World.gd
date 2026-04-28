@@ -14,6 +14,7 @@ const MIN_SPLIT_H: int = 10
 # ── Resources ─────────────────────────────────────────────────────────────────
 const PLAYER_SCENE       = preload("res://scenes/Player.tscn")
 const PORTAL_SCENE       = preload("res://scenes/Portal.tscn")
+const EXIT_PORTAL_SCRIPT = preload("res://scripts/ExitPortal.gd")
 const SELL_CHEST_SCENE   = preload("res://scenes/SellChest.tscn")
 const FLOOR_SHADER       = preload("res://shaders/floor_dots.gdshader")
 const CHASER_SCENE       = preload("res://scenes/EnemyChaser.tscn")
@@ -30,6 +31,7 @@ const MINELAYER_SCENE    = preload("res://scenes/EnemyMineLayer.tscn")
 const BEAMSWEEP_SCENE    = preload("res://scenes/EnemyBeamSweep.tscn")
 const MISSILE_SCENE      = preload("res://scenes/EnemyMissileTurret.tscn")
 const SPIDER_SCENE       = preload("res://scenes/EnemySpider.tscn")
+const WIZARD_SCENE       = preload("res://scenes/EnemyWizard.tscn")
 const BOSS_SCENE         = preload("res://scenes/EnemyBoss.tscn")
 const SPIKE_TRAP_SCENE   = preload("res://scenes/SpikeTrap.tscn")
 const SPIN_TRAP_SCENE    = preload("res://scenes/SpinTrap.tscn")
@@ -78,8 +80,8 @@ var _secret_door_data: Array = []   # [{tile, loot_tile}]
 
 # ── Test mode ─────────────────────────────────────────────────────────────────
 const TEST_TARGET        := 100
-const TEST_REFILL_BATCH  := 4    # max enemies queued per refill check (smaller bursts → smoother)
-const TEST_CHECK_INTERVAL := 0.6  # seconds between live-count checks
+const TEST_REFILL_BATCH  := 100  # full top-off per check — testing arena keeps the room saturated
+const TEST_CHECK_INTERVAL := 0.05 # near-frame-rate so kills get replaced immediately
 const TEST_CLEANUP_INTERVAL := 2.5
 
 var _is_test_mode: bool        = false
@@ -87,8 +89,25 @@ var _test_spawn_queue: Array   = []   # Array[Dictionary] {scene, hp_mult}
 # Dungeon enemy spawning is queued and drained over multiple frames to avoid
 # the big lag spike that came from instantiating dozens of enemies at once.
 var _dungeon_spawn_queue: Array = []   # Array[Dictionary] {scene, room, hp_mult}
-const DUNGEON_SPAWN_PER_FAST: int = 6   # healthy-frame spawn budget
-const DUNGEON_SPAWN_PER_SLOW: int = 1   # if previous frame was heavy
+const DUNGEON_SPAWN_PER_FAST: int = 14  # healthy-frame spawn budget
+const DUNGEON_SPAWN_PER_SLOW: int = 2   # if previous frame was heavy
+# First seconds after a level loads, spawn at a far higher rate so the world
+# feels populated immediately. Combined with distance-sorting the queue (in
+# _spawn_enemies) the rooms the player can actually see fill in ~1 frame.
+const DUNGEON_SPAWN_PER_BURST: int = 50
+const DUNGEON_SPAWN_BURST_DURATION: float = 1.5
+# Hard ceiling on simultaneous regular-spawn dungeon enemies. At very high
+# difficulty (≥30) the per-room budget × density_mult × room count combo
+# produced 100+ enemies and the room-clear / pathfinding loops bogged the
+# frame. Themed-room spawns + summoner minions sit on top of this cap so
+# the live count can briefly exceed it, but the bulk regular spawn is
+# clipped here.
+const MAX_DUNGEON_ENEMIES: int = 80
+# How many enemies to spawn synchronously inside _spawn_enemies, before any
+# frame ticks at all. Avoids the first-frame "empty world" gap; tuned so the
+# nearest few rooms are populated before the player even sees the level.
+const DUNGEON_SPAWN_INITIAL_DRAIN: int = 24
+var _dungeon_spawn_burst_t: float = 0.0
 # Periodic cleanup of any enemy that drifted into a wall tile
 var _oob_cleanup_t: float = 4.0
 var _test_check_timer: float   = 0.0
@@ -108,11 +127,21 @@ const MINIMAP_CELL_H: float = 2.5
 const MINIMAP_SCALE  := MINIMAP_CELL_W   # legacy alias used by tile→pixel math
 const MINIMAP_W      := GRID_W * MINIMAP_CELL_W   # 144
 const MINIMAP_H      := GRID_H * MINIMAP_CELL_H   # 140
-const MINIMAP_X      := 1592.0 - MINIMAP_W        # 1448
+const MINIMAP_X      := 1470.0 - MINIMAP_W        # ~1326 — pulled well in
+													# from the right edge so
+													# the minimap doesn't clip
+													# under window/border
+													# scaling on any display
 const MINIMAP_Y      := 8.0
 var _minimap_dot: ColorRect = null
+# Anchored container holding all minimap pieces — kept for reference so
+# tweens / future repositions can target it without re-walking the tree.
+var _minimap_root: Control = null
 var _had_enemies: bool = false
 var _room_cleared: bool = false
+# Rooms that have been claimed by a themed encounter (spider den, charger pit,
+# etc). Skipped by the regular _spawn_enemies pass so the theme stays clean.
+var _themed_rooms: Array = []   # Array[Rect2i]
 
 # ── BSP tree node ─────────────────────────────────────────────────────────────
 class BSPNode:
@@ -177,11 +206,28 @@ func _ready() -> void:
 
 	_spawn_player(player_pos)
 	_spawn_portal(portal_pos)
+	# Exit portal at every 10th floor — lets the player bail back to the
+	# village with their loot intact instead of risking it for another
+	# level. Placed offset from the regular portal so the two portals
+	# don't overlap visually / collision-wise.
+	var floor_n: int = GameState.portals_used + 1
+	if floor_n > 0 and floor_n % 10 == 0:
+		_spawn_exit_portal(portal_pos + Vector2(96.0, 0.0))
 
 	if is_shop_floor:
 		_spawn_sell_chest(portal_room)
 	if is_boss_floor:
 		_spawn_boss(portal_room)
+	else:
+		# Rival wizard in the portal room — guards the exit and drops its
+		# wand on death. Skipped on boss floors so the arena fight stays
+		# focused on the boss.
+		_spawn_portal_wizard(portal_room)
+		# Mini-boss surprise on non-boss floors at high difficulty. From
+		# diff ≥4 onward there's a chance any regular floor has one of
+		# the three boss types (with reduced HP) parked in a far room.
+		if GameState.difficulty >= 4.0 and randf() < _mini_boss_chance():
+			_spawn_mini_boss(player_room)
 	if GameState.portals_used >= 1:
 		_spawn_enchant_table(player_room)
 
@@ -189,6 +235,10 @@ func _ready() -> void:
 	_spawn_traps()
 	_spawn_lava_tiles()
 	_spawn_shrine(player_room)
+	# Pick themed rooms BEFORE the regular spawn pass — they replace the
+	# normal enemy mix in their room with a flavored encounter (spider den,
+	# charger pit, etc.) and need to be skipped by _spawn_enemies.
+	_spawn_themed_rooms(player_room, portal_room if is_boss_floor else Rect2i())
 	_spawn_enemies(player_room, portal_room if is_boss_floor else Rect2i())
 	_spawn_hazard_rooms(player_room, portal_room)
 	_spawn_challenge_room(player_room, portal_room if is_boss_floor else Rect2i())
@@ -320,8 +370,9 @@ func _spawn_test_enemy(scene: PackedScene, hp_mult: float) -> void:
 	$Enemies.add_child(enemy)
 
 func _tick_test_wave(delta: float) -> void:
-	# Spawn one queued enemy per frame — spreads instantiation cost, no spikes
-	if not _test_spawn_queue.is_empty():
+	# Drain the entire spawn queue every frame — testing arena should never
+	# have a visible gap between a kill and the replacement enemy.
+	while not _test_spawn_queue.is_empty():
 		var data: Dictionary = _test_spawn_queue.pop_front()
 		_spawn_test_enemy(data["scene"], float(data.get("hp_mult", 1.0)))
 
@@ -368,17 +419,18 @@ func _spawn_test_boss() -> void:
 	var offset := Vector2(randf_range(-96.0, 96.0), randf_range(-96.0, 96.0))
 	var diff   := GameState.test_difficulty
 	var boss: Node2D
+	# Test arena bosses follow the bumped bases too.
 	match randi() % 3:
 		0:
 			boss = BOSS_SCENE.instantiate()
 			if "max_health" in boss:
-				boss.max_health = int(40.0 * (1.0 + diff * 0.6))
+				boss.max_health = int(200.0 * (1.0 + diff * 0.85))
 		1:
 			boss = BOSS_ARCHITECT_SCRIPT.new()
-			boss.max_health = int(55.0 * (1.0 + diff * 0.6))
+			boss.max_health = int(260.0 * (1.0 + diff * 0.85))
 		2:
 			boss = BOSS_WRAITH_SCRIPT.new()
-			boss.max_health = int(45.0 * (1.0 + diff * 0.6))
+			boss.max_health = int(220.0 * (1.0 + diff * 0.85))
 	boss.position = center + offset
 	boss.tree_exited.connect(_on_test_boss_died)
 	$Enemies.add_child(boss)
@@ -502,10 +554,11 @@ func _bsp_place_rooms(node: BSPNode) -> void:
 		_bsp_place_rooms(node.left)
 		_bsp_place_rooms(node.right)
 
-@warning_ignore("integer_division")
 func _place_l_shape_room(node: BSPNode) -> void:
 	var pad := 2
+	@warning_ignore("integer_division")
 	var mw := randi_range(node.rect.size.x / 2, node.rect.size.x - pad * 2)
+	@warning_ignore("integer_division")
 	var mh := randi_range(node.rect.size.y / 2, node.rect.size.y - pad * 2)
 	var rx_lo := node.rect.position.x + pad
 	var rx_hi := node.rect.position.x + node.rect.size.x - mw - pad
@@ -519,7 +572,9 @@ func _place_l_shape_room(node: BSPNode) -> void:
 	node.room = main_r
 	_rooms.append(main_r)
 	_carve_room(main_r)
+	@warning_ignore("integer_division")
 	var wing_w := randi_range(4, maxi(4, mw / 2))
+	@warning_ignore("integer_division")
 	var wing_h := randi_range(3, maxi(3, mh / 2))
 	var corner := randi() % 4
 	var wx: int = 0
@@ -543,9 +598,9 @@ func _bsp_connect(node: BSPNode) -> void:
 	_bsp_connect(node.right)
 	_carve_corridor(_subtree_center(node.left), _subtree_center(node.right))
 
-@warning_ignore("integer_division")
 func _subtree_center(node: BSPNode) -> Vector2i:
 	if node == null:
+		@warning_ignore("integer_division")
 		return Vector2i(GRID_W / 2, GRID_H / 2)
 	if node.is_leaf():
 		if node.room != Rect2i():
@@ -554,6 +609,7 @@ func _subtree_center(node: BSPNode) -> Vector2i:
 	if node.left != null and node.right != null:
 		var lc := _subtree_center(node.left)
 		var rc := _subtree_center(node.right)
+		@warning_ignore("integer_division")
 		return Vector2i((lc.x + rc.x) / 2, (lc.y + rc.y) / 2)
 	if node.left != null:
 		return _subtree_center(node.left)
@@ -635,7 +691,9 @@ func _roll_bsp_bounds() -> Rect2i:
 	if r < 0.30:
 		var w := randi_range(38, 52)
 		var h := randi_range(30, 42)
+		@warning_ignore("integer_division")
 		var ox := (GRID_W - w) / 2
+		@warning_ignore("integer_division")
 		var oy := (GRID_H - h) / 2
 		return Rect2i(ox, oy, w, h)
 	return Rect2i(1, 1, GRID_W - 2, GRID_H - 2)
@@ -801,14 +859,15 @@ func _cull_disconnected_floor() -> void:
 			if _grid[y][x] == FLOOR and not keep.has(Vector2i(x, y)):
 				_grid[y][x] = WALL
 
-@warning_ignore("integer_division")
 func _sample_cave_rooms() -> void:
 	var step := 12
-	for gy in range(step / 2, GRID_H - step / 2, step):
-		for gx in range(step / 2, GRID_W - step / 2, step):
+	@warning_ignore("integer_division")
+	var half := step / 2
+	for gy in range(half, GRID_H - half, step):
+		for gx in range(half, GRID_W - half, step):
 			for _att in 20:
-				var tx := randi_range(maxi(1, gx - step / 2), mini(GRID_W - 2, gx + step / 2))
-				var ty := randi_range(maxi(1, gy - step / 2), mini(GRID_H - 2, gy + step / 2))
+				var tx := randi_range(maxi(1, gx - half), mini(GRID_W - 2, gx + half))
+				var ty := randi_range(maxi(1, gy - half), mini(GRID_H - 2, gy + half))
 				if _grid[ty][tx] == FLOOR:
 					_rooms.append(Rect2i(tx - 2, ty - 2, 5, 5))
 					break
@@ -1110,6 +1169,12 @@ func _spawn_portal(pos: Vector2) -> void:
 	portal.position = pos
 	add_child(portal)
 
+func _spawn_exit_portal(pos: Vector2) -> void:
+	var ex := Area2D.new()
+	ex.set_script(EXIT_PORTAL_SCRIPT)
+	ex.position = pos
+	add_child(ex)
+
 # Returns a pixel-center position safely inside a room, with an optional tile offset
 # clamped so it never lands on a wall.
 func _safe_pos_in_room(room: Rect2i, dx: int = 0, dy: int = 0) -> Vector2:
@@ -1127,22 +1192,46 @@ func _spawn_sell_chest(room: Rect2i) -> void:
 	chest.position = _safe_pos_in_room(room, 2, 0)
 	add_child(chest)
 
+# One rival wizard sentry per portal room — uses the player's "(o)" silhouette
+# in a randomized robe color and fires a real, lootable wand. Stationed on
+# the opposite side of the room from the portal so the player has to engage
+# rather than dance straight through.
+func _spawn_portal_wizard(room: Rect2i) -> void:
+	var wiz := WIZARD_SCENE.instantiate()
+	# Offset away from the portal tile so the wizard isn't standing on the
+	# portal itself. Portal sits at room center; nudge the wizard a couple
+	# tiles aside, _safe_pos_in_room snaps it back to a floor tile if the
+	# offset lands on a wall.
+	var dx := -2 if randf() > 0.5 else 2
+	var dy := -2 if randf() > 0.5 else 2
+	wiz.position = _safe_pos_in_room(room, dx, dy)
+	$Enemies.add_child(wiz)
+
 @warning_ignore("integer_division")
 func _spawn_enemies(player_room: Rect2i, skip_room: Rect2i = Rect2i()) -> void:
 	var diff        := GameState.difficulty
 	# Higher difficulty: fewer but bulkier enemies. Health scales hard so each
 	# foe is a real threat, while density falls off so rooms don't get crowded.
 	# Damage scaling is applied separately in Player.take_damage.
-	var health_mult := 1.0 + diff * 0.45
+	# HP multiplier per difficulty tier. Bumped 0.70 → 1.0 — the bot's wand
+	# damage scales hard with INT/level/rarity, so HP needs to keep up.
+	# Spiders/chasers stay poppy because their base HP is small (5–7); the
+	# multiplier separates feels-tankier vs feels-fragile by the *base*,
+	# not the multiplier itself.
+	var health_mult := 1.0 + diff * 1.0
 	var player_center := _tile_center(player_room.get_center())
 	# Density peaks near diff=1 and falls off sharply — bulk + damage carry the
-	# threat. Floor at 0.30 keeps higher tiers from being completely empty.
-	var density_mult: float = clampf(1.05 - (diff - 1.0) * 0.18, 0.30, 1.10)
+	# Spawn density grows with difficulty (each +1.0 = +25 %), but capped at
+	# 2.0× so very-high-tier floors stay traversable. Past ~150 enemies the
+	# room-clear loop becomes a slog regardless of player power.
+	var density_mult: float = clampf(1.0 + maxf(0.0, diff - 1.0) * 0.25, 0.50, 2.0)
 
 	for _r in _rooms:
 		var room: Rect2i = _r
 		if room == player_room or room == skip_room:
 			continue
+		if _themed_rooms.has(room):
+			continue   # themed encounter already populated this room
 		if room.size.x < 4 or room.size.y < 4:
 			continue
 
@@ -1162,6 +1251,7 @@ func _spawn_enemies(player_room: Rect2i, skip_room: Rect2i = Rect2i()) -> void:
 		var area: int   = room.size.x * room.size.y
 		# Per-room budget no longer adds raw +diff — density_mult is the only
 		# difficulty knob on count so higher tiers actually spawn fewer enemies.
+		@warning_ignore("integer_division")
 		var raw_budget: int = max(1, area / 18 + 1)
 		var budget: int = max(0, int(round(float(raw_budget) * density_mult * prox_mult)))
 		if budget <= 0:
@@ -1252,6 +1342,36 @@ func _spawn_enemies(player_room: Rect2i, skip_room: Rect2i = Rect2i()) -> void:
 		_queue_enemy(MISSILE_SCENE,   room, health_mult, n_missiles)
 		_queue_enemy(SPIDER_SCENE,    room, health_mult, n_spiders)
 
+	# Spawn closer rooms first so what the player can actually see populates
+	# immediately, while distant rooms drain in the background. Cuts perceived
+	# spawn lag dramatically without changing total work.
+	var anchor: Vector2 = player_center
+	_dungeon_spawn_queue.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var ra: Rect2i = a["room"]
+		var rb: Rect2i = b["room"]
+		var ca: Vector2 = _tile_center(ra.get_center())
+		var cb: Vector2 = _tile_center(rb.get_center())
+		return ca.distance_squared_to(anchor) < cb.distance_squared_to(anchor))
+	# Cap total queue size after the sort. Themed rooms have already placed
+	# their spawns synchronously (flat, hand-tuned counts), so subtract those
+	# from the budget and trim the *far* end of the queue — the closest
+	# rooms keep their full population and faraway rooms thin out instead.
+	var existing_count: int = get_tree().get_nodes_in_group("enemy").size()
+	var remaining_budget: int = maxi(0, MAX_DUNGEON_ENEMIES - existing_count)
+	if _dungeon_spawn_queue.size() > remaining_budget:
+		_dungeon_spawn_queue.resize(remaining_budget)
+	# Drain the front of the queue synchronously — these are the rooms
+	# closest to the player after the distance sort, so they end up
+	# populated *before* the first frame renders. Avoids the noticeable gap
+	# between entering the level and the first enemy showing up.
+	for _i in mini(DUNGEON_SPAWN_INITIAL_DRAIN, _dungeon_spawn_queue.size()):
+		var data: Dictionary = _dungeon_spawn_queue.pop_front()
+		_place_enemy(data["scene"] as PackedScene,
+			data["room"] as Rect2i,
+			float(data["hp_mult"]))
+	# Front-load the per-frame spawn rate for ~1.5 seconds after that.
+	_dungeon_spawn_burst_t = DUNGEON_SPAWN_BURST_DURATION
+
 func _queue_enemy(scene: PackedScene, room: Rect2i, health_mult: float, count: int) -> void:
 	for _i in count:
 		_dungeon_spawn_queue.append({"scene": scene, "room": room, "hp_mult": health_mult})
@@ -1270,7 +1390,10 @@ func _place_enemy(scene: PackedScene, room: Rect2i, health_mult: float) -> void:
 			enemy.move_speed = enemy.move_speed * spd_mult
 
 	# 15% chance of elite: doubled HP, random modifier
-	if randf() < 0.15 and "is_elite" in enemy:
+	# Elite chance climbs with difficulty: 15 % base, +5 % per +1.0 diff,
+	# capped at 45 % so floors don't become uniformly elite.
+	var elite_chance: float = clampf(0.15 + maxf(0.0, GameState.difficulty - 1.0) * 0.05, 0.15, 0.45)
+	if randf() < elite_chance and "is_elite" in enemy:
 		enemy.is_elite = true
 		if "max_health" in enemy:
 			enemy.max_health = maxi(1, enemy.max_health * 2)
@@ -1318,19 +1441,39 @@ func _roll_floor_modifier() -> void:
 	var is_boss := GameState.portals_used > 0 and GameState.portals_used % 5 == 4
 	var is_shop := GameState.portals_used > 0 and GameState.portals_used % 5 == 0
 	GameState.floor_modifier = ""
+	GameState.floor_modifiers = []
 	if is_boss or is_shop:
 		return
-	if randf() > 0.55:
+	# Trigger and stack count escalate with difficulty:
+	#   diff <4: 55 % chance for 1 modifier (legacy behavior).
+	#   diff ≥4: always 1 modifier.
+	#   diff ≥6: always 2 stacked modifiers (no duplicates).
+	var diff := GameState.difficulty
+	var force_one: bool = diff >= 4.0
+	var stack_two: bool = diff >= 6.0
+	if not force_one and randf() > 0.55:
 		return
 	var keys := FLOOR_MODIFIERS.keys()
-	GameState.floor_modifier = keys[randi() % keys.size()]
+	if keys.is_empty():
+		return
+	keys.shuffle()
+	GameState.floor_modifiers.append(String(keys[0]))
+	if stack_two and keys.size() > 1:
+		GameState.floor_modifiers.append(String(keys[1]))
+	# Keep legacy field in sync with the primary modifier.
+	GameState.floor_modifier = GameState.floor_modifiers[0]
 
 func _apply_floor_modifier_to_enemy(enemy: Node) -> void:
+	# Iterate every active modifier so stacked floors apply both effects.
+	for mod in GameState.floor_modifiers:
+		_apply_one_floor_modifier_to_enemy(enemy, String(mod))
+
+func _apply_one_floor_modifier_to_enemy(enemy: Node, mod_name: String) -> void:
 	# Modifier intensity ramps up with difficulty so a CURSED floor at diff 6
 	# is meaningfully scarier than at diff 1. Each 1.0 of difficulty above
 	# the start adds another step of effect strength.
 	var diff_step: float = maxf(0.0, GameState.difficulty - 1.0)
-	match GameState.floor_modifier:
+	match mod_name:
 		"cursed":
 			# 1.5× → 1.5 + 0.10*diff_step (e.g. diff 4 → 1.80×, diff 6 → 2.00×)
 			var mult := 1.5 + 0.10 * diff_step
@@ -1356,15 +1499,26 @@ func _apply_floor_modifier_to_enemy(enemy: Node) -> void:
 					enemy.elite_modifier = randi_range(1, 3)
 
 func _show_modifier_banner() -> void:
-	if not GameState.floor_modifier in FLOOR_MODIFIERS:
+	if GameState.floor_modifiers.is_empty():
 		return
-	var mod: Dictionary = FLOOR_MODIFIERS[GameState.floor_modifier]
 	var canvas := CanvasLayer.new()
 	canvas.layer = 20
 	get_tree().current_scene.add_child(canvas)
 
+	# Show every active modifier joined into one banner so stacked floors
+	# read clearly: "[ CURSED + BLOODLUST ]\nfaster + tankier".
+	var names: Array = []
+	var descs: Array = []
+	for m in GameState.floor_modifiers:
+		if m in FLOOR_MODIFIERS:
+			var entry: Dictionary = FLOOR_MODIFIERS[m]
+			names.append(String(entry["name"]))
+			descs.append(String(entry["desc"]))
+	if names.is_empty():
+		canvas.queue_free()
+		return
 	var lbl := Label.new()
-	lbl.text = "[ %s ]\n%s" % [mod["name"], mod["desc"]]
+	lbl.text = "[ %s ]\n%s" % [" + ".join(names), " · ".join(descs)]
 	lbl.position = Vector2(440.0, 370.0)
 	lbl.size = Vector2(720.0, 80.0)
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1378,6 +1532,8 @@ func _show_modifier_banner() -> void:
 	tw.tween_interval(1.5)
 	tw.tween_property(lbl, "modulate:a", 0.0, 1.2)
 	tw.tween_callback(canvas.queue_free)
+	if SoundManager:
+		SoundManager.play("boss_phase", randf_range(0.85, 1.0))
 
 # ── Biome debuffs ──────────────────────────────────────────────────────────────
 
@@ -1445,8 +1601,18 @@ func _spawn_challenge_room(player_room: Rect2i, skip_room: Rect2i) -> void:
 	if candidates.is_empty():
 		return
 	candidates.shuffle()
-	var room: Rect2i = candidates[0]
+	# Spawn an extra champion on harder floors. Each champion uses its own
+	# room from the candidate list so the encounter spaces out instead of
+	# stacking two giants in the same square.
+	var champ_count: int = 1
+	if GameState.difficulty >= 4.0:
+		champ_count = 2
+	for ci in mini(champ_count, candidates.size()):
+		_spawn_one_champion(candidates[ci])
+	return
 
+# Champion-room body extracted so we can spawn multiple on high-tier floors.
+func _spawn_one_champion(room: Rect2i) -> void:
 	var tint := ColorRect.new()
 	tint.color = Color(0.7, 0.05, 0.05, 0.18)
 	tint.position = Vector2(room.position.x * TILE, room.position.y * TILE)
@@ -1476,6 +1642,157 @@ func _spawn_challenge_room(player_room: Rect2i, skip_room: Rect2i) -> void:
 		lbl.add_theme_constant_override("outline_size",  4)
 	FloatingText.spawn_str(_tile_center(room.get_center()), "CHAMPION!", Color(1.0, 0.15, 0.15), get_tree().current_scene)
 
+# ── Themed rooms ─────────────────────────────────────────────────────────────
+# Hand-curated single-flavor encounters: spider dens, sniper alleys, charger
+# pits, etc. Replaces the regular enemy mix in 1-2 rooms per floor so walking
+# in feels like stumbling into a *thing* rather than another generic room.
+# Each theme is meant to be mean — the loot bag in the centre is the carrot.
+
+func _spawn_themed_rooms(player_room: Rect2i, skip_room: Rect2i) -> void:
+	var candidates: Array = []
+	for _r in _rooms:
+		var room: Rect2i = _r
+		if room == player_room or room == skip_room:
+			continue
+		# Themes need a bit of breathing room so the encounter reads clearly.
+		if room.size.x < 8 or room.size.y < 7:
+			continue
+		# Don't trample rooms that already host special content (we run before
+		# hazard/challenge but check anyway to be safe if someone reorders).
+		candidates.append(room)
+	if candidates.is_empty():
+		return
+	candidates.shuffle()
+	# Themed-room count climbs with difficulty: 1 base, 2 at ≥1.6, 3 at
+	# ≥3.0, 4 at ≥5.0. Caps at the number of qualifying candidate rooms.
+	var max_themes: int = 1
+	if GameState.difficulty >= 5.0:
+		max_themes = 4
+	elif GameState.difficulty >= 3.0:
+		max_themes = 3
+	elif GameState.difficulty >= 1.6:
+		max_themes = 2
+	var count := mini(randi_range(1, max_themes), candidates.size())
+	for i in count:
+		var room: Rect2i = candidates[i]
+		_themed_rooms.append(room)
+		_make_themed_room(room)
+
+# Themes — each one is a small recipe stamped into a room. Counts and HP
+# multipliers are intentionally a notch above the regular spawn pass so the
+# theme actually feels different (and dangerous). All themes drop a 2-item
+# loot bag in the centre as a reward for clearing.
+func _make_themed_room(room: Rect2i) -> void:
+	var diff := GameState.difficulty
+	var hp_mult: float = 1.0 + diff * 0.45
+	var themes: Array = [
+		{"name": "SPIDER DEN",     "tint": Color(0.40, 0.05, 0.45, 0.20), "color": Color(1.0, 0.55, 1.0)},
+		{"name": "SNIPER ALLEY",   "tint": Color(0.05, 0.30, 0.70, 0.20), "color": Color(0.6, 0.85, 1.0)},
+		{"name": "CHARGER PIT",    "tint": Color(0.80, 0.20, 0.05, 0.22), "color": Color(1.0, 0.55, 0.25)},
+		{"name": "MINEFIELD",      "tint": Color(0.55, 0.45, 0.10, 0.22), "color": Color(1.0, 0.85, 0.35)},
+		{"name": "BEAM CROSSFIRE", "tint": Color(0.05, 0.55, 0.55, 0.22), "color": Color(0.45, 1.0, 1.0)},
+		{"name": "SUMMONER NEST",  "tint": Color(0.30, 0.05, 0.55, 0.22), "color": Color(0.85, 0.55, 1.0)},
+		{"name": "SPIRAL CHOIR",   "tint": Color(0.55, 0.05, 0.55, 0.22), "color": Color(1.0, 0.45, 1.0)},
+		{"name": "GRENADE GAUNTLET", "tint": Color(0.65, 0.30, 0.05, 0.22), "color": Color(1.0, 0.65, 0.25)},
+		{"name": "ENCHANTED HALL", "tint": Color(0.10, 0.45, 0.15, 0.22), "color": Color(0.55, 1.0, 0.65)},
+	]
+	var theme: Dictionary = themes[randi() % themes.size()]
+
+	var tint := ColorRect.new()
+	tint.color = theme["tint"] as Color
+	tint.position = Vector2(room.position.x * TILE, room.position.y * TILE)
+	tint.size = Vector2(room.size.x * TILE, room.size.y * TILE)
+	tint.z_index = -10
+	add_child(tint)
+
+	match String(theme["name"]):
+		"SPIDER DEN":
+			# Swarm. Lots of spiders, a couple bulkier "matriarchs", traps to
+			# punish kiting around the edges.
+			for _i in randi_range(8, 12):
+				_place_enemy(SPIDER_SCENE, room, hp_mult)
+			for _i in 2:
+				_place_enemy(SPIDER_SCENE, room, hp_mult * 2.2)
+			_sprinkle_traps(room, randi_range(2, 4))
+		"SNIPER ALLEY":
+			# Pure ranged pressure — snipers + archers with no melee filler.
+			for _i in randi_range(3, 4):
+				_place_enemy(SNIPER_SCENE, room, hp_mult)
+			for _i in randi_range(2, 3):
+				_place_enemy(ARCHER_SCENE, room, hp_mult)
+		"CHARGER PIT":
+			# Concentrated melee rush — deliberately mean if you don't have
+			# good kiting tools.
+			for _i in randi_range(4, 6):
+				_place_enemy(CHARGER_SCENE, room, hp_mult * 1.15)
+			for _i in 2:
+				_place_enemy(CHASER_SCENE, room, hp_mult)
+		"MINEFIELD":
+			# Movement is dangerous on its own — minelayers keep replenishing.
+			for _i in randi_range(2, 3):
+				_place_enemy(MINELAYER_SCENE, room, hp_mult * 1.2)
+			for _i in randi_range(1, 2):
+				_place_enemy(GRENADIER_SCENE, room, hp_mult)
+			_sprinkle_traps(room, randi_range(3, 5))
+		"BEAM CROSSFIRE":
+			# Few enemies but each one paints a deadly arc — the room becomes
+			# a moving puzzle of lasers.
+			for _i in randi_range(2, 4):
+				_place_enemy(BEAMSWEEP_SCENE, room, hp_mult * 1.4)
+		"SUMMONER NEST":
+			# Two summoners + an enchanter buffing them: pressure compounds
+			# fast if you don't focus the support immediately.
+			for _i in randi_range(2, 3):
+				_place_enemy(SUMMONER_SCENE, room, hp_mult * 1.3)
+			for _i in randi_range(1, 2):
+				_place_enemy(ENCHANTER_SCENE, room, hp_mult)
+			_sprinkle_traps(room, randi_range(2, 4))
+		"SPIRAL CHOIR":
+			# Bullet-hell room — overlapping spiral patterns force constant
+			# motion through narrow gaps.
+			for _i in randi_range(3, 4):
+				_place_enemy(SPIRAL_SCENE, room, hp_mult * 1.2)
+		"GRENADE GAUNTLET":
+			for _i in randi_range(3, 5):
+				_place_enemy(GRENADIER_SCENE, room, hp_mult * 1.15)
+			for _i in 1:
+				_place_enemy(MINELAYER_SCENE, room, hp_mult)
+		"ENCHANTED HALL":
+			# Mid-tier mix all wearing buffs — every enemy feels harder than
+			# its base stat block suggests.
+			var roster := [SHOOTER_SCENE, ARCHER_SCENE, TANK_SCENE, CHARGER_SCENE]
+			for _i in randi_range(4, 5):
+				_place_enemy(roster[randi() % roster.size()] as PackedScene, room, hp_mult * 1.4)
+			for _i in randi_range(2, 3):
+				_place_enemy(ENCHANTER_SCENE, room, hp_mult)
+
+	# Shared reward — themed rooms always drop a centred bag with two items
+	# so the player has a tangible payoff for clearing them.
+	var bag := LOOT_BAG_SCENE.instantiate()
+	bag.position = _tile_center(room.get_center())
+	bag.set("items", [ItemDB.random_drop(), ItemDB.random_drop()])
+	add_child(bag)
+
+	# Floating banner so the player immediately knows what kind of room they
+	# walked into. Uses the theme's accent color.
+	FloatingText.spawn_str(_tile_center(room.get_center()) + Vector2(0.0, -36.0),
+		String(theme["name"]),
+		theme["color"] as Color,
+		get_tree().current_scene)
+	if SoundManager:
+		SoundManager.play("summon", randf_range(0.85, 1.0))
+
+func _sprinkle_traps(room: Rect2i, count: int) -> void:
+	for _i in count:
+		for _attempt in 10:
+			var tx := randi_range(room.position.x + 1, room.position.x + room.size.x - 2)
+			var ty := randi_range(room.position.y + 1, room.position.y + room.size.y - 2)
+			if _grid[ty][tx] == FLOOR:
+				var trap := SPIKE_TRAP_SCENE.instantiate()
+				trap.position = _tile_center(Vector2i(tx, ty))
+				add_child(trap)
+				break
+
 # ── Biome hazards ─────────────────────────────────────────────────────────────
 # Each non-Dungeon biome has its own floor hazard:
 #   1 Catacombs   → poison clouds (apply poison + small dmg ticks)
@@ -1499,6 +1816,10 @@ func _spawn_lava_tiles() -> void:
 			count = randi_range(10, 18)
 		_:
 			return
+	# Density scales with difficulty — +20 % hazards per +1.0 difficulty
+	# (capped at +160 % so floors aren't pure damage tiles).
+	var diff_mult: float = 1.0 + clampf(maxf(0.0, GameState.difficulty - 1.0) * 0.20, 0.0, 1.6)
+	count = int(round(float(count) * diff_mult))
 	var placed := 0
 	var shuffled := _rooms.duplicate()
 	shuffled.shuffle()
@@ -1521,7 +1842,9 @@ func _spawn_lava_tiles() -> void:
 # ── Boss ──────────────────────────────────────────────────────────────────────
 
 # Picks the largest room and stamps a hand-tuned obstacle pattern into it for
-# boss fights. Returns the chosen rect (or empty Rect2i if no suitable room).
+# boss fights. The chosen room is *expanded outward* into the surrounding
+# walls/corridors so the fight has somewhere grand to play out — bosses are
+# big and they need elbow room. Returns the new (expanded) rect.
 # Layouts vary by floor index so successive boss floors feel distinct.
 @warning_ignore("integer_division")
 func _carve_boss_arena() -> Rect2i:
@@ -1535,7 +1858,21 @@ func _carve_boss_arena() -> Rect2i:
 			best = room
 	if best_area == 0:
 		return Rect2i()
+	# Expand outward by EXPAND tiles each side, clamped to grid edges. Walls
+	# inside the expanded region are converted to floor — corridors / small
+	# adjacent rooms get absorbed into the arena, which is the intent.
+	const EXPAND: int = 6
+	var nx: int = maxi(2, best.position.x - EXPAND)
+	var ny: int = maxi(2, best.position.y - EXPAND)
+	var nx_end: int = mini(GRID_W - 2, best.position.x + best.size.x + EXPAND)
+	var ny_end: int = mini(GRID_H - 2, best.position.y + best.size.y + EXPAND)
+	for y in range(ny, ny_end):
+		for x in range(nx, nx_end):
+			_grid[y][x] = FLOOR
+	best.position = Vector2i(nx, ny)
+	best.size = Vector2i(nx_end - nx, ny_end - ny)
 	# Pick a layout based on which boss floor this is
+	@warning_ignore("integer_division")
 	var layout: int = (GameState.portals_used / 5) % 3
 	match layout:
 		0: _arena_layout_pillars(best)
@@ -1544,28 +1881,34 @@ func _carve_boss_arena() -> Rect2i:
 	return best
 
 # Four 2×2 pillar walls at quartile positions — classic cover-shooter feel.
-@warning_ignore("integer_division")
 func _arena_layout_pillars(room: Rect2i) -> void:
+	@warning_ignore("integer_division")
 	var px_l := room.position.x + room.size.x / 4
+	@warning_ignore("integer_division")
 	var px_r := room.position.x + 3 * room.size.x / 4
+	@warning_ignore("integer_division")
 	var py_t := room.position.y + room.size.y / 4
+	@warning_ignore("integer_division")
 	var py_b := room.position.y + 3 * room.size.y / 4
 	for cx in [px_l, px_r]:
 		for cy in [py_t, py_b]:
 			_stamp_wall_block(cx, cy, 2, 2)
 
 # Plus-shaped wall barricades that block long sight lines through the centre.
-@warning_ignore("integer_division")
 func _arena_layout_cross(room: Rect2i) -> void:
+	@warning_ignore("integer_division")
 	var cx: int = room.position.x + room.size.x / 2
+	@warning_ignore("integer_division")
 	var cy: int = room.position.y + room.size.y / 2
 	# Horizontal arm — leave 2-tile gaps either side of the centre
+	@warning_ignore("integer_division")
 	var arm_w: int = room.size.x / 3
 	for x in range(cx - arm_w, cx - 1):
 		_grid[cy][x] = WALL
 	for x in range(cx + 2, cx + arm_w):
 		_grid[cy][x] = WALL
 	# Vertical arm
+	@warning_ignore("integer_division")
 	var arm_h: int = room.size.y / 3
 	for y in range(cy - arm_h, cy - 1):
 		_grid[y][cx] = WALL
@@ -1601,19 +1944,59 @@ func _spawn_boss(room: Rect2i) -> void:
 	var pos := _tile_center(room.get_center())
 	var boss_pick := randi() % 3
 	var boss: Node2D
+	# Boss bases bumped (40/55/45 → 200/260/220) and per-diff multiplier
+	# bumped (0.25 → 0.85) so every boss is a real fight, scaling up hard
+	# on deep floors. Mirrors the enemy-base bumps in EnemyBoss.gd /
+	# EnemyBossArchitect.gd / EnemyBossWraith.gd.
 	match boss_pick:
 		0:
 			boss = BOSS_SCENE.instantiate()
 			if "max_health" in boss:
-				boss.max_health = int(40.0 * (1.0 + diff * 0.25))
+				boss.max_health = int(200.0 * (1.0 + diff * 0.85))
 		1:
 			boss = BOSS_ARCHITECT_SCRIPT.new()
-			boss.max_health = int(55.0 * (1.0 + diff * 0.25))
+			boss.max_health = int(260.0 * (1.0 + diff * 0.85))
 		2:
 			boss = BOSS_WRAITH_SCRIPT.new()
-			boss.max_health = int(45.0 * (1.0 + diff * 0.25))
+			boss.max_health = int(220.0 * (1.0 + diff * 0.85))
 	boss.position = pos
 	$Enemies.add_child(boss)
+
+# Probability that a non-boss floor at high difficulty hosts a mini-boss.
+# Climbs from 0 % at diff 4 to ~40 % at diff 6+.
+func _mini_boss_chance() -> float:
+	return clampf((GameState.difficulty - 4.0) * 0.20, 0.0, 0.40)
+
+# Plants a single boss-type enemy at reduced HP into a far-from-spawn room.
+# Doesn't claim the portal (this isn't a true boss floor) so the player can
+# still progress without killing it — but the rewards for doing so are real.
+@warning_ignore("integer_division")
+func _spawn_mini_boss(player_room: Rect2i) -> void:
+	var room: Rect2i = _farthest_room(player_room)
+	if room.size.x < 8 or room.size.y < 6:
+		return
+	var diff := GameState.difficulty
+	var pick := randi() % 3
+	var boss: Node2D
+	# 60 % of full boss HP — meant as a tough optional encounter, not
+	# the main floor objective. Bases + multiplier follow _spawn_boss.
+	match pick:
+		0:
+			boss = BOSS_SCENE.instantiate()
+			if "max_health" in boss:
+				boss.max_health = int(200.0 * (1.0 + diff * 0.85) * 0.6)
+		1:
+			boss = BOSS_ARCHITECT_SCRIPT.new()
+			boss.max_health = int(260.0 * (1.0 + diff * 0.85) * 0.6)
+		2:
+			boss = BOSS_WRAITH_SCRIPT.new()
+			boss.max_health = int(220.0 * (1.0 + diff * 0.85) * 0.6)
+	boss.position = _tile_center(room.get_center())
+	$Enemies.add_child(boss)
+	if SoundManager:
+		SoundManager.play("boss_roar", randf_range(1.05, 1.18))
+	FloatingText.spawn_str(boss.position, "MINI-BOSS",
+		Color(1.0, 0.4, 0.3), get_tree().current_scene)
 
 # ── Traps ─────────────────────────────────────────────────────────────────────
 
@@ -1623,12 +2006,12 @@ func _spawn_shrine(player_room: Rect2i) -> void:
 		return
 	var candidates: Array = []
 	for r in _rooms:
-		var room: Rect2i = r
-		if room == player_room:
+		var cr: Rect2i = r
+		if cr == player_room:
 			continue
-		if room.size.x < 4 or room.size.y < 4:
+		if cr.size.x < 4 or cr.size.y < 4:
 			continue
-		candidates.append(room)
+		candidates.append(cr)
 	if candidates.is_empty():
 		return
 	var room: Rect2i = candidates[randi() % candidates.size()]
@@ -1643,7 +2026,11 @@ func _spawn_shrine(player_room: Rect2i) -> void:
 
 func _spawn_traps() -> void:
 	var diff := GameState.difficulty
+	# Trap count grows with difficulty similar to hazard tiles — base
+	# range scaled by 1 + (diff-1) × 0.20, capped at +160 %.
+	var diff_mult: float = 1.0 + clampf(maxf(0.0, diff - 1.0) * 0.20, 0.0, 1.6)
 	var trap_count: int = randi_range(1, 2 + int(diff * 0.5))
+	trap_count = int(round(float(trap_count) * diff_mult))
 	var tried := 0
 	for _r in _rooms:
 		var room: Rect2i = _r
@@ -1668,9 +2055,16 @@ func _spawn_traps() -> void:
 func _try_secret_rooms() -> void:
 	var candidates := _rooms.duplicate()
 	candidates.shuffle()
+	# Secret room cap scales with difficulty: 2 base, 3 at ≥3.0, 4 at ≥5.0.
+	# More hidden rewards to compensate for the harder fights / hazard load.
+	var max_secrets: int = 2
+	if GameState.difficulty >= 5.0:
+		max_secrets = 4
+	elif GameState.difficulty >= 3.0:
+		max_secrets = 3
 	var spawned := 0
 	for _r in candidates:
-		if spawned >= 2:
+		if spawned >= max_secrets:
 			break
 		var room: Rect2i = _r
 		if room == _rooms[0]:
@@ -1678,13 +2072,14 @@ func _try_secret_rooms() -> void:
 		if _try_secret_off_room(room):
 			spawned += 1
 
-@warning_ignore("integer_division")
 func _try_secret_off_room(base: Rect2i) -> bool:
 	# Try east side only (simplest, least likely to go OOB)
 	var sx := base.position.x + base.size.x + 1
+	@warning_ignore("integer_division")
 	var sy := base.position.y + base.size.y / 2 - 2
 	var sw := 6
 	var sh := 5
+	@warning_ignore("integer_division")
 	var entrance := Vector2i(base.position.x + base.size.x, base.position.y + base.size.y / 2)
 
 	if sx + sw + 1 >= GRID_W or sy < 2 or sy + sh + 1 >= GRID_H:
@@ -1706,6 +2101,7 @@ func _try_secret_off_room(base: Rect2i) -> bool:
 	_set_floor(entrance.x, entrance.y)
 	_set_floor(entrance.x, entrance.y + 1)
 
+	@warning_ignore("integer_division")
 	var loot_tile := Vector2i(sx + sw / 2, sy + sh / 2)
 	_secret_door_data.append({"entrance": entrance, "loot_tile": loot_tile})
 	return true
@@ -1769,58 +2165,100 @@ func _create_minimap() -> void:
 	canvas.layer = 15
 	add_child(canvas)
 
-	# Dark surround border
+	# Anchored container — pins the entire minimap (and its labels) to the
+	# top-right corner of the viewport so window resizes don't push it off
+	# screen. All child positions are RELATIVE to this Control's origin
+	# (the minimap's top-left, including the 2 px border padding).
+	var mini_root := Control.new()
+	mini_root.name = "MinimapRoot"
+	mini_root.anchor_left = 1.0
+	mini_root.anchor_right = 1.0
+	mini_root.anchor_top = 0.0
+	mini_root.anchor_bottom = 0.0
+	# Match the HUD column's right tightening (Player.gd _RIGHT_HUD_TIGHTEN)
+	# so the minimap's right edge lines up with the stats / wand-info /
+	# autoplay panels below it instead of floating ~108 px further inboard.
+	const _MINIMAP_RIGHT_TIGHTEN: float = 110.0
+	var right_margin: float = maxf(0.0,
+		1600.0 - (MINIMAP_X + MINIMAP_W + 2.0) - _MINIMAP_RIGHT_TIGHTEN)
+	var full_w: float = MINIMAP_W + 4.0
+	var full_h: float = MINIMAP_H + 30.0
+	mini_root.offset_left = -(full_w + right_margin)
+	mini_root.offset_right = -right_margin
+	mini_root.offset_top = MINIMAP_Y - 2.0
+	mini_root.offset_bottom = MINIMAP_Y - 2.0 + full_h
+	mini_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(mini_root)
+	_minimap_root = mini_root
+
+	# Dark surround border (relative to mini_root: top-left of the box)
 	var bg := ColorRect.new()
 	bg.color = Color(0.02, 0.02, 0.06, 0.88)
-	bg.position = Vector2(MINIMAP_X - 2.0, MINIMAP_Y - 2.0)
+	bg.position = Vector2(0.0, 0.0)
 	bg.size = Vector2(MINIMAP_W + 4.0, MINIMAP_H + 4.0)
-	canvas.add_child(bg)
+	mini_root.add_child(bg)
 
 	# ASCII glyph layer — draws "." for floor and "#" for wall via _draw().
+	# Inset 2 px so it sits inside the border.
 	var glyph_overlay := Node2D.new()
 	glyph_overlay.set_script(MINIMAP_GLYPHS_SCRIPT)
-	glyph_overlay.position = Vector2(MINIMAP_X, MINIMAP_Y)
-	canvas.add_child(glyph_overlay)
+	glyph_overlay.position = Vector2(2.0, 2.0)
+	mini_root.add_child(glyph_overlay)
 	glyph_overlay.setup(_grid, GRID_W, GRID_H, MINIMAP_CELL_W, MINIMAP_CELL_H)
 
-	# Portal dot (static)
+	# Portal dot — relative to glyph_overlay's origin (which is the inner
+	# top-left of the map area).
 	var portal_dot := ColorRect.new()
 	portal_dot.size = Vector2(4.0, 4.0)
 	portal_dot.color = Color(0.3, 1.0, 0.3, 0.9)
 	portal_dot.position = Vector2(
-		MINIMAP_X + float(_portal_tile.x) * MINIMAP_CELL_W - 2.0,
-		MINIMAP_Y + float(_portal_tile.y) * MINIMAP_CELL_H - 2.0)
-	canvas.add_child(portal_dot)
+		2.0 + float(_portal_tile.x) * MINIMAP_CELL_W - 2.0,
+		2.0 + float(_portal_tile.y) * MINIMAP_CELL_H - 2.0)
+	mini_root.add_child(portal_dot)
 
-	# Biome + floor label
+	# Biome + floor label — moved OUT of the minimap container. Sits as a
+	# standalone left-anchored Control near the top-left of the screen so
+	# the dungeon name + modifier tags ("Dungeon F3 [HASTE+CURSED]") don't
+	# get squished under the right-hugging minimap. Anchors to top-left
+	# and uses left-aligned text so it reads cleanly.
 	var biome_lbl := Label.new()
 	var gen_tag := " [C]" if _gen_mode == GenMode.CAVE else (" [H]" if _gen_mode == GenMode.HALLS else "")
-	var mod_tag := (" [%s]" % GameState.floor_modifier.to_upper()) if GameState.floor_modifier != "" else ""
+	var mod_tag := ""
+	if not GameState.floor_modifiers.is_empty():
+		var upper_mods: Array = []
+		for m in GameState.floor_modifiers:
+			upper_mods.append(String(m).to_upper())
+		mod_tag = " [%s]" % "+".join(upper_mods)
 	biome_lbl.text = "%s  F%d%s%s  seed:%d" % [
 		BIOME_NAMES[GameState.biome], GameState.portals_used + 1,
 		gen_tag, mod_tag, _floor_seed]
-	biome_lbl.position = Vector2(MINIMAP_X, MINIMAP_Y + MINIMAP_H + 2.0)
-	biome_lbl.size = Vector2(MINIMAP_W, 14.0)
-	biome_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	# Sits below the gold label (y=32-50) so the dungeon name + modifier
+	# tags don't overlap the gold readout. y=58 leaves a comfortable gap
+	# below the gold text without stepping on the stamina bar's column.
+	biome_lbl.position = Vector2(220.0, 58.0)
+	biome_lbl.size = Vector2(620.0, 14.0)
+	biome_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	biome_lbl.add_theme_font_size_override("font_size", 10)
 	biome_lbl.add_theme_color_override("font_color", Color(0.55, 0.55, 0.7))
 	canvas.add_child(biome_lbl)
 
-	# Legend
+	# Legend — sits directly under the minimap now that the biome label has
+	# moved to the top-left HUD column.
 	var legend := Label.new()
 	legend.text = "● you   ● portal"
-	legend.position = Vector2(MINIMAP_X, MINIMAP_Y + MINIMAP_H + 16.0)
+	legend.position = Vector2(2.0, MINIMAP_H + 6.0)
 	legend.size = Vector2(MINIMAP_W, 10.0)
 	legend.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	legend.add_theme_font_size_override("font_size", 8)
 	legend.add_theme_color_override("font_color", Color(0.38, 0.38, 0.5))
-	canvas.add_child(legend)
+	mini_root.add_child(legend)
 
-	# Player dot (position updated in _process)
+	# Player dot (position updated in _process). Lives inside mini_root
+	# so its position is in minimap-local space.
 	_minimap_dot = ColorRect.new()
 	_minimap_dot.size = Vector2(4.0, 4.0)
 	_minimap_dot.color = Color(0.3, 1.0, 0.9, 1.0)
-	canvas.add_child(_minimap_dot)
+	mini_root.add_child(_minimap_dot)
 
 # ── CRT overlay ───────────────────────────────────────────────────────────────
 
@@ -1855,23 +2293,83 @@ func _on_room_cleared() -> void:
 	var player: Node2D = get_tree().get_first_node_in_group("player") as Node2D
 	if not is_instance_valid(player):
 		return
-	FloatingText.spawn_str(player.global_position + Vector2(0.0, -70.0), "ROOM CLEARED!", Color(1.0, 0.92, 0.2), get_tree().current_scene)
+	# Cache the scene root once. `get_tree().current_scene` can return null
+	# briefly during scene transitions — caching here keeps every add_child
+	# below using the same handle and lets us bail cleanly if it's already
+	# gone (e.g. player tabbed through the portal mid-room-clear).
+	var scene_root: Node = get_tree().current_scene
+	if scene_root == null:
+		return
+	FloatingText.spawn_str(player.global_position + Vector2(0.0, -70.0), "ROOM CLEARED!", Color(1.0, 0.92, 0.2), scene_root)
 	if SoundManager:
 		SoundManager.play("room_clear")
 	for _i in 4:
 		var gold := GOLD_PICKUP_SCENE.instantiate()
 		gold.global_position = player.global_position + Vector2(randf_range(-56.0, 56.0), randf_range(-40.0, 40.0))
 		gold.value = int(randi_range(4, 10) * GameState.loot_multiplier)
-		get_tree().current_scene.add_child(gold)
+		scene_root.add_child(gold)
+	# Animate every uncollected loot bag toward the merge point and replace
+	# the cluster with a single fancy "mega bag" once the animation
+	# finishes. Cuts the visual clutter of 30+ scattered bags AND gives
+	# the room-clear payoff a satisfying convergence beat.
+	var merge_target: Vector2 = player.global_position + Vector2(0.0, 36.0)
+	var merged_items: Array = []
+	var merged_bag_count: int = 0
+	for b in get_tree().get_nodes_in_group("loot_bag"):
+		if not is_instance_valid(b):
+			continue
+		if "items" in b:
+			for it in (b.get("items") as Array):
+				merged_items.append(it)
+			# Empty the bag's items so its own pickup paths can't double
+			# up on the same loot mid-animation.
+			b.set("items", [])
+		merged_bag_count += 1
+		var bag_node := b as Node2D
+		# Slide the sprite toward the merge target, then free it. Quad-in
+		# easing makes them lurch outward briefly before snapping in,
+		# which reads as "all the loot is collapsing onto the player".
+		var tw := bag_node.create_tween()
+		tw.tween_property(bag_node, "global_position", merge_target, 0.45) \
+			.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		tw.tween_callback(bag_node.queue_free)
+	if not merged_items.is_empty():
+		# Wait for the converge animation, then drop one fancy mega bag.
+		# scene_root captured up top — but the timer fires 0.5 s later and
+		# the scene may have changed (portal entered mid-animation), so
+		# re-check via is_instance_valid before parenting the new bag.
+		var loot_scene: PackedScene = LOOT_BAG_SCENE
+		var bag_count_announce: int = merged_bag_count
+		var scene_root_ref: Node = scene_root
+		get_tree().create_timer(0.5).timeout.connect(func() -> void:
+			if not is_instance_valid(scene_root_ref) or not scene_root_ref.is_inside_tree():
+				return
+			var bag := loot_scene.instantiate()
+			bag.position = merge_target
+			bag.set("items", merged_items)
+			bag.set("is_mega", true)
+			scene_root_ref.add_child(bag)
+			FloatingText.spawn_str(merge_target + Vector2(0.0, -56.0),
+				"MEGA BAG (×%d merged)" % bag_count_announce,
+				Color(1.0, 0.85, 0.25), scene_root_ref))
 
 func _process(delta: float) -> void:
 	if _is_test_mode:
 		_tick_test_wave(delta)
-	# Drain queued dungeon-mode spawns over time. Spawn aggressively when
-	# the previous frame was healthy (≥40 fps); back off to 1/frame if we're
-	# already lagging so we don't make a bad frame worse.
+	# Drain queued dungeon-mode spawns over time. Burst hard for the first
+	# second after a level loads (so the world feels populated immediately),
+	# then drop to the steady fast/slow rates. Slow rate kicks in only when
+	# the previous frame was already heavy so we don't compound bad frames.
+	if _dungeon_spawn_burst_t > 0.0:
+		_dungeon_spawn_burst_t -= delta
 	if not _dungeon_spawn_queue.is_empty():
-		var per_frame: int = DUNGEON_SPAWN_PER_FAST if delta < 0.025 else DUNGEON_SPAWN_PER_SLOW
+		var per_frame: int
+		if delta >= 0.025:
+			per_frame = DUNGEON_SPAWN_PER_SLOW
+		elif _dungeon_spawn_burst_t > 0.0:
+			per_frame = DUNGEON_SPAWN_PER_BURST
+		else:
+			per_frame = DUNGEON_SPAWN_PER_FAST
 		for _i in mini(per_frame, _dungeon_spawn_queue.size()):
 			var data: Dictionary = _dungeon_spawn_queue.pop_front()
 			_place_enemy(data["scene"] as PackedScene,
@@ -1898,7 +2396,10 @@ func _process(delta: float) -> void:
 	if not is_instance_valid(player):
 		return
 	var tile_pos: Vector2 = player.global_position / float(TILE)
+	# Player dot lives inside the anchored mini_root container, so its
+	# position is now in minimap-local space (top-left of the inner map
+	# area is at (2, 2) inside the container).
 	_minimap_dot.position = Vector2(
-		MINIMAP_X + tile_pos.x * MINIMAP_CELL_W - 2.0,
-		MINIMAP_Y + tile_pos.y * MINIMAP_CELL_H - 2.0
+		2.0 + tile_pos.x * MINIMAP_CELL_W - 2.0,
+		2.0 + tile_pos.y * MINIMAP_CELL_H - 2.0
 	)

@@ -11,7 +11,7 @@ const BOSS_F1 := "-+-\n>X<\n-+-"
 const BOSS_NAME := "THE ARCHITECT"
 const BOSS_COLOR := Color(0.1, 0.9, 0.85)
 
-@export var max_health: int = 55
+@export var max_health: int = 260   # bumped 55 → 130 → 260
 
 var health: int              = 55
 var _player: Node2D          = null
@@ -73,8 +73,7 @@ func _ready() -> void:
 	add_child(cshape)
 
 	_lbl = Label.new()
-	var mono := SystemFont.new()
-	mono.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
+	var mono := MonoFont.get_font()
 	_lbl.add_theme_font_override("font", mono)
 	_lbl.add_theme_font_size_override("font_size", 13)
 	_lbl.add_theme_constant_override("line_separation", -2)
@@ -90,6 +89,7 @@ func _ready() -> void:
 
 	_create_boss_bar()
 	FloatingText.spawn_str(global_position, "BOSS!", Color(0.1, 0.9, 0.85), get_tree().current_scene)
+	BossIntro.show_for(get_tree().current_scene, "THE ARCHITECT", Color(0.55, 0.30, 1.00))
 	if SoundManager:
 		SoundManager.play("boss_roar")
 
@@ -287,6 +287,9 @@ func _tick_anim(delta: float) -> void:
 		_anim_frame = 1 - _anim_frame
 	if _lbl == null: return
 	_lbl.text = BOSS_F0 if _anim_frame == 0 else BOSS_F1
+	FrozenBlock.sync_to(self, _frozen)
+	EnflameOverlay.sync_to(self, _enflamed)
+	PoisonOverlay.sync_to(self, _poisoned)
 	if _invuln_timer > 0.0:
 		_lbl.modulate = Color(1.0, 1.0, 1.0, absf(sin(Time.get_ticks_msec() * 0.04)))
 	elif _hit_flash_t > 0.0:
@@ -332,10 +335,11 @@ func _tick_status(delta: float) -> void:
 				if not is_instance_valid(self): return
 
 func apply_status(effect: String, _duration: float) -> void:
+	var stacks: int = maxi(1, int(_duration))
 	match effect:
 		"freeze_hit":
 			if _frozen: return
-			_chill_stacks = mini(_chill_stacks + 1, BOSS_STACK_THRESHOLD)
+			_chill_stacks = mini(_chill_stacks + stacks, BOSS_STACK_THRESHOLD)
 			_chill_decay_t = 3.0
 			if _chill_stacks >= BOSS_STACK_THRESHOLD:
 				_frozen = true
@@ -344,29 +348,34 @@ func apply_status(effect: String, _duration: float) -> void:
 			else:
 				FloatingText.spawn_str(global_position, "CHILL %d/%d" % [_chill_stacks, BOSS_STACK_THRESHOLD], Color(0.45, 0.82, 1.0), get_tree().current_scene)
 		"burn_hit":
-			_burn_stacks = mini(_burn_stacks + 1, BOSS_STACK_THRESHOLD)
-			if _burn_stacks >= BOSS_STACK_THRESHOLD:
-				_burn_stacks = 0
-				_enflamed = true
-				_enflame_timer = 5.0
-				_enflame_tick = 0.0
-				FloatingText.spawn_str(global_position, "ENFLAMED!", Color(1.0, 0.3, 0.0), get_tree().current_scene)
-				take_damage(12)
+			if _enflamed:
+				EnflameOverlay.refresh_pulse(self)
 			else:
-				FloatingText.spawn_str(global_position, "BURN %d/%d" % [_burn_stacks, BOSS_STACK_THRESHOLD], Color(1.0, 0.55, 0.2), get_tree().current_scene)
+				_burn_stacks = mini(_burn_stacks + stacks, BOSS_STACK_THRESHOLD)
+				if _burn_stacks >= BOSS_STACK_THRESHOLD:
+					_burn_stacks = 0
+					_enflamed = true
+					_enflame_timer = 5.0
+					_enflame_tick = 0.0
+					FloatingText.spawn_str(global_position, "ENFLAMED!", Color(1.0, 0.3, 0.0), get_tree().current_scene)
+					take_damage(12)
+					if is_instance_valid(self):
+						EnflameOverlay.sync_to(self, true)
+				else:
+					FloatingText.spawn_str(global_position, "BURN %d/%d" % [_burn_stacks, BOSS_STACK_THRESHOLD], Color(1.0, 0.55, 0.2), get_tree().current_scene)
 		"shock_hit":
-			_shock_stacks = mini(_shock_stacks + 1, BOSS_STACK_THRESHOLD)
+			_shock_stacks = mini(_shock_stacks + stacks, BOSS_STACK_THRESHOLD)
 			if _shock_stacks >= BOSS_STACK_THRESHOLD:
 				_shock_stacks = 0
-				_stun_timer = 0.5
-				_no_attack_timer = 1.5
 				FloatingText.spawn_str(global_position, "ELECTRIFIED!", Color(0.75, 0.9, 1.0), get_tree().current_scene)
 				take_damage(10)
+				if is_instance_valid(self):
+					ElectricBolt.trigger(self)
 			else:
 				FloatingText.spawn_str(global_position, "SHOCK %d/%d" % [_shock_stacks, BOSS_STACK_THRESHOLD], Color(0.7, 0.85, 1.0), get_tree().current_scene)
 
 func _get_status_modulate() -> Color:
-	if _frozen:       return Color(0.55, 0.82, 1.0)
+	if _frozen:       return Color(0.78, 0.92, 1.0)
 	if _stun_timer > 0.0: return Color(0.9, 0.9, 0.3)
 	if _enflamed:
 		var flicker := sin(Time.get_ticks_msec() * 0.025) * 0.12 + 0.88
@@ -387,6 +396,7 @@ func take_damage(amount: int) -> void:
 		GameState.kills += 5
 		GameState.add_xp(40)
 		_drop_loot()
+		EffectFx.spawn_death_pop(global_position, get_tree().current_scene, Color(0.85, 0.4, 1.0))
 		queue_free()
 
 func _drop_loot() -> void:
@@ -397,27 +407,49 @@ func _drop_loot() -> void:
 		get_tree().current_scene.call_deferred("add_child", gold)
 	var bag := LOOT_BAG_SCENE.instantiate()
 	bag.global_position = global_position
-	bag.items = [ItemDB.random_drop(), ItemDB.random_drop(), ItemDB.random_drop()]
+	# Signature: Architect's Compass always drops alongside the random rolls.
+	bag.items = [ItemDB.boss_signature_architect(),
+		ItemDB.random_drop(), ItemDB.random_drop(), ItemDB.random_drop()]
 	get_tree().current_scene.call_deferred("add_child", bag)
 
 func _create_boss_bar() -> void:
 	_boss_canvas = CanvasLayer.new()
 	_boss_canvas.layer = 18
 	get_tree().current_scene.add_child(_boss_canvas)
+	# Bar + name plate are anchored to bottom-center so they stay glued to
+	# the bottom edge and horizontal center regardless of viewport size.
 	var bg := ColorRect.new()
 	bg.color = Color(0.0, 0.04, 0.05, 0.88)
-	bg.position = Vector2(100.0, 828.0)
-	bg.size = Vector2(1400.0, 22.0)
+	bg.anchor_left = 0.5
+	bg.anchor_right = 0.5
+	bg.anchor_top = 1.0
+	bg.anchor_bottom = 1.0
+	bg.offset_left = -700.0
+	bg.offset_right = 700.0
+	bg.offset_top = -72.0
+	bg.offset_bottom = -50.0
 	_boss_canvas.add_child(bg)
 	_boss_bar_fg = ColorRect.new()
 	_boss_bar_fg.color = Color(0.08, 0.82, 0.78)
-	_boss_bar_fg.position = Vector2(101.0, 829.0)
-	_boss_bar_fg.size = Vector2(1398.0, 20.0)
+	_boss_bar_fg.anchor_left = 0.5
+	_boss_bar_fg.anchor_right = 0.5
+	_boss_bar_fg.anchor_top = 1.0
+	_boss_bar_fg.anchor_bottom = 1.0
+	_boss_bar_fg.offset_left = -699.0
+	_boss_bar_fg.offset_right = -699.0
+	_boss_bar_fg.offset_top = -71.0
+	_boss_bar_fg.offset_bottom = -51.0
 	_boss_canvas.add_child(_boss_bar_fg)
 	var name_lbl := Label.new()
 	name_lbl.text = BOSS_NAME
-	name_lbl.position = Vector2(0.0, 808.0)
-	name_lbl.size = Vector2(1600.0, 20.0)
+	name_lbl.anchor_left = 0.0
+	name_lbl.anchor_right = 1.0
+	name_lbl.anchor_top = 1.0
+	name_lbl.anchor_bottom = 1.0
+	name_lbl.offset_left = 0.0
+	name_lbl.offset_right = 0.0
+	name_lbl.offset_top = -92.0
+	name_lbl.offset_bottom = -72.0
 	name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	name_lbl.add_theme_font_size_override("font_size", 12)
 	name_lbl.add_theme_color_override("font_color", BOSS_COLOR)
@@ -425,4 +457,4 @@ func _create_boss_bar() -> void:
 
 func _update_boss_bar() -> void:
 	if _boss_bar_fg == null: return
-	_boss_bar_fg.size.x = 1398.0 * clampf(float(health) / float(max_health), 0.0, 1.0)
+	_boss_bar_fg.offset_right = -699.0 + 1398.0 * clampf(float(health) / float(max_health), 0.0, 1.0)

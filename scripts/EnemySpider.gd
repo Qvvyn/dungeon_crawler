@@ -24,6 +24,14 @@ func _on_ready_extra() -> void:
 		_lbl.text = F0
 		_lbl.add_theme_font_size_override("font_size", 13)
 		_lbl.add_theme_constant_override("line_separation", -3)
+		# EnemyBase positions the glyph label high to leave room below for big
+		# enemy glyphs (Chaser "Z" at font 36, Tank "T" etc). The spider art
+		# is small — recentre on the body so the visual sits over the
+		# collision shape and the health bar sits directly below.
+		_lbl.offset_left   = -22.0
+		_lbl.offset_top    = -22.0
+		_lbl.offset_right  =  22.0
+		_lbl.offset_bottom =  18.0
 
 func _enemy_tick(delta: float) -> void:
 	if _frozen or _stun_timer > 0.0:

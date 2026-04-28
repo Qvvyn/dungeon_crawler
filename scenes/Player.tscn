@@ -28,7 +28,7 @@ offset_right = 27.0
 offset_bottom = 32.0
 text = "(o)"
 theme_override_font_sizes/font_size = 10
-theme_override_colors/font_color = Color(0.45, 0.75, 1.0, 1)
+theme_override_colors/font_color = Color(0.75, 0.45, 1.0, 1)
 theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
 theme_override_constants/outline_size = 2
 
@@ -98,22 +98,22 @@ theme_override_font_sizes/font_size = 56
 theme_override_colors/font_color = Color(0.9, 0.2, 0.2, 1)
 
 [node name="RetryButton" type="Button" parent="HUD/DeathMenu"]
-offset_left = 700.0
+offset_left = 500.0
 offset_top = 400.0
-offset_right = 900.0
+offset_right = 680.0
 offset_bottom = 460.0
 text = "Retry"
 
 [node name="QuitButton" type="Button" parent="HUD/DeathMenu"]
-offset_left = 700.0
-offset_top = 475.0
-offset_right = 900.0
-offset_bottom = 535.0
+offset_left = 710.0
+offset_top = 400.0
+offset_right = 890.0
+offset_bottom = 460.0
 text = "Quit"
 
 [node name="TitleButton" type="Button" parent="HUD/DeathMenu"]
-offset_left = 700.0
-offset_top = 550.0
-offset_right = 900.0
-offset_bottom = 610.0
+offset_left = 920.0
+offset_top = 400.0
+offset_right = 1100.0
+offset_bottom = 460.0
 text = "Title Screen"

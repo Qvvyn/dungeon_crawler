@@ -19,6 +19,15 @@ var _sight_timer: float        = 0.0
 var _sight_range: float        = 560.0   # ~17 tiles — covers a typical room end-to-end
 const SIGHT_CHECK_INTERVAL     := 0.10
 
+# Difficulty-scaled aggro multiplier — applied to _sight_range each frame
+# during the sight check so high-tier floors aggro the player from much
+# further out. ≥3.0 → ×1.3,  ≥5.0 → ×1.6.
+static func _aggro_range_mult() -> float:
+	var d: float = GameState.test_difficulty if GameState.test_mode else GameState.difficulty
+	if d >= 5.0: return 1.6
+	if d >= 3.0: return 1.3
+	return 1.0
+
 # Status effects
 var _chill_stacks: int        = 0
 var _chill_decay_t: float     = 0.0
@@ -100,9 +109,7 @@ func _setup_status_label() -> void:
 
 func _setup_label_font() -> void:
 	if _shared_font == null:
-		var f := SystemFont.new()
-		f.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
-		_shared_font = f
+		_shared_font = MonoFont.get_font()
 	_lbl.add_theme_font_override("font", _shared_font)
 	_lbl.add_theme_font_size_override("font_size", 13)
 	_lbl.add_theme_constant_override("line_separation", -4)
@@ -162,7 +169,9 @@ func _tick_status(delta: float) -> void:
 			_enflame_tick -= delta
 			if _enflame_tick <= 0.0:
 				_enflame_tick = 0.45
-				if not _credit_dot_damage("fire", 3):
+				# Fire DOT scales with INT now — base 3, +1 per 2 INT.
+				var fire_tick: int = 3 + int(GameState.get_stat_bonus("INT")) / 2
+				if not _credit_dot_damage("fire", fire_tick):
 					return
 	if _stun_timer > 0.0:
 		_stun_timer -= delta
@@ -193,19 +202,34 @@ func apply_status(effect: String, _duration: float) -> void:
 	match effect:
 		"freeze_hit":
 			if _frozen: return
-			_chill_stacks = mini(_chill_stacks + 1, 10)
+			# Splash freeze stacks only count against enemies the player has
+			# already engaged. Without this, pierce/ricochet bolts grazing
+			# adjacent rooms (or hitting through doorways) silently stack
+			# unaggro'd enemies toward FROZEN before the player ever sees
+			# them — portal rooms ended up pre-frozen on approach.
+			if not _has_aggro: return
+			var f_stacks: int = maxi(1, int(_duration))
+			_chill_stacks = mini(_chill_stacks + f_stacks, 10)
 			_chill_decay_t = 3.0
 			if _chill_stacks >= 10:
 				_frozen = true
 				_frozen_timer = 4.5
 				FloatingText.spawn_str(global_position, "FROZEN!", Color(0.7, 0.95, 1.0), get_tree().current_scene)
 		"burn_hit":
-			_burn_stacks = mini(_burn_stacks + 1, 10)
-			if _burn_stacks >= 10:
-				_burn_stacks = 0
-				_trigger_enflamed()
+			var b_stacks: int = maxi(1, int(_duration))
+			if _enflamed:
+				# Re-igniting an already-burning target: extend timer and
+				# splash fire to neighbors instead of stacking further.
+				EnflameOverlay.refresh_pulse(self)
+			else:
+				_burn_stacks = mini(_burn_stacks + b_stacks, 6)
+				# Enflame threshold dropped 10 → 6 so fire ramps up faster.
+				if _burn_stacks >= 6:
+					_burn_stacks = 0
+					_trigger_enflamed()
 		"shock_hit":
-			_shock_stacks = mini(_shock_stacks + 1, 10)
+			var s_stacks: int = maxi(1, int(_duration))
+			_shock_stacks = mini(_shock_stacks + s_stacks, 10)
 			if _shock_stacks >= 10:
 				_shock_stacks = 0
 				_trigger_electrified()
@@ -220,12 +244,12 @@ func _trigger_enflamed() -> void:
 	_enflamed = true
 	_enflame_timer = 5.0
 	_enflame_tick = 0.0
-	# Drop a fire patch at the enemy's feet
-	var fp := Node2D.new()
-	fp.set_script(FIRE_PATCH_SCRIPT)
-	fp.global_position = global_position
-	get_tree().current_scene.add_child(fp)
-	if not _credit_dot_damage("fire", 12):
+	# Visual: ASCII flames mounted directly on the entity (no more ground
+	# patch). The visual tick keeps it in sync as enflamed flips.
+	EnflameOverlay.sync_to(self, true)
+	# Enflame trigger damage scales with INT — base 12, +1 per INT point.
+	var enflame_dmg: int = 12 + int(GameState.get_stat_bonus("INT"))
+	if not _credit_dot_damage("fire", enflame_dmg):
 		return
 	for enemy in get_tree().get_nodes_in_group("enemy"):
 		if not is_instance_valid(enemy) or enemy == self: continue
@@ -240,8 +264,10 @@ func _trigger_electrified() -> void:
 	FloatingText.spawn_str(global_position, "ELECTRIFIED!", Color(0.75, 0.9, 1.0), get_tree().current_scene)
 	if not _credit_dot_damage("shock", 10):
 		return
-	_stun_timer = 0.5
-	_no_attack_timer = 1.5
+	# Pulsing stun — 1–3 brief stuns separated by short recovery gaps,
+	# managed by the ElectricBolt overlay. Shows lightning art on each
+	# pulse so the debuff has a clear visual beat.
+	ElectricBolt.trigger(self)
 
 func _trigger_poisoned() -> void:
 	FloatingText.spawn_str(global_position, "POISONED!", Color(0.2, 1.0, 0.35), get_tree().current_scene)
@@ -251,11 +277,23 @@ func _trigger_poisoned() -> void:
 
 func _check_sight() -> void:
 	if passive: return
-	if global_position.distance_squared_to(_player.global_position) > _sight_range * _sight_range:
+	# Effective sight range stretches at high difficulty so enemies aggro
+	# from further away, putting more pressure on a player trying to slip
+	# past them. Multiplier is bounded; at low diff it's exactly the
+	# original behavior.
+	var eff_range: float = _sight_range * _aggro_range_mult()
+	if global_position.distance_squared_to(_player.global_position) > eff_range * eff_range:
 		return
 	var space := get_world_2d().direct_space_state
 	var params := PhysicsRayQueryParameters2D.create(global_position, _player.global_position)
 	params.exclude = [get_rid()]
+	# Only check walls (layer 1) and the player (also layer 1). Without
+	# this filter the ray hits *other enemies* on layer 2 first when the
+	# floor is packed, fails the "collider == player" check, and the
+	# enemy stays passive even though it's looking right at the player —
+	# producing a noticeable delay between portal entry and the first
+	# enemy aggroing.
+	params.collision_mask = 1
 	var hit := space.intersect_ray(params)
 	if hit.is_empty() or hit.get("collider") == _player:
 		_has_aggro = true
@@ -293,6 +331,7 @@ func take_damage(amount: int) -> void:
 			if elite_modifier == 2 and _split_scene != null:
 				_do_split()
 			_drop_gold()
+		EffectFx.spawn_death_pop(global_position, get_tree().current_scene)
 		queue_free()
 
 func _do_split() -> void:
@@ -337,8 +376,13 @@ func _drop_gold() -> void:
 	gold.global_position = global_position
 	gold.value = int(randi_range(1, 5) * (3 if is_elite else 1) * GameState.loot_multiplier)
 	get_tree().current_scene.call_deferred("add_child", gold)
-	# Bag drop: 50% on elites, 8% on regular kills (was 100%/30%)
-	if (is_elite and randi() % 100 < 50) or randi() % 100 < 8:
+	# Bag drop scales with difficulty so the gear pipeline keeps pace with
+	# the +HP / +density scaling. Base 8 % regular / 50 % elite, plus +3 %
+	# regular / +5 % elite per +1.0 difficulty above 1, capped.
+	var diff_extra: float = maxf(0.0, GameState.difficulty - 1.0)
+	var elite_chance: int = clampi(50 + int(diff_extra * 5.0), 50, 80)
+	var reg_chance: int   = clampi(8 + int(diff_extra * 3.0), 8, 25)
+	if (is_elite and randi() % 100 < elite_chance) or randi() % 100 < reg_chance:
 		var bag := LOOT_BAG_SCENE.instantiate()
 		bag.global_position = global_position + Vector2(randf_range(-20, 20), randf_range(-20, 20))
 		get_tree().current_scene.call_deferred("add_child", bag)
@@ -349,7 +393,7 @@ func _update_health_bar() -> void:
 	_health_bar_fg.offset_right = -20.0 + 40.0 * ratio
 
 func _get_status_modulate() -> Color:
-	if _frozen: return Color(0.55, 0.82, 1.0)
+	if _frozen: return Color(0.78, 0.92, 1.0)
 	if _stun_timer > 0.0: return Color(0.9, 0.9, 0.3)
 	if _poisoned: return Color(0.45, 1.0, 0.55)
 	if _enflamed:
@@ -372,6 +416,9 @@ func _get_status_modulate() -> Color:
 func _tick_anim_base(delta: float) -> void:
 	if _lbl == null: return
 	_enemy_anim_update(delta)
+	FrozenBlock.sync_to(self, _frozen)
+	EnflameOverlay.sync_to(self, _enflamed)
+	PoisonOverlay.sync_to(self, _poisoned)
 	var target: Color
 	if _hit_flash_t > 0.0:
 		target = Color(1.0, 0.3, 0.3)

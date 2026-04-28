@@ -18,6 +18,9 @@ var ricochet_remaining: int = 0    # wall bounces remaining
 var apply_freeze: bool      = false
 var apply_burn: bool        = false
 var apply_shock: bool       = false
+# How many status stacks the wand applies per hit (passed via the wand's
+# wand_status_stacks). Default 1 keeps non-wand sources working unchanged.
+var status_stacks: int      = 1
 var drift_speed: float      = 0.0  # sideways drift px/s (relative to direction)
 
 var fire_patch_upgraded: bool = false  # Pyromaniac Sigil: bigger/longer patch
@@ -34,6 +37,11 @@ var _base_direction: Vector2 = Vector2.ZERO
 var _zigzag_t: float         = 0.0
 var _zap_skip: bool          = false  # rebuild ShockZap every other tick to halve cost
 var _homing_target: Node2D   = null  # cached lock-on target
+# Fires the freeze AoE only once per projectile lifetime. Without this, a
+# pierce/ricochet freeze wand re-triggered the AoE on every pass-through,
+# and at high wand_status_stacks the splash would chain-freeze whole
+# adjacent rooms before the player even engaged.
+var _did_freeze_aoe: bool    = false
 
 func _ready() -> void:
 	rotation = direction.angle()
@@ -45,13 +53,17 @@ func _ready() -> void:
 	if source == "enemy":
 		add_to_group("enemy_projectile")
 	if shoot_type == "nova_shard":
-		# Shards are numerous and short-lived — skip font rendering and trail
-		var lbl := get_node_or_null("AsciiChar")
-		if lbl != null:
-			lbl.hide()
-		_trail_timer = 999.0
+		# Shards are numerous but the burst was hard to read when they were
+		# invisible — give each one a bright purple glyph + trail so the
+		# nova actually looks like a burst.
+		_apply_visual()
 	elif shoot_type == "shock":
-		# Lightning bullet: hide char, draw a crackling Line2D zap instead
+		# Shock flies straight (trajectory handled in _physics_process — no
+		# direction modulation) but visually keeps the crackling Line2D
+		# lightning body it had before. Hide the AsciiChar so the zap is
+		# the only thing visible, then add a Line2D that re-randomizes its
+		# midpoints every other tick to look like a moving lightning bolt.
+		speed *= 1.7
 		var lbl := get_node_or_null("AsciiChar")
 		if lbl != null:
 			lbl.hide()
@@ -65,6 +77,12 @@ func _ready() -> void:
 		_apply_visual()
 	body_entered.connect(_on_body_entered)
 	area_entered.connect(_on_area_entered)
+	# Freeze bolts get a short leash — at default lifetime + speed they'd
+	# travel ~2000 px through corridor sight lines and pre-freeze enemies
+	# in distant rooms before the player ever engaged them. ~1.2 s is enough
+	# for in-room shots to land + pierce + AoE, but caps reach at ~2 rooms.
+	if shoot_type == "freeze":
+		lifetime = minf(lifetime, 1.2)
 	get_tree().create_timer(lifetime).timeout.connect(
 		func() -> void:
 			if not is_instance_valid(self): return
@@ -105,6 +123,12 @@ func _apply_visual() -> void:
 		"nova":
 			lbl.text = "*"
 			lbl.add_theme_color_override("font_color", Color(0.7, 0.0, 1.0))
+		"nova_shard":
+			lbl.text = "✦"
+			lbl.add_theme_font_size_override("font_size", 18)
+			lbl.add_theme_color_override("font_color", Color(0.95, 0.55, 1.0))
+			lbl.add_theme_color_override("font_outline_color", Color(0.4, 0.0, 0.6))
+			lbl.add_theme_constant_override("outline_size", 3)
 		"arc":
 			lbl.text = ")"
 			lbl.add_theme_color_override("font_color", Color(1.0, 0.45, 0.0))
@@ -122,12 +146,22 @@ func _physics_process(delta: float) -> void:
 	if _bounce_cd > 0.0:
 		_bounce_cd -= delta
 
-	if shoot_type == "shock" and _base_direction != Vector2.ZERO:
-		_zigzag_t += delta * 12.0
-		direction = _base_direction.rotated(sin(_zigzag_t) * deg_to_rad(22.0))
+	# Fire bolts arc gently — flames feel like they're flickering and
+	# curling toward the target. Tightened from ±22° / 12 rad/s to ±10° /
+	# 16 rad/s so the lateral deviation stays inside ~25 px and the bot
+	# can actually hit moving targets at range. Shock flies straight (no
+	# direction modulation) — its zigzag is purely visual via the
+	# ShockZap Line2D below.
+	if shoot_type == "fire" and _base_direction != Vector2.ZERO:
+		_zigzag_t += delta * 16.0
+		direction = _base_direction.rotated(sin(_zigzag_t) * deg_to_rad(10.0))
 		rotation = direction.angle()
+
+	if shoot_type == "shock":
 		# Crackling lightning body — regenerated every other tick to halve the
-		# Line2D rebuild cost when many shock projectiles are on screen.
+		# Line2D rebuild cost when many shock projectiles are on screen. The
+		# zap rides along with the bullet's straight trajectory; only the
+		# visual jitters, not the actual motion.
 		_zap_skip = not _zap_skip
 		if not _zap_skip:
 			var zap := get_node_or_null("ShockZap") as Line2D
@@ -259,7 +293,7 @@ func _on_body_entered(body: Node2D) -> void:
 			actual_dmg += damage
 		var is_crit := GameState.roll_crit()
 		if is_crit:
-			actual_dmg *= 2
+			actual_dmg = int(round(float(actual_dmg) * GameState.crit_damage_mult()))
 		if body.has_method("take_damage"):
 			body.take_damage(actual_dmg)
 			GameState.damage_dealt += actual_dmg
@@ -280,17 +314,41 @@ func _on_body_entered(body: Node2D) -> void:
 				var pnode: Node = get_tree().get_first_node_in_group("player")
 				if pnode and pnode.has_method("start_hit_stop"):
 					pnode.start_hit_stop(70 if target_elite else 40)
+		# Status stacks pass-through. The duration arg is being repurposed
+		# as "how many stacks to apply per hit" — wand_status_stacks finally
+		# means something for freeze/shock (was previously hardcoded to 1).
 		if apply_freeze and body.has_method("apply_status"):
-			body.apply_status("freeze_hit", 0.0)
-			if shoot_type == "freeze":
+			body.apply_status("freeze_hit", float(status_stacks))
+			if shoot_type == "freeze" and not _did_freeze_aoe:
+				_did_freeze_aoe = true
 				_do_freeze_aoe(body)
 		if apply_burn and body.has_method("apply_status"):
-			body.apply_status("burn_hit", 0.0)
-			# Patch is now spawned by the ENFLAMED proc (10 stacks), not on every hit
+			body.apply_status("burn_hit", float(status_stacks))
 		if apply_shock and body.has_method("apply_status"):
-			body.apply_status("shock_hit", 0.0)
+			body.apply_status("shock_hit", float(status_stacks))
 			if shoot_type == "shock":
 				_do_shock_chain(body)
+		# SHATTER — pierce / ricochet / shock hitting a frozen target
+		# detonates the freeze for bonus damage. Reads the target's
+		# `_frozen` field via reflection so it works for every enemy
+		# script without needing a shared base.
+		if shoot_type in ["pierce", "ricochet", "shock"] and "_frozen" in body and bool(body.get("_frozen")):
+			var shatter_dmg: int = maxi(damage, int(round(float(damage) * 1.5)))
+			if body.has_method("take_damage"):
+				body.take_damage(shatter_dmg)
+				GameState.damage_dealt += shatter_dmg
+				GameState.record_weapon_damage(shoot_type, shatter_dmg)
+			# Drop the freeze so subsequent hits can re-stack toward another
+			# shatter; otherwise the target stays glued at "_frozen = true"
+			# until 4.5 s and the player has no way to exploit it again.
+			body.set("_frozen", false)
+			body.set("_chill_stacks", 0)
+			if "_frozen_timer" in body:
+				body.set("_frozen_timer", 0.0)
+			FloatingText.spawn_str(body.global_position, "SHATTER %d" % shatter_dmg,
+				Color(0.78, 0.92, 1.0), get_tree().current_scene)
+			if SoundManager:
+				SoundManager.play("crit", randf_range(0.85, 1.0))
 		if ricochet_remaining > 0:
 			ricochet_remaining -= 1
 			_bounce_cd = 0.14
@@ -372,7 +430,7 @@ func _chain_hop(from_pos: Vector2, hops_left: int) -> void:
 	var hop_dmg := damage
 	var hop_crit := GameState.roll_crit()
 	if hop_crit:
-		hop_dmg *= 2
+		hop_dmg = int(round(float(hop_dmg) * GameState.crit_damage_mult()))
 	if best.has_method("take_damage"):
 		best.take_damage(hop_dmg)
 		GameState.damage_dealt += hop_dmg
@@ -382,11 +440,11 @@ func _chain_hop(from_pos: Vector2, hops_left: int) -> void:
 	if hop_crit:
 		FloatingText.spawn_str(best.global_position, "CRIT %d" % hop_dmg, Color(1.0, 0.85, 0.1), get_tree().current_scene)
 	if apply_freeze and best.has_method("apply_status"):
-		best.apply_status("freeze_hit", 0.0)
+		best.apply_status("freeze_hit", float(status_stacks))
 	if apply_burn and best.has_method("apply_status"):
-		best.apply_status("burn_hit", 0.0)
+		best.apply_status("burn_hit", float(status_stacks))
 	if apply_shock and best.has_method("apply_status"):
-		best.apply_status("shock_hit", 0.0)
+		best.apply_status("shock_hit", float(status_stacks))
 	# Lightning arc visual only
 	var arc := Line2D.new()
 	arc.width = 2.0
@@ -418,13 +476,47 @@ func _detonate_nova() -> void:
 		var angle := (TAU / float(count)) * float(i)
 		spawner._queue.append(Vector2(cos(angle), sin(angle)))
 	get_tree().current_scene.add_child(spawner)
+	_spawn_nova_burst_flash(global_position)
+
+# Big purple shockwave ring that expands and fades at the nova detonation
+# point. Reads as an explosion outline before the shards have spread far
+# enough to define the burst on their own.
+func _spawn_nova_burst_flash(pos: Vector2) -> void:
+	var holder := Node2D.new()
+	holder.global_position = pos
+	holder.z_index = 5
+	var ring := Line2D.new()
+	ring.width = 4.0
+	ring.default_color = Color(0.95, 0.55, 1.0, 0.95)
+	var segs := 28
+	for i in segs + 1:
+		var ang := (TAU / float(segs)) * float(i)
+		ring.add_point(Vector2(cos(ang), sin(ang)) * 14.0)
+	holder.add_child(ring)
+	var inner := Line2D.new()
+	inner.width = 2.0
+	inner.default_color = Color(1.0, 0.85, 1.0, 0.85)
+	for i in segs + 1:
+		var ang2 := (TAU / float(segs)) * float(i)
+		inner.add_point(Vector2(cos(ang2), sin(ang2)) * 14.0)
+	holder.add_child(inner)
+	get_tree().current_scene.add_child(holder)
+	var tw := holder.create_tween()
+	tw.tween_property(holder, "scale", Vector2(7.0, 7.0), 0.45)
+	tw.parallel().tween_property(ring,  "modulate:a", 0.0, 0.45)
+	tw.parallel().tween_property(inner, "modulate:a", 0.0, 0.32)
+	tw.tween_callback(holder.queue_free)
 
 func _do_shock_chain(from_enemy: Node2D) -> void:
 	# Reuse _chain_hop — shock chains to player_intelligence additional targets
 	_chain_hop(from_enemy.global_position, player_intelligence)
 
 func _do_freeze_aoe(from_enemy: Node2D) -> void:
-	var radius := 90.0 + player_intelligence * 15.0
+	# Tightened from `90 + INT*15` (which sprayed across most of a room at
+	# high INT) to a small splash around the direct hit. Range is now
+	# ~1.5–3 tiles depending on INT, so adjacent foes still get clipped
+	# but distant enemies don't get caught in the freeze chain.
+	var radius := 48.0 + float(player_intelligence) * 6.0
 	for enemy in get_tree().get_nodes_in_group("enemy"):
 		if not is_instance_valid(enemy):
 			continue
@@ -433,8 +525,8 @@ func _do_freeze_aoe(from_enemy: Node2D) -> void:
 		if (enemy as Node2D).global_position.distance_to(from_enemy.global_position) > radius:
 			continue
 		if enemy.has_method("apply_status"):
-			enemy.apply_status("freeze_hit", 0.0)
-			enemy.apply_status("freeze_hit", 0.0)
+			# 1 stack per adjacent enemy (was 3) — still helps build chill
+			# but no longer hard-freezes whole packs from a single shot.
 			enemy.apply_status("freeze_hit", 0.0)
 
 func _on_area_entered(area: Area2D) -> void:
@@ -450,6 +542,15 @@ func _on_area_entered(area: Area2D) -> void:
 		return
 	if area.is_in_group("shield"):
 		return  # shield's own area_entered handles absorption
+	if area.is_in_group("mine"):
+		return  # Architect bombs / minelayer mines should not eat shots —
+				# they detonate on the player, not on every projectile that
+				# happens to pass through their detection radius
+	if area.is_in_group("hazard"):
+		return  # ice / lava / poison-cloud floor tiles must not eat shots
+				# the player is firing across them
+	if area.is_in_group("pressure_plate"):
+		return  # plates trigger off the player, not projectiles passing over
 	queue_free()
 
 # ── Visual helpers ────────────────────────────────────────────────────────────

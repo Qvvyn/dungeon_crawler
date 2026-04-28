@@ -30,9 +30,7 @@ func setup(grid: Array, grid_w: int, grid_h: int, tile: int,
 	_tile          = tile
 	_glyph_color   = glyph_col
 	_outline_color = outline_col
-	var f := SystemFont.new()
-	f.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
-	_font = f
+	_font = MonoFont.get_font()
 	queue_redraw()
 
 func set_doorways(tiles: Array, glyph_col: Color = Color(0.85, 0.7, 0.3)) -> void:

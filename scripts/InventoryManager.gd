@@ -87,6 +87,20 @@ func _return_to_source(item: Item, source: String) -> void:
 # ── Public helpers ────────────────────────────────────────────────────────────
 
 func add_item(item: Item) -> bool:
+	# Stackable items (potions) fold into an existing stack of the same kind
+	# instead of taking up a fresh grid slot. Identity check is name+type so
+	# health potions stack with each other but not with anything else even
+	# if they happened to share a type tag.
+	if item.is_stackable():
+		for i in GRID_SIZE:
+			var existing: Item = grid[i]
+			if existing != null \
+					and existing.is_stackable() \
+					and existing.type == item.type \
+					and existing.display_name == item.display_name:
+				existing.quantity += item.quantity
+				inventory_changed.emit()
+				return true
 	return _add_to_first_free(item)
 
 func _add_to_first_free(item: Item) -> bool:
@@ -112,8 +126,17 @@ func use_potion_at(grid_index: int) -> bool:
 	var player := _get_player()
 	if player == null or not player.has_method("heal"):
 		return false
-	player.heal(3)
-	grid[grid_index] = null
+	# Health potions restore 30% of max HP — scales with VIT investment so
+	# late-game potions stay relevant instead of being a flat trickle heal.
+	var max_hp: int = 10
+	if player.has_method("_max_hp"):
+		max_hp = int(player.call("_max_hp"))
+	var heal_amount: int = maxi(1, int(round(float(max_hp) * 0.30)))
+	player.heal(heal_amount)
+	# Decrement stack — only clear the slot when the last potion is used.
+	item.quantity -= 1
+	if item.quantity <= 0:
+		grid[grid_index] = null
 	inventory_changed.emit()
 	return true
 

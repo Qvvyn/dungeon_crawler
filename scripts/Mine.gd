@@ -23,9 +23,7 @@ func _ready() -> void:
 	body_entered.connect(_on_body_entered)
 	add_to_group("mine")
 	if _shared_font == null:
-		var f := SystemFont.new()
-		f.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
-		_shared_font = f
+		_shared_font = MonoFont.get_font()
 	_lbl = Label.new()
 	_lbl.add_theme_font_override("font", _shared_font)
 	_lbl.add_theme_font_size_override("font_size", 13)

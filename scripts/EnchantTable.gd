@@ -14,6 +14,15 @@ const REROLL_COST := 40
 const FORGE_COST  := 60
 const FUSE_COST   := 80
 const REFINE_COST := 110   # transforms one flaw into a stronger perk affix
+
+# Difficulty-scaled price helpers — apply GameState.price_multiplier() so
+# upgrade costs come down at high tiers and the player can actually afford
+# to keep their gear matching the harder fights. Existing call sites that
+# still reference the BASE constants are fine; new code should use these.
+func _reroll_cost() -> int: return int(round(float(REROLL_COST) * GameState.price_multiplier()))
+func _forge_cost()  -> int: return int(round(float(FORGE_COST)  * GameState.price_multiplier()))
+func _fuse_cost()   -> int: return int(round(float(FUSE_COST)   * GameState.price_multiplier()))
+func _refine_cost() -> int: return int(round(float(REFINE_COST) * GameState.price_multiplier()))
 const CELL_W := 110.0
 const CELL_H := 90.0
 const GAP    := 8.0
@@ -61,12 +70,77 @@ func _on_body_entered(body: Node2D) -> void:
 	if body.is_in_group("player"):
 		_player_nearby = true
 		_hint.visible = true
+		# Autoplay: silently use the table to upgrade gear when affordable.
+		# Doesn't open the popup; just runs the optimal action(s) once.
+		if body.get("_autoplay") == true:
+			_auto_upgrade(body)
 
 func _on_body_exited(body: Node2D) -> void:
 	if body.is_in_group("player"):
 		_player_nearby = false
 		_hint.visible = false
 		_close_popup()
+
+# Autoplay handler — runs the most valuable affordable action(s) on this
+# table without opening the popup UI. Priorities:
+#   1) Refine the equipped wand if it has a flaw (best gold-per-power swap).
+#   2) Forge an extra affix onto the wand if we have plenty of gold.
+#   3) Reroll one non-legendary stat-bonus item per visit.
+# Caps actions per visit so the bot doesn't drain its whole gold reserve on
+# a single table.
+func _auto_upgrade(player: Node) -> void:
+	var did_anything := false
+	var wand: Item = InventoryManager.equipped.get("wand") as Item
+	# Refine flaw → strong affix.
+	if wand != null and wand.type == Item.Type.WAND \
+			and not (wand.wand_flaws as Array).is_empty() \
+			and GameState.gold >= _refine_cost():
+		GameState.gold -= _refine_cost()
+		var removed: String = String(wand.wand_flaws[0])
+		wand.wand_flaws.remove_at(0)
+		_apply_affix(wand, AFFIX_POOL[randi() % AFFIX_POOL.size()], 1.6)
+		FloatingText.spawn_str(player.global_position,
+			"REFINED: -%s" % removed.to_upper(),
+			Color(0.85, 0.55, 1.0), get_tree().current_scene)
+		did_anything = true
+	# Forge — only if we still have a comfortable gold buffer afterward, so
+	# the bot doesn't bankrupt itself on every floor's table.
+	elif wand != null and wand.type == Item.Type.WAND \
+			and GameState.gold >= _forge_cost() + 80:
+		GameState.gold -= _forge_cost()
+		_apply_affix(wand, AFFIX_POOL[randi() % AFFIX_POOL.size()], 1.0)
+		FloatingText.spawn_str(player.global_position,
+			"FORGED!",
+			Color(1.0, 0.75, 0.2), get_tree().current_scene)
+		did_anything = true
+	# Reroll a single non-legendary stat-bonus item — picks the lowest-rarity
+	# item with stats so the gold goes toward improving weak gear, not the
+	# already-good rare pieces.
+	if GameState.gold >= _reroll_cost():
+		var pick_idx: int = -1
+		var pick_rarity: int = 99
+		for i in InventoryManager.grid.size():
+			var it: Item = InventoryManager.grid[i]
+			if it == null:
+				continue
+			if it.rarity == Item.RARITY_LEGENDARY:
+				continue
+			if it.stat_bonuses.is_empty():
+				continue
+			if it.rarity < pick_rarity:
+				pick_rarity = it.rarity
+				pick_idx = i
+		if pick_idx >= 0:
+			GameState.gold -= _reroll_cost()
+			_reroll(InventoryManager.grid[pick_idx])
+			FloatingText.spawn_str(player.global_position,
+				"REROLLED!",
+				Color(0.75, 1.0, 0.85), get_tree().current_scene)
+			did_anything = true
+	if did_anything:
+		InventoryManager.inventory_changed.emit()
+		if player.has_method("update_equip_stats"):
+			player.update_equip_stats()
 
 # ── Popup ─────────────────────────────────────────────────────────────────────
 
@@ -125,7 +199,7 @@ func _build_ui() -> void:
 		tab_bg.size = Vector2(tab_w, 27.0)
 		_popup.add_child(tab_bg)
 		var tab_lbl := Label.new()
-		tab_lbl.text = "REROLL" if t == 0 else ("FUSE  %dg" % FUSE_COST)
+		tab_lbl.text = "REROLL" if t == 0 else ("FUSE  %dg" % _fuse_cost())
 		tab_lbl.position = Vector2(ox + float(t) * tab_w, oy + 5.0)
 		tab_lbl.size = Vector2(tab_w, 22.0)
 		tab_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -146,7 +220,7 @@ func _build_ui() -> void:
 		_popup.add_child(tab_btn)
 
 	var title := Label.new()
-	title.text = ("✦  ENCHANTING TABLE  ✦   —   %dg reroll   |   [E] close" % REROLL_COST) if _tab == 0 else "✦  ITEM FUSION  ✦   —   Select 2 items to combine   |   [E] close"
+	title.text = ("✦  ENCHANTING TABLE  ✦   —   %dg reroll   |   [E] close" % _reroll_cost()) if _tab == 0 else "✦  ITEM FUSION  ✦   —   Select 2 items to combine   |   [E] close"
 	title.position = Vector2(ox, oy + 38.0)
 	title.size = Vector2(panel_w, 22.0)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -193,7 +267,7 @@ func _build_ui() -> void:
 			_cell_rects.append(Rect2(ix, iy, CELL_W, CELL_H))
 			_cell_indices.append(grid_idx)
 
-			var can_afford := GameState.gold >= REROLL_COST
+			var can_afford := GameState.gold >= _reroll_cost()
 			var cell := ColorRect.new()
 			cell.color = item.color.darkened(0.55)
 			cell.position = Vector2(ix, iy)
@@ -205,7 +279,7 @@ func _build_ui() -> void:
 				stat_str += key.substr(0, 4) + ":" + ("%.2f" % item.stat_bonuses[key]) + " "
 
 			var lbl := Label.new()
-			lbl.text = item.icon_char + " " + item.display_name + "\n" + stat_str.strip_edges() + "\n[REROLL %dg]" % REROLL_COST
+			lbl.text = item.icon_char + " " + item.display_name + "\n" + stat_str.strip_edges() + "\n[REROLL %dg]" % _reroll_cost()
 			lbl.position = Vector2(ix + 4.0, iy + 4.0)
 			lbl.size = Vector2(CELL_W - 8.0, CELL_H - 8.0)
 			lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -226,7 +300,7 @@ func _build_ui() -> void:
 		_popup.add_child(sep)
 
 		var forge_title := Label.new()
-		forge_title.text = "⚒  FORGE AFFIX  —  %dg  —  adds a stat (no flaw effect)" % FORGE_COST
+		forge_title.text = "⚒  FORGE AFFIX  —  %dg  —  adds a stat (no flaw effect)" % _forge_cost()
 		forge_title.position = Vector2(ox, sep_y + 6.0)
 		forge_title.size = Vector2(panel_w, 20.0)
 		forge_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -234,7 +308,7 @@ func _build_ui() -> void:
 		forge_title.add_theme_color_override("font_color", Color(0.85, 0.6, 0.15))
 		_popup.add_child(forge_title)
 
-		var can_forge := GameState.gold >= FORGE_COST
+		var can_forge := GameState.gold >= _forge_cost()
 		var forge_lbl := Label.new()
 		forge_lbl.text = "[ FORGE WAND ]"
 		forge_lbl.position = Vector2(ox, sep_y + 26.0)
@@ -252,18 +326,18 @@ func _build_ui() -> void:
 		forge_btn.size = Vector2(panel_w, 26.0)
 		forge_btn.pressed.connect(_forge_wand)
 		forge_btn.mouse_entered.connect(func() -> void:
-			if GameState.gold >= FORGE_COST:
+			if GameState.gold >= _forge_cost():
 				forge_lbl.add_theme_color_override("font_color", Color(1.0, 0.8, 0.3)))
 		forge_btn.mouse_exited.connect(func() -> void:
 			forge_lbl.add_theme_color_override("font_color",
-				Color(0.9, 0.6, 0.15) if GameState.gold >= FORGE_COST else Color(0.35, 0.3, 0.25)))
+				Color(0.9, 0.6, 0.15) if GameState.gold >= _forge_cost() else Color(0.35, 0.3, 0.25)))
 		_popup.add_child(forge_btn)
 
 		# Refine — separate action that re-rolls one flaw into a stronger affix
 		var has_flaws: bool = not (wand.wand_flaws as Array).is_empty()
-		var can_refine := GameState.gold >= REFINE_COST and has_flaws
+		var can_refine := GameState.gold >= _refine_cost() and has_flaws
 		var refine_title := Label.new()
-		refine_title.text = "✦  REFINE FLAW  —  %dg  —  removes a flaw and grants a perk" % REFINE_COST
+		refine_title.text = "✦  REFINE FLAW  —  %dg  —  removes a flaw and grants a perk" % _refine_cost()
 		refine_title.position = Vector2(ox, sep_y + 56.0)
 		refine_title.size = Vector2(panel_w, 20.0)
 		refine_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -371,9 +445,9 @@ func _build_fuse_content(ox: float, oy: float, panel_w: float, _panel_h: float) 
 	# Fuse button — only when 2 selected
 	if _fuse_selected.size() == 2:
 		var btn_y := cy + float(ceili(float(fc) / float(fcols))) * (CELL_H + GAP) + 8.0
-		var can_fuse := GameState.gold >= FUSE_COST
+		var can_fuse := GameState.gold >= _fuse_cost()
 		var fuse_lbl := Label.new()
-		fuse_lbl.text = "[ FUSE ITEMS — %dg ]" % FUSE_COST
+		fuse_lbl.text = "[ FUSE ITEMS — %dg ]" % _fuse_cost()
 		fuse_lbl.position = Vector2(ox, btn_y)
 		fuse_lbl.size = Vector2(panel_w, 34.0)
 		fuse_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -389,11 +463,11 @@ func _build_fuse_content(ox: float, oy: float, panel_w: float, _panel_h: float) 
 		fuse_btn.size = Vector2(panel_w, 34.0)
 		fuse_btn.pressed.connect(_fuse_items)
 		fuse_btn.mouse_entered.connect(func() -> void:
-			if GameState.gold >= FUSE_COST:
+			if GameState.gold >= _fuse_cost():
 				fuse_lbl.add_theme_color_override("font_color", Color(1.0, 0.9, 0.3)))
 		fuse_btn.mouse_exited.connect(func() -> void:
 			fuse_lbl.add_theme_color_override("font_color",
-				Color(0.9, 0.7, 0.1) if GameState.gold >= FUSE_COST else Color(0.35, 0.3, 0.25)))
+				Color(0.9, 0.7, 0.1) if GameState.gold >= _fuse_cost() else Color(0.35, 0.3, 0.25)))
 		_popup.add_child(fuse_btn)
 
 func _close_popup() -> void:
@@ -433,17 +507,17 @@ func _input(event: InputEvent) -> void:
 	for i in _cell_rects.size():
 		if not _cell_rects[i].has_point(mp):
 			continue
-		if GameState.gold < REROLL_COST:
+		if GameState.gold < _reroll_cost():
 			var player := InventoryManager._player_ref
 			if player:
 				FloatingText.spawn_str(player.global_position,
-					"Need " + str(REROLL_COST) + "g",
+					"Need " + str(_reroll_cost()) + "g",
 					Color(1.0, 0.3, 0.3), get_tree().current_scene)
 		else:
 			var grid_idx: int = _cell_indices[i]
 			var item: Item = InventoryManager.grid[grid_idx]
 			if item != null:
-				GameState.gold -= REROLL_COST
+				GameState.gold -= _reroll_cost()
 				_reroll(item)
 				InventoryManager.inventory_changed.emit()
 				_build_ui()
@@ -462,11 +536,11 @@ func _toggle_fuse_select(grid_idx: int) -> void:
 func _fuse_items() -> void:
 	if _fuse_selected.size() < 2:
 		return
-	if GameState.gold < FUSE_COST:
+	if GameState.gold < _fuse_cost():
 		var player := InventoryManager._player_ref
 		if player:
 			FloatingText.spawn_str(player.global_position,
-				"Need %dg" % FUSE_COST, Color(1.0, 0.3, 0.3), get_tree().current_scene)
+				"Need %dg" % _fuse_cost(), Color(1.0, 0.3, 0.3), get_tree().current_scene)
 		return
 	var idx_a: int = _fuse_selected[0]
 	var idx_b: int = _fuse_selected[1]
@@ -475,7 +549,7 @@ func _fuse_items() -> void:
 	if item_a == null or item_b == null:
 		return
 
-	GameState.gold -= FUSE_COST
+	GameState.gold -= _fuse_cost()
 
 	var fused := Item.new()
 	fused.type = item_a.type
@@ -531,12 +605,12 @@ func _forge_wand() -> void:
 	if wand == null or wand.type != Item.Type.WAND:
 		return
 	var player := InventoryManager._player_ref
-	if GameState.gold < FORGE_COST:
+	if GameState.gold < _forge_cost():
 		if player:
 			FloatingText.spawn_str(player.global_position,
-				"Need %dg" % FORGE_COST, Color(1.0, 0.3, 0.3), get_tree().current_scene)
+				"Need %dg" % _forge_cost(), Color(1.0, 0.3, 0.3), get_tree().current_scene)
 		return
-	GameState.gold -= FORGE_COST
+	GameState.gold -= _forge_cost()
 	_apply_affix(wand, AFFIX_POOL[randi() % AFFIX_POOL.size()], 1.0)
 	if player:
 		FloatingText.spawn_str(player.global_position,
@@ -553,12 +627,12 @@ func _refine_wand() -> void:
 	if (wand.wand_flaws as Array).is_empty():
 		return
 	var player := InventoryManager._player_ref
-	if GameState.gold < REFINE_COST:
+	if GameState.gold < _refine_cost():
 		if player:
 			FloatingText.spawn_str(player.global_position,
-				"Need %dg" % REFINE_COST, Color(1.0, 0.3, 0.3), get_tree().current_scene)
+				"Need %dg" % _refine_cost(), Color(1.0, 0.3, 0.3), get_tree().current_scene)
 		return
-	GameState.gold -= REFINE_COST
+	GameState.gold -= _refine_cost()
 	var removed: String = String(wand.wand_flaws[0])
 	wand.wand_flaws.remove_at(0)
 	# Refine grants a 1.6× scaled affix — meaningfully better than a forge.

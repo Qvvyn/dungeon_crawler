@@ -7,6 +7,10 @@ extends Area2D
 const F_ACTIVE := " /^\\ \n[ + ]\n \\v/ "
 const F_USED   := " ,_, \n[ . ]\n '_' "
 const CHECKPOINT_COST: int = 100
+# Cost to refill the equipped limited-use wand. Cheap relative to the wand's
+# sell value so investing in a fresh charge is a real option, not strictly
+# worse than buying anything else.
+const RECHARGE_COST:   int = 60
 
 var _used: bool       = false
 var _ui_layer: CanvasLayer = null
@@ -21,9 +25,7 @@ func _ready() -> void:
 	add_to_group("shrine")
 	body_entered.connect(_on_body_entered)
 	if _shared_font == null:
-		var f := SystemFont.new()
-		f.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
-		_shared_font = f
+		_shared_font = MonoFont.get_font()
 	_label = $AsciiChar
 	if _label:
 		_label.add_theme_font_override("font", _shared_font)
@@ -101,13 +103,25 @@ func _open_choice_ui() -> void:
 	title.add_theme_color_override("font_color", Color(0.85, 0.9, 1.0))
 	_ui_layer.add_child(title)
 
-	_make_choice_btn("Restore HP & Mana",   Vector2(580, 340), Color(0.5, 1.0, 0.6), _choose_heal)
-	_make_choice_btn("+5 Random Stat (run)", Vector2(580, 400), Color(1.0, 0.85, 0.3), _choose_stat)
-	_make_choice_btn("Mana Surge + Haste",   Vector2(580, 460), Color(0.5, 0.7, 1.0), _choose_mana)
-	var ck_label := "Checkpoint (%dg)" % CHECKPOINT_COST
-	var ck_color := Color(0.85, 0.55, 1.0) if GameState.gold >= CHECKPOINT_COST else Color(0.4, 0.3, 0.5)
-	_make_choice_btn(ck_label, Vector2(580, 520), ck_color, _choose_checkpoint)
-	_make_choice_btn("Walk Away",            Vector2(580, 580), Color(0.6, 0.6, 0.7), _choose_skip)
+	_make_choice_btn("Restore HP & Mana",   Vector2(580, 320), Color(0.5, 1.0, 0.6), _choose_heal)
+	_make_choice_btn("+5 Random Stat (run)", Vector2(580, 372), Color(1.0, 0.85, 0.3), _choose_stat)
+	_make_choice_btn("Mana Surge + Haste",   Vector2(580, 424), Color(0.5, 0.7, 1.0), _choose_mana)
+	# Recharge option only visible when a limited-use wand is equipped — keeps
+	# the menu un-cluttered when the player isn't holding a chargeable wand.
+	var equipped_wand: Item = InventoryManager.equipped.get("wand") as Item
+	if equipped_wand != null and equipped_wand.is_limited_use():
+		var rc_label := "Recharge Wand (%dg)" % RECHARGE_COST
+		var rc_color := Color(1.0, 0.85, 0.3) if GameState.gold >= RECHARGE_COST else Color(0.4, 0.35, 0.2)
+		_make_choice_btn(rc_label, Vector2(580, 476), rc_color, _choose_recharge)
+		var ck_label := "Checkpoint (%dg)" % CHECKPOINT_COST
+		var ck_color := Color(0.85, 0.55, 1.0) if GameState.gold >= CHECKPOINT_COST else Color(0.4, 0.3, 0.5)
+		_make_choice_btn(ck_label, Vector2(580, 528), ck_color, _choose_checkpoint)
+		_make_choice_btn("Walk Away",        Vector2(580, 580), Color(0.6, 0.6, 0.7), _choose_skip)
+	else:
+		var ck_label := "Checkpoint (%dg)" % CHECKPOINT_COST
+		var ck_color := Color(0.85, 0.55, 1.0) if GameState.gold >= CHECKPOINT_COST else Color(0.4, 0.3, 0.5)
+		_make_choice_btn(ck_label, Vector2(580, 520), ck_color, _choose_checkpoint)
+		_make_choice_btn("Walk Away",        Vector2(580, 580), Color(0.6, 0.6, 0.7), _choose_skip)
 
 func _make_choice_btn(txt: String, pos: Vector2, col: Color, cb: Callable) -> void:
 	var lbl := Label.new()
@@ -181,6 +195,25 @@ func _choose_checkpoint() -> void:
 		_player._save_run()
 	FloatingText.spawn_str(global_position, "CHECKPOINT!",
 		Color(0.85, 0.55, 1.0), get_tree().current_scene)
+	_consume()
+
+func _choose_recharge() -> void:
+	if GameState.gold < RECHARGE_COST:
+		FloatingText.spawn_str(global_position, "Need %dg" % RECHARGE_COST,
+			Color(1.0, 0.4, 0.4), get_tree().current_scene)
+		return
+	var wand: Item = InventoryManager.equipped.get("wand") as Item
+	if wand == null or not wand.is_limited_use():
+		# Defensive — UI shouldn't have shown this option, but bail rather
+		# than charge gold for nothing if the equipped wand changed mid-pick.
+		FloatingText.spawn_str(global_position, "No charged wand!",
+			Color(1.0, 0.4, 0.4), get_tree().current_scene)
+		return
+	GameState.gold -= RECHARGE_COST
+	wand.wand_charges = wand.wand_max_charges
+	InventoryManager.inventory_changed.emit()
+	FloatingText.spawn_str(global_position, "RECHARGED!",
+		Color(1.0, 0.85, 0.3), get_tree().current_scene)
 	_consume()
 
 func _choose_skip() -> void:

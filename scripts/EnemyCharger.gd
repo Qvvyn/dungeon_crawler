@@ -77,21 +77,15 @@ func _enter_telegraph() -> void:
 	_state_t = TELEGRAPH_TIME
 	_dash_dir = (_player.global_position - global_position).normalized()
 	_hit_player_this_dash = false
-	if _telegraph_line == null:
-		_telegraph_line = Line2D.new()
-		_telegraph_line.width = 3.0
-		_telegraph_line.default_color = Color(1.0, 0.3, 0.1, 0.7)
-		_telegraph_line.z_index = -1
-		get_tree().current_scene.add_child(_telegraph_line)
-	_update_telegraph_line()
+	# Predictive line removed — chargers no longer telegraph their dash
+	# trajectory with a visible line. The wind-up motion + flash on the
+	# enemy itself is the only tell now.
 
 func _update_telegraph_line() -> void:
-	if _telegraph_line == null: return
-	# Predict the dash path forward — refresh aim until the moment of dash
+	# Keeps the dash direction fresh during the wind-up so the dash
+	# starts aimed at where the player is *now*, not where they were
+	# when the telegraph began. No visual line anymore.
 	_dash_dir = (_player.global_position - global_position).normalized()
-	_telegraph_line.clear_points()
-	_telegraph_line.add_point(global_position)
-	_telegraph_line.add_point(global_position + _dash_dir * (DASH_SPEED * DASH_TIME))
 
 func _enter_dash() -> void:
 	_state = State.DASH

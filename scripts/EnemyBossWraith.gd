@@ -9,7 +9,7 @@ const BOSS_F1 := "\\W/\n~~~"
 const BOSS_NAME  := "THE WRAITH"
 const BOSS_COLOR := Color(0.7, 0.1, 1.0)
 
-@export var max_health: int = 45
+@export var max_health: int = 220   # bumped 45 → 110 → 220
 
 var health: int             = 45
 var _player: Node2D         = null
@@ -50,7 +50,6 @@ var _enflame_tick: float  = 0.0
 var _shock_stacks: int    = 0
 var _stun_timer: float    = 0.0
 var _no_attack_timer: float = 0.0
-var _poison_stacks: int   = 0
 var _poisoned: bool       = false
 var _poison_timer: float  = 0.0
 var _poison_tick: float   = 0.0
@@ -70,8 +69,7 @@ func _ready() -> void:
 	add_child(cshape)
 
 	_lbl = Label.new()
-	var mono := SystemFont.new()
-	mono.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
+	var mono := MonoFont.get_font()
 	_lbl.add_theme_font_override("font", mono)
 	_lbl.add_theme_font_size_override("font_size", 15)
 	_lbl.add_theme_constant_override("line_separation", -2)
@@ -87,6 +85,7 @@ func _ready() -> void:
 
 	_create_boss_bar()
 	FloatingText.spawn_str(global_position, "BOSS!", Color(0.7, 0.1, 1.0), get_tree().current_scene)
+	BossIntro.show_for(get_tree().current_scene, "THE WRAITH", Color(0.75, 0.30, 1.00))
 	if SoundManager:
 		SoundManager.play("boss_roar")
 
@@ -158,8 +157,7 @@ func _tick_phantom(delta: float) -> void:
 
 func _spawn_shadow() -> void:
 	var ghost := Label.new()
-	var mono := SystemFont.new()
-	mono.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
+	var mono := MonoFont.get_font()
 	ghost.add_theme_font_override("font", mono)
 	ghost.add_theme_font_size_override("font_size", 15)
 	ghost.add_theme_constant_override("line_separation", -2)
@@ -195,7 +193,7 @@ func _do_blink() -> void:
 	_blinking = true
 	if is_instance_valid(_player):
 		var offset := Vector2(randf_range(-200.0, 200.0), randf_range(-200.0, 200.0))
-		global_position = _player.global_position + offset
+		global_position = _safe_teleport_pos(_player.global_position + offset)
 	FloatingText.spawn_str(global_position, "!", Color(0.8, 0.2, 1.0), get_tree().current_scene)
 	_shots_queued = SHOTS_P2 if _phase >= 2 else SHOTS_P1
 	_shot_delay_timer = 0.35
@@ -242,6 +240,9 @@ func _tick_anim(delta: float) -> void:
 		_lbl.modulate = Color(0.7, 0.1, 1.0, 0.35)
 	else:
 		_lbl.modulate = _get_status_modulate()
+	FrozenBlock.sync_to(self, _frozen)
+	EnflameOverlay.sync_to(self, _enflamed)
+	PoisonOverlay.sync_to(self, _poisoned)
 
 # ── Status (copy of boss pattern) ─────────────────────────────────────────────
 
@@ -280,10 +281,11 @@ func _tick_status(delta: float) -> void:
 				if not is_instance_valid(self): return
 
 func apply_status(effect: String, _duration: float) -> void:
+	var stacks: int = maxi(1, int(_duration))
 	match effect:
 		"freeze_hit":
 			if _frozen: return
-			_chill_stacks = mini(_chill_stacks + 1, BOSS_STACK_THRESHOLD)
+			_chill_stacks = mini(_chill_stacks + stacks, BOSS_STACK_THRESHOLD)
 			_chill_decay_t = 3.0
 			if _chill_stacks >= BOSS_STACK_THRESHOLD:
 				_frozen = true
@@ -292,29 +294,34 @@ func apply_status(effect: String, _duration: float) -> void:
 			else:
 				FloatingText.spawn_str(global_position, "CHILL %d/%d" % [_chill_stacks, BOSS_STACK_THRESHOLD], Color(0.45, 0.82, 1.0), get_tree().current_scene)
 		"burn_hit":
-			_burn_stacks = mini(_burn_stacks + 1, BOSS_STACK_THRESHOLD)
-			if _burn_stacks >= BOSS_STACK_THRESHOLD:
-				_burn_stacks = 0
-				_enflamed = true
-				_enflame_timer = 5.0
-				_enflame_tick = 0.0
-				FloatingText.spawn_str(global_position, "ENFLAMED!", Color(1.0, 0.3, 0.0), get_tree().current_scene)
-				take_damage(12)
+			if _enflamed:
+				EnflameOverlay.refresh_pulse(self)
 			else:
-				FloatingText.spawn_str(global_position, "BURN %d/%d" % [_burn_stacks, BOSS_STACK_THRESHOLD], Color(1.0, 0.55, 0.2), get_tree().current_scene)
+				_burn_stacks = mini(_burn_stacks + stacks, BOSS_STACK_THRESHOLD)
+				if _burn_stacks >= BOSS_STACK_THRESHOLD:
+					_burn_stacks = 0
+					_enflamed = true
+					_enflame_timer = 5.0
+					_enflame_tick = 0.0
+					FloatingText.spawn_str(global_position, "ENFLAMED!", Color(1.0, 0.3, 0.0), get_tree().current_scene)
+					take_damage(12)
+					if is_instance_valid(self):
+						EnflameOverlay.sync_to(self, true)
+				else:
+					FloatingText.spawn_str(global_position, "BURN %d/%d" % [_burn_stacks, BOSS_STACK_THRESHOLD], Color(1.0, 0.55, 0.2), get_tree().current_scene)
 		"shock_hit":
-			_shock_stacks = mini(_shock_stacks + 1, BOSS_STACK_THRESHOLD)
+			_shock_stacks = mini(_shock_stacks + stacks, BOSS_STACK_THRESHOLD)
 			if _shock_stacks >= BOSS_STACK_THRESHOLD:
 				_shock_stacks = 0
-				_stun_timer = 0.5
-				_no_attack_timer = 1.5
 				FloatingText.spawn_str(global_position, "ELECTRIFIED!", Color(0.75, 0.9, 1.0), get_tree().current_scene)
 				take_damage(10)
+				if is_instance_valid(self):
+					ElectricBolt.trigger(self)
 			else:
 				FloatingText.spawn_str(global_position, "SHOCK %d/%d" % [_shock_stacks, BOSS_STACK_THRESHOLD], Color(0.7, 0.85, 1.0), get_tree().current_scene)
 
 func _get_status_modulate() -> Color:
-	if _frozen:       return Color(0.55, 0.82, 1.0)
+	if _frozen:       return Color(0.78, 0.92, 1.0)
 	if _stun_timer > 0.0: return Color(0.9, 0.9, 0.3)
 	if _enflamed:
 		var flicker := sin(Time.get_ticks_msec() * 0.025) * 0.12 + 0.88
@@ -337,6 +344,7 @@ func take_damage(amount: int) -> void:
 		GameState.kills += 5
 		GameState.add_xp(40)
 		_drop_loot()
+		EffectFx.spawn_death_pop(global_position, get_tree().current_scene, Color(0.6, 0.85, 1.0))
 		queue_free()
 
 func _drop_loot() -> void:
@@ -347,27 +355,49 @@ func _drop_loot() -> void:
 		get_tree().current_scene.call_deferred("add_child", gold)
 	var bag := LOOT_BAG_SCENE.instantiate()
 	bag.global_position = global_position
-	bag.items = [ItemDB.random_drop(), ItemDB.random_drop(), ItemDB.random_drop()]
+	# Signature: Wraithcaster always drops alongside the random rolls.
+	bag.items = [ItemDB.boss_signature_wraith(),
+		ItemDB.random_drop(), ItemDB.random_drop(), ItemDB.random_drop()]
 	get_tree().current_scene.call_deferred("add_child", bag)
 
 func _create_boss_bar() -> void:
 	_boss_canvas = CanvasLayer.new()
 	_boss_canvas.layer = 18
 	get_tree().current_scene.add_child(_boss_canvas)
+	# Bar + name plate are anchored to bottom-center so they stay glued to
+	# the bottom edge and horizontal center regardless of viewport size.
 	var bg := ColorRect.new()
 	bg.color = Color(0.03, 0.0, 0.06, 0.88)
-	bg.position = Vector2(100.0, 828.0)
-	bg.size = Vector2(1400.0, 22.0)
+	bg.anchor_left = 0.5
+	bg.anchor_right = 0.5
+	bg.anchor_top = 1.0
+	bg.anchor_bottom = 1.0
+	bg.offset_left = -700.0
+	bg.offset_right = 700.0
+	bg.offset_top = -72.0
+	bg.offset_bottom = -50.0
 	_boss_canvas.add_child(bg)
 	_boss_bar_fg = ColorRect.new()
 	_boss_bar_fg.color = Color(0.65, 0.08, 0.95)
-	_boss_bar_fg.position = Vector2(101.0, 829.0)
-	_boss_bar_fg.size = Vector2(1398.0, 20.0)
+	_boss_bar_fg.anchor_left = 0.5
+	_boss_bar_fg.anchor_right = 0.5
+	_boss_bar_fg.anchor_top = 1.0
+	_boss_bar_fg.anchor_bottom = 1.0
+	_boss_bar_fg.offset_left = -699.0
+	_boss_bar_fg.offset_right = -699.0
+	_boss_bar_fg.offset_top = -71.0
+	_boss_bar_fg.offset_bottom = -51.0
 	_boss_canvas.add_child(_boss_bar_fg)
 	var name_lbl := Label.new()
 	name_lbl.text = BOSS_NAME
-	name_lbl.position = Vector2(0.0, 808.0)
-	name_lbl.size = Vector2(1600.0, 20.0)
+	name_lbl.anchor_left = 0.0
+	name_lbl.anchor_right = 1.0
+	name_lbl.anchor_top = 1.0
+	name_lbl.anchor_bottom = 1.0
+	name_lbl.offset_left = 0.0
+	name_lbl.offset_right = 0.0
+	name_lbl.offset_top = -92.0
+	name_lbl.offset_bottom = -72.0
 	name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	name_lbl.add_theme_font_size_override("font_size", 12)
 	name_lbl.add_theme_color_override("font_color", BOSS_COLOR)
@@ -375,4 +405,33 @@ func _create_boss_bar() -> void:
 
 func _update_boss_bar() -> void:
 	if _boss_bar_fg == null: return
-	_boss_bar_fg.size.x = 1398.0 * clampf(float(health) / float(max_health), 0.0, 1.0)
+	_boss_bar_fg.offset_right = -699.0 + 1398.0 * clampf(float(health) / float(max_health), 0.0, 1.0)
+
+# Snaps a candidate blink position to the nearest floor tile, or stays put if
+# nothing valid is nearby. Without this the wraith happily blinks into walls
+# (offset from the player can land inside a pillar / outside the room).
+func _safe_teleport_pos(target_pos: Vector2) -> Vector2:
+	var world := get_tree().current_scene
+	if world == null or not ("_grid" in world):
+		return target_pos
+	var tile: int   = int(world.TILE)
+	var grid_w: int = int(world.GRID_W)
+	var grid_h: int = int(world.GRID_H)
+	var grid: Array = world._grid
+	var tx: int = int(target_pos.x / float(tile))
+	var ty: int = int(target_pos.y / float(tile))
+	if tx >= 0 and tx < grid_w and ty >= 0 and ty < grid_h \
+			and int((grid[ty] as Array)[tx]) == 0:
+		return target_pos
+	for r in range(1, 8):
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				if absi(dx) != r and absi(dy) != r:
+					continue
+				var nx: int = tx + dx
+				var ny: int = ty + dy
+				if nx < 0 or nx >= grid_w or ny < 0 or ny >= grid_h:
+					continue
+				if int((grid[ny] as Array)[nx]) == 0:
+					return Vector2(float(nx) + 0.5, float(ny) + 0.5) * float(tile)
+	return global_position

@@ -12,6 +12,9 @@ const GRENADE_DAMAGE    := 5
 
 var _lob_t: float        = 1.5
 var _warning: Node2D     = null
+var _warning_ring: Line2D    = null
+var _warning_fill: Polygon2D = null
+var _warning_inner: Line2D   = null
 var _predicted: Vector2  = Vector2.ZERO
 var _anim_t: float       = 0.0
 var _anim_f: int         = 0
@@ -53,6 +56,8 @@ func _enemy_tick(delta: float) -> void:
 	_lob_t -= delta
 	if _lob_t <= TELEGRAPH_TIME and not _telegraphing:
 		_start_telegraph()
+	if _telegraphing:
+		_update_warning_visuals()
 	if _lob_t <= 0.0:
 		_lob_grenade()
 		_lob_t = LOB_INTERVAL
@@ -69,22 +74,72 @@ func _start_telegraph() -> void:
 
 	_warning = Node2D.new()
 	_warning.global_position = _predicted
+	_warning.z_index = 1
 	get_tree().current_scene.add_child(_warning)
-	# Danger-zone ring (Line2D circle outline) — clearly an indicator, not a fire patch
-	var ring := Line2D.new()
-	ring.width = 2.5
-	ring.default_color = Color(1.0, 0.3, 0.0, 0.85)
+
 	var r := 70.0
-	var segs := 28
+	var segs := 32
+
+	# Filled "danger zone" disk — fades + grows as detonation approaches.
+	# Polygon2D is a real filled shape so the player can see the AoE
+	# footprint at a glance, instead of guessing from a thin outline.
+	_warning_fill = Polygon2D.new()
+	var fill_pts := PackedVector2Array()
+	for i in segs:
+		var ang_f := (TAU / float(segs)) * float(i)
+		fill_pts.append(Vector2(cos(ang_f), sin(ang_f)) * r)
+	_warning_fill.polygon = fill_pts
+	_warning_fill.color = Color(1.0, 0.25, 0.05, 0.10)
+	_warning.add_child(_warning_fill)
+
+	# Inner ring — pulses thicker / brighter near detonation. Provides a
+	# secondary cue layered over the fill so peripheral vision picks it
+	# up even when the player isn't looking directly at the patch.
+	_warning_inner = Line2D.new()
+	_warning_inner.width = 2.0
+	_warning_inner.default_color = Color(1.0, 0.65, 0.0, 0.7)
+	for i in segs + 1:
+		var ang_in := (TAU / float(segs)) * float(i)
+		_warning_inner.add_point(Vector2(cos(ang_in), sin(ang_in)) * (r * 0.55))
+	_warning.add_child(_warning_inner)
+
+	# Outer outline — same thicker ring as before, but width and brightness
+	# now ramp with countdown progress.
+	_warning_ring = Line2D.new()
+	_warning_ring.width = 3.5
+	_warning_ring.default_color = Color(1.0, 0.3, 0.0, 0.95)
 	for i in segs + 1:
 		var ang := (TAU / float(segs)) * float(i)
-		ring.add_point(Vector2(cos(ang), sin(ang)) * r)
-	_warning.add_child(ring)
+		_warning_ring.add_point(Vector2(cos(ang), sin(ang)) * r)
+	_warning.add_child(_warning_ring)
+
+# Drives the telegraph countdown visuals. Called every _enemy_tick frame
+# while the warning is up — ramps fill alpha, pulses ring width, and
+# shifts color from amber → bright red as detonation approaches.
+func _update_warning_visuals() -> void:
+	if not is_instance_valid(_warning):
+		return
+	var t: float = clampf(1.0 - (_lob_t / TELEGRAPH_TIME), 0.0, 1.0)   # 0 → 1 as we approach lob
+	var pulse: float = (sin(Time.get_ticks_msec() * 0.022) * 0.5 + 0.5)
+	if is_instance_valid(_warning_fill):
+		_warning_fill.color = Color(1.0, lerpf(0.25, 0.05, t), 0.04,
+			lerpf(0.10, 0.35, t) + 0.05 * pulse)
+	if is_instance_valid(_warning_inner):
+		_warning_inner.width = lerpf(2.0, 4.0, t) + 1.0 * pulse
+		_warning_inner.default_color = Color(1.0, lerpf(0.65, 0.15, t), 0.0,
+			lerpf(0.55, 0.95, t))
+	if is_instance_valid(_warning_ring):
+		_warning_ring.width = lerpf(3.5, 6.0, t) + 1.5 * pulse
+		_warning_ring.default_color = Color(1.0, lerpf(0.30, 0.05, t), 0.0,
+			lerpf(0.85, 1.0, t))
 
 func _clear_warning() -> void:
 	if is_instance_valid(_warning):
 		_warning.queue_free()
 	_warning = null
+	_warning_ring = null
+	_warning_fill = null
+	_warning_inner = null
 
 func _lob_grenade() -> void:
 	_telegraphing = false

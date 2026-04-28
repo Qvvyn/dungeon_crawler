@@ -91,9 +91,7 @@ func _ready() -> void:
 	_lbl = get_node_or_null("AsciiChar")
 	if _lbl:
 		if _shared_font == null:
-			var f := SystemFont.new()
-			f.font_names = PackedStringArray(["Consolas", "Courier New", "Lucida Console"])
-			_shared_font = f
+			_shared_font = MonoFont.get_font()
 		_lbl.add_theme_font_override("font", _shared_font)
 		_lbl.add_theme_font_size_override("font_size", 13)
 		_lbl.add_theme_constant_override("line_separation", -4)
@@ -182,22 +180,27 @@ func _tick_status(delta: float) -> void:
 				if not is_instance_valid(self): return
 
 func apply_status(effect: String, _duration: float) -> void:
+	var stacks: int = maxi(1, int(_duration))
 	match effect:
 		"freeze_hit":
 			if _frozen: return
-			_chill_stacks = mini(_chill_stacks + 1, 10)
+			if not _has_aggro: return
+			_chill_stacks = mini(_chill_stacks + stacks, 10)
 			_chill_decay_t = 3.0
 			if _chill_stacks >= 10:
 				_frozen = true
 				_frozen_timer = 4.5
 				FloatingText.spawn_str(global_position, "FROZEN!", Color(0.7, 0.95, 1.0), get_tree().current_scene)
 		"burn_hit":
-			_burn_stacks = mini(_burn_stacks + 1, 10)
-			if _burn_stacks >= 10:
-				_burn_stacks = 0
-				_trigger_enflamed()
+			if _enflamed:
+				EnflameOverlay.refresh_pulse(self)
+			else:
+				_burn_stacks = mini(_burn_stacks + stacks, 10)
+				if _burn_stacks >= 10:
+					_burn_stacks = 0
+					_trigger_enflamed()
 		"shock_hit":
-			_shock_stacks = mini(_shock_stacks + 1, 10)
+			_shock_stacks = mini(_shock_stacks + stacks, 10)
 			if _shock_stacks >= 10:
 				_shock_stacks = 0
 				_trigger_electrified()
@@ -211,10 +214,7 @@ func _trigger_enflamed() -> void:
 	FloatingText.spawn_str(global_position, "ENFLAMED!", Color(1.0, 0.3, 0.0), get_tree().current_scene)
 	_enflamed      = true
 	_enflame_timer = 5.0
-	var fp := Node2D.new()
-	fp.set_script(FIRE_PATCH_SCRIPT)
-	fp.global_position = global_position
-	get_tree().current_scene.add_child(fp)
+	EnflameOverlay.sync_to(self, true)
 	_enflame_tick  = 0.0
 	take_damage(12)
 	if not is_instance_valid(self): return
@@ -233,8 +233,7 @@ func _trigger_electrified() -> void:
 	FloatingText.spawn_str(global_position, "ELECTRIFIED!", Color(0.75, 0.9, 1.0), get_tree().current_scene)
 	take_damage(10)
 	if not is_instance_valid(self): return
-	_stun_timer      = 0.5
-	_no_attack_timer = 1.5
+	ElectricBolt.trigger(self)
 
 func _trigger_poisoned() -> void:
 	FloatingText.spawn_str(global_position, "POISONED!", Color(0.2, 1.0, 0.35), get_tree().current_scene)
@@ -295,6 +294,9 @@ func _tick_anim(delta: float) -> void:
 	if _lbl.text != new_text:
 		_lbl.text = new_text
 
+	FrozenBlock.sync_to(self, _frozen)
+	EnflameOverlay.sync_to(self, _enflamed)
+	PoisonOverlay.sync_to(self, _poisoned)
 	if _hit_flash_t > 0.0:
 		_hit_flash_t -= delta
 		_lbl.modulate = Color(1.0, 0.3, 0.3)
@@ -310,7 +312,7 @@ func _tick_anim(delta: float) -> void:
 		_aim_indicator.modulate = Color(1.0, pulse * 0.5, 0.0, 0.9)
 
 func _get_status_modulate() -> Color:
-	if _frozen:        return Color(0.55, 0.82, 1.0)
+	if _frozen:        return Color(0.78, 0.92, 1.0)
 	if _stun_timer > 0.0: return Color(0.9, 0.9, 0.3)
 	if _poisoned:      return Color(0.45, 1.0, 0.55)
 	if _enflamed:
@@ -458,6 +460,7 @@ func take_damage(amount: int) -> void:
 			if elite_modifier == 2 and _split_scene != null:
 				_do_split()
 			_drop_gold()
+		EffectFx.spawn_death_pop(global_position, get_tree().current_scene)
 		queue_free()
 
 func _drop_champion_loot() -> void:
