@@ -161,6 +161,7 @@ var _spell_cooldown: float = 0.0
 const SPELL_COOLDOWN   := 0.0   # nova has no cooldown anymore — gated purely by mana cost
 const NOVA_MANA_COST   := 100.0
 const SPELL_ORB_SCRIPT = preload("res://scripts/SpellOrb.gd")
+const NOVA_SPAWNER_SCRIPT = preload("res://scripts/NovaSpawner.gd")
 
 # Screen shake / hit-stop
 var _hit_stop_end_ms: int = 0
@@ -169,6 +170,14 @@ var _shake_tween: Tween   = null
 # Damage feedback
 var _damage_flash: ColorRect = null
 var _damage_flash_tween: Tween = null
+
+# First-person mouse-look. In an FP render mode the cursor is captured
+# and mouse-x delta rotates _fp_heading. Aim direction in FP becomes
+# Vector2(cos, sin) of this — replaces the top-down "vector from player
+# to cursor" model. Defaults to 0 (east); reset when entering FP mode
+# from top-down so the initial camera matches the last cursor aim.
+var _fp_heading: float = 0.0
+const FP_MOUSE_SENSITIVITY: float = 0.0045   # radians per pixel of mouse-x
 
 # Test-mode wand cycling (KEY_1 / KEY_2)
 var _test_wand_index: int = -1
@@ -325,6 +334,17 @@ func _ready() -> void:
 	$HUD/DeathMenu/TitleButton.pressed.connect(_on_title)
 
 	GameState.leveled_up.connect(_on_level_up)
+	# First-person render modes hide the top-down player glyph. We listen
+	# for cycle events from F1 and also apply the persisted choice on spawn
+	# so reloading a run preserves the chosen view.
+	GameState.render_mode_changed.connect(_on_render_mode_changed)
+	_apply_render_mode_visibility()
+	# Seed FP heading from current cursor offset on spawn so the camera
+	# isn't always facing east when loading into FP mode.
+	var initial_to_mouse: Vector2 = get_global_mouse_position() - global_position
+	if initial_to_mouse.length_squared() > 1.0:
+		_fp_heading = initial_to_mouse.angle()
+	_sync_mouse_mode()
 	_setup_hud_additions()
 	_setup_damage_flash()
 	# Register dash action if not already in the project input map
@@ -1439,7 +1459,7 @@ func _refresh_weapon_stats_panel() -> void:
 	# Header marks the active sort column with "*"
 	var col_marker := func(col: String) -> String:
 		return "*" if col == sort_key else " "
-	var lines: Array = ["%-9s%s%4s%s%6s%s%3s" % [
+	var lines: Array = ["%-9s%s%4s%s%6s%s%3s%s" % [
 			"TYPE",   col_marker.call("type"),
 			"KILL",   col_marker.call("kills"),
 			"DMG",    col_marker.call("damage"),
@@ -2008,12 +2028,47 @@ func _cast_nova_spell() -> void:
 	_spend_mana_or_hp(float(NOVA_MANA_COST))
 	if not is_instance_valid(self):
 		return
+	# In first-person, the classic 360° shard burst flings half the
+	# projectiles behind the camera where you can't see them and where they
+	# accomplish nothing. Instead, fire a tight forward cone right from the
+	# player position — reads like a shotgun blast and matches "just shoot
+	# straight forward" Doom-style expectations.
+	if GameState.render_mode != GameState.RenderMode.TOPDOWN:
+		_cast_nova_forward_burst()
+		return
 	var orb := Node2D.new()
 	orb.set_script(SPELL_ORB_SCRIPT)
 	orb.global_position = global_position
 	orb.set("target_pos", _get_aim_pos())
 	orb.set("proj_scene", projectile_scene)
 	get_tree().current_scene.add_child(orb)
+
+# FP-mode replacement for the spell-orb-then-circle-detonate flow.
+# Spawns a small forward cone of nova shards along the aim direction so
+# the cast actually puts damage where the camera is pointing.
+func _cast_nova_forward_burst() -> void:
+	if projectile_scene == null:
+		return
+	var aim: Vector2 = get_aim_direction()
+	var base_angle: float = aim.angle()
+	const SHARD_COUNT: int = 8
+	const CONE_HALF: float = PI / 5   # ±36°
+	var int_bonus: int = int(GameState.get_stat_bonus("INT"))
+	var shard_damage: int = 3 + int(round(float(int_bonus) * 0.6))
+	var spawner := Node2D.new()
+	spawner.set_script(NOVA_SPAWNER_SCRIPT)
+	spawner._spawn_pos  = global_position
+	spawner._source     = "player"
+	spawner._damage     = shard_damage
+	spawner._speed      = 520.0   # snappier than the 380 circle nova
+	spawner._shoot_type = "nova_shard"
+	for i in SHARD_COUNT:
+		var t: float = (float(i) / float(SHARD_COUNT - 1)) - 0.5   # -0.5..0.5
+		var a: float = base_angle + t * 2.0 * CONE_HALF
+		spawner._queue.append(Vector2(cos(a), sin(a)))
+	get_tree().current_scene.add_child(spawner)
+	FloatingText.spawn_str(global_position, "★ BURST ★",
+		Color(0.9, 0.2, 1.0), get_tree().current_scene)
 
 func _setup_damage_flash() -> void:
 	var layer := CanvasLayer.new()
@@ -2216,6 +2271,18 @@ func start_hit_stop(duration_ms: int) -> void:
 	_hit_stop_end_ms = now + duration_ms
 
 func _process(_delta: float) -> void:
+	# Keep the cursor mode aligned with current state every frame so pause /
+	# inventory / death-menu open and close correctly release/recapture the
+	# cursor for FP mouse-look. process_mode = ALWAYS means this still ticks
+	# even while the tree is paused.
+	_sync_mouse_mode()
+	# While autoplay drives the camera in FP mode, mirror its chosen aim
+	# into _fp_heading so handing control back to the user doesn't snap
+	# the view back to where they were facing pre-autoplay.
+	if _autoplay and GameState.render_mode != GameState.RenderMode.TOPDOWN:
+		var v: Vector2 = _autoplay_fp_aim_vector()
+		if v.length_squared() > 0.5:
+			_fp_heading = v.angle()
 	# Auto-pick a perk when in autoplay (perk screen pauses the tree, so this
 	# runs while _is_paused/perk_selecting is set — _process keeps ticking).
 	if _autoplay and _is_perk_selecting:
@@ -2302,6 +2369,21 @@ func _process(_delta: float) -> void:
 	_update_stam_bar()
 
 func _input(event: InputEvent) -> void:
+	# First-person mouse-look: rotate the camera yaw by mouse-x delta when
+	# the cursor is captured. Runs before any other input handling so even
+	# motion events during paused/inventory states are ignored (those modes
+	# release the cursor via _sync_mouse_mode).
+	if event is InputEventMouseMotion \
+			and GameState.render_mode != GameState.RenderMode.TOPDOWN \
+			and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
+			and not _is_paused and not _is_dead and not _autoplay:
+		var mm := event as InputEventMouseMotion
+		_fp_heading += mm.relative.x * FP_MOUSE_SENSITIVITY
+		# Keep the angle in a sane range — wrapped to [-PI, PI] avoids
+		# precision drift over long sessions.
+		if _fp_heading >  PI: _fp_heading -= TAU
+		if _fp_heading < -PI: _fp_heading += TAU
+		return
 	# Mouse-wheel cycles through the 5 wand slots when neither the
 	# inventory popup nor a loot bag popup are open. Loot bag popups
 	# already consume the event before this fires (set_input_as_handled),
@@ -2332,6 +2414,29 @@ func _input(event: InputEvent) -> void:
 			if not _is_dead:
 				_toggle_pause()
 				get_viewport().set_input_as_handled()
+		KEY_F1:
+			# Cycle render mode: TOP-DOWN → FP shader → FP raycaster → TOP-DOWN.
+			# Persists across sessions via GameState.save_settings; World/Player/
+			# EnemyBase/Projectile all listen for render_mode_changed to swap
+			# their visuals.
+			GameState.cycle_render_mode()
+			GameState.save_settings()
+			FloatingText.spawn_str(global_position + Vector2(0.0, -32.0),
+				"VIEW: " + GameState.RENDER_MODE_NAMES[GameState.render_mode],
+				Color(0.5, 0.85, 1.0), get_tree().current_scene)
+			get_viewport().set_input_as_handled()
+		KEY_F2:
+			# Infinite mana cheat toggle — wand shots / nova / shield / levitate
+			# all cost 0 mana while on. Persists across sessions.
+			GameState.infinite_mana = not GameState.infinite_mana
+			GameState.save_settings()
+			if GameState.infinite_mana:
+				mana = max_mana
+				_update_mana_bar()
+			FloatingText.spawn_str(global_position + Vector2(0.0, -32.0),
+				"INFINITE MANA: " + ("ON" if GameState.infinite_mana else "OFF"),
+				Color(0.4, 0.95, 1.0), get_tree().current_scene)
+			get_viewport().set_input_as_handled()
 		KEY_BRACKETLEFT:   # [  →  random wand
 			if not _is_dead and not _is_paused:
 				_debug_random_wand()
@@ -2633,7 +2738,7 @@ func _handle_shield(delta: float) -> void:
 		if bot_wants_shield:
 			aim_pos = _autoplay_shield_aim_pos()
 		else:
-			aim_pos = get_global_mouse_position()
+			aim_pos = get_aim_world_pos()
 		var mouse_dir := (aim_pos - global_position).normalized()
 		var angle := mouse_dir.angle()
 		_shield_area.rotation   = angle
@@ -2670,9 +2775,15 @@ func _start_dash() -> void:
 	if Input.is_action_pressed("move_left"):  dir.x -= 1
 	if Input.is_action_pressed("move_right"): dir.x += 1
 	if dir == Vector2.ZERO:
-		dir = (get_global_mouse_position() - global_position).normalized()
+		dir = get_aim_direction()
 	else:
 		dir = dir.normalized()
+		# Match the FP-mode WASD remap so dash goes the same direction as
+		# walking does in first-person view.
+		if GameState.render_mode != GameState.RenderMode.TOPDOWN:
+			var forward: Vector2 = get_aim_direction()
+			var right: Vector2 = Vector2(-forward.y, forward.x)
+			dir = (-dir.y) * forward + dir.x * right
 	_dash_dir      = dir
 	_dash_timer    = DASH_DURATION
 	stamina       -= DASH_STAMINA_COST
@@ -2773,7 +2884,7 @@ func _get_aim_pos() -> Vector2:
 		# poisoned _autoplay_los_clear since LOS got checked toward the
 		# mirrored point instead of the enemy. Leave aim_target alone here.
 		return aim_target
-	return get_global_mouse_position()
+	return get_aim_world_pos()
 
 func _wants_shoot() -> bool:
 	if _autoplay or _mobile_auto_combat:
@@ -2818,6 +2929,11 @@ func _wants_shoot() -> bool:
 # the wrong thing (missing the wisdom check, not the playstyle).
 func _spend_mana_or_hp(cost: float) -> bool:
 	if cost <= 0.0:
+		return true
+	# Infinite-mana toggle (F2) zeros out every cost — wand shots, nova,
+	# shield-drain, levitate. Limited-use wand charges still tick down so
+	# the equipment economy stays meaningful.
+	if GameState.infinite_mana:
 		return true
 	if mana >= cost:
 		mana -= cost
@@ -4602,6 +4718,13 @@ func _handle_movement() -> void:
 		move_and_slide()
 		return
 	direction = direction.normalized()
+	# First-person modes: rebind WASD to camera-relative motion (W = toward
+	# the FP camera, S = backward, A/D = strafe). Autoplay keeps its own
+	# world-space pathing direction so the bot still navigates correctly.
+	if GameState.render_mode != GameState.RenderMode.TOPDOWN and not _autoplay:
+		var forward: Vector2 = get_aim_direction()
+		var right: Vector2 = Vector2(-forward.y, forward.x)
+		direction = (-direction.y) * forward + direction.x * right
 	# Disorient: WASD is mapped to the rotated view, so "up" is up on the spinning screen
 	# (Skip for autoplay — it already produces a world-space direction toward the target)
 	if _disorient_angle != 0.0 and not _autoplay:
@@ -5152,6 +5275,102 @@ func _update_xp_bar() -> void:
 	# Bar is anchored to bottom-center; offset_left is fixed at -200, so the
 	# right edge moves from -200 (empty) to +200 (full) as xp ratio grows.
 	_xp_bar_fg.offset_right = -200.0 + 400.0 * ratio
+
+func _on_render_mode_changed(mode: int) -> void:
+	_apply_render_mode_visibility()
+	# Seed the FP heading from whatever direction the player was facing in
+	# top-down (cursor-to-player vector) so the camera doesn't snap to east
+	# on entry. No-op if there's no meaningful cursor offset yet.
+	if mode != GameState.RenderMode.TOPDOWN:
+		var to_mouse: Vector2 = get_global_mouse_position() - global_position
+		if to_mouse.length_squared() > 1.0:
+			_fp_heading = to_mouse.angle()
+	_sync_mouse_mode()
+
+# Hides the top-down AsciiChar glyph + Visual rect when either first-person
+# mode is active so the FP rig owns the view of the player. HUD / health bar
+# / death menu live on a CanvasLayer and stay visible across all modes.
+func _apply_render_mode_visibility() -> void:
+	var fp_active: bool = GameState.render_mode != GameState.RenderMode.TOPDOWN
+	var ascii := get_node_or_null("AsciiChar")
+	if ascii != null:
+		ascii.visible = not fp_active
+	var vis := get_node_or_null("Visual")
+	if vis != null and not fp_active:
+		# Visual was already hidden by default in the scene; only re-hide
+		# it on a return to TOPDOWN if it had been turned on for some reason.
+		pass
+
+# Whether the cursor should be captured right now. Captured = invisible,
+# locked to screen center, motion events fire continuously. Used by FP
+# mouse-look so the heading can rotate freely without the cursor hitting
+# the edge of the screen.
+func _exit_tree() -> void:
+	# Always release the cursor on scene exit so the title screen / village /
+	# pause-on-death flows don't inherit a captured (invisible) mouse.
+	if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+func _should_capture_mouse() -> bool:
+	if GameState.render_mode == GameState.RenderMode.TOPDOWN:
+		return false
+	if _is_paused or _is_dead or _is_perk_selecting:
+		return false
+	if _inventory_ui != null and _inventory_ui.visible:
+		return false
+	if _autoplay:
+		return false
+	return true
+
+func _sync_mouse_mode() -> void:
+	var target: int = Input.MOUSE_MODE_CAPTURED if _should_capture_mouse() \
+		else Input.MOUSE_MODE_VISIBLE
+	if Input.mouse_mode != target:
+		Input.mouse_mode = target
+
+# Unit vector the player is currently aiming. Top-down uses (mouse - player);
+# first-person uses the mouse-look heading. In FP autoplay the camera follows
+# the bot's current target (enemy if any, otherwise movement vector) so its
+# shots actually line up with what the camera shows.
+func get_aim_direction() -> Vector2:
+	if GameState.render_mode != GameState.RenderMode.TOPDOWN:
+		if _autoplay:
+			return _autoplay_fp_aim_vector()
+		return Vector2(cos(_fp_heading), sin(_fp_heading))
+	var to_mouse: Vector2 = get_global_mouse_position() - global_position
+	if to_mouse.length_squared() < 1.0:
+		return Vector2.RIGHT
+	return to_mouse.normalized()
+
+# What the FP camera should look at while the bot is driving. Priority:
+#   1) The current shoot target (so shots line up on screen)
+#   2) The current movement objective (so we look where we're heading)
+#   3) The most recent valid heading (so we don't snap to a default)
+func _autoplay_fp_aim_vector() -> Vector2:
+	if is_instance_valid(_autoplay_enemy):
+		var e: Node2D = _autoplay_enemy as Node2D
+		if e != null:
+			var d: Vector2 = e.global_position - global_position
+			if d.length_squared() > 1.0:
+				return d.normalized()
+	if is_instance_valid(_autoplay_move_to):
+		var m: Node2D = _autoplay_move_to as Node2D
+		if m != null:
+			var d2: Vector2 = m.global_position - global_position
+			if d2.length_squared() > 1.0:
+				return d2.normalized()
+	# Fall back to whatever heading we last had (will have been updated
+	# by _sync_autoplay_fp_heading on prior frames, so still useful).
+	return Vector2(cos(_fp_heading), sin(_fp_heading))
+
+# A "virtual cursor world position" — what code that wants `get_global_mouse_position`
+# for aim purposes should call. In FP mode, projects the aim direction
+# 1000 px forward of the player so existing "aim_pos - global_position"
+# math keeps working unchanged.
+func get_aim_world_pos() -> Vector2:
+	if GameState.render_mode != GameState.RenderMode.TOPDOWN:
+		return global_position + get_aim_direction() * 1000.0
+	return get_global_mouse_position()
 
 func _on_level_up() -> void:
 	var lbl := Label.new()

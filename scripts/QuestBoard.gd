@@ -11,6 +11,7 @@ func _ready() -> void:
 	add_to_group("interactable")   # bullets pass through (Projectile group check)
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
+	GameState.attach_fp_visual(self, "!", Color(1.0, 0.95, 0.45), 0.55)
 
 func _process(_delta: float) -> void:
 	if _player_in_range and Input.is_action_just_pressed("interact"):

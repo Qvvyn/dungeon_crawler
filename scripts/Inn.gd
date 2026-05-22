@@ -10,6 +10,7 @@ var _cooldown: float = 0.0   # rate-limit so a held E doesn't spam-heal
 func _ready() -> void:
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
+	GameState.attach_fp_visual(self, "I", Color(1.0, 0.82, 0.55), 0.55)
 
 func _process(delta: float) -> void:
 	if _cooldown > 0.0:

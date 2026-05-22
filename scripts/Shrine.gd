@@ -31,6 +31,7 @@ static var _shared_font: Font = null
 func _ready() -> void:
 	add_to_group("shrine")
 	add_to_group("interactable")   # bullets pass through (Projectile group check)
+	GameState.attach_fp_visual(self, "&", Color(0.75, 0.95, 1.0), 0.55)
 	body_entered.connect(_on_body_entered)
 	if _shared_font == null:
 		_shared_font = MonoFont.get_font()

@@ -10,6 +10,7 @@ func setup(pos: Vector2) -> void:
 	add_to_group("pressure_plate")
 	collision_layer = 0
 	collision_mask  = 1
+	GameState.attach_fp_visual(self, ".", Color(0.95, 0.80, 0.30), 0.05)
 
 	var cshape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()
@@ -32,6 +33,13 @@ func _on_body_entered(body: Node2D) -> void:
 	if not body.is_in_group("player"):
 		return
 	_triggered = true
+	# Defer the loot spawn + self-fade off the physics callback. The
+	# LootBag instantiates its own Area2D collision on add_child, and Godot
+	# refuses to mutate collision state while the physics server is
+	# flushing the body_entered signal queue.
+	call_deferred("_spawn_loot_and_fade")
+
+func _spawn_loot_and_fade() -> void:
 	var bag := LOOT_BAG_SCENE.instantiate()
 	bag.global_position = global_position + Vector2(randf_range(-12.0, 12.0), randf_range(-12.0, 12.0))
 	get_tree().current_scene.add_child(bag)

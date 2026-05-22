@@ -24,6 +24,7 @@ func _ready() -> void:
 	collision_mask = 1
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
+	GameState.attach_fp_visual(self, "^", Color(0.65, 1.0, 0.85), 0.50)
 
 	var cs := CollisionShape2D.new()
 	var shape := CircleShape2D.new()

@@ -28,6 +28,7 @@ var _tick_dmg: int = TICK_DMG_BASE
 static var _shared_font: Font = null
 
 func _ready() -> void:
+	GameState.attach_fp_visual(self, "*", Color(1.0, 0.50, 0.10), 0.10)
 	# Scale radius with player level (mirrors Player._fire intelligence calc).
 	# Tightened — was `28 + INT*5` (33→68 px) which sprayed across most of
 	# a tile cluster; now `18 + INT*3` (21→42 px) so the patch reads as a

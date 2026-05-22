@@ -8,6 +8,7 @@ func setup(pos: Vector2, size: Vector2, col: Color) -> void:
 	_col = col
 	add_to_group("breakable_wall")
 	z_index = -5
+	GameState.attach_fp_visual(self, "#", Color(0.60, 0.55, 0.50), 0.50)
 
 	var cshape := CollisionShape2D.new()
 	var rect := RectangleShape2D.new()

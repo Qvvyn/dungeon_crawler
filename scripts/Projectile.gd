@@ -85,6 +85,60 @@ func _ready() -> void:
 		_apply_visual()
 	body_entered.connect(_on_body_entered)
 	area_entered.connect(_on_area_entered)
+	# Hide the top-down glyph (and the ShockZap line) when in a first-person
+	# mode. Projectiles are short-lived so we don't reconnect to the signal —
+	# whichever mode is active at spawn dictates the visual for this shot's
+	# lifetime, which is fine. The body itself keeps moving + colliding.
+	if GameState.render_mode != GameState.RenderMode.TOPDOWN:
+		var ascii := get_node_or_null("AsciiChar")
+		if ascii != null:
+			ascii.visible = false
+		var zap := get_node_or_null("ShockZap")
+		if zap != null:
+			zap.visible = false
+		# Register with the FP rig so the shot is actually visible in the
+		# new viewport. Glyph + color differ by shoot_type so fire / shock /
+		# freeze read as distinctly-flavored attacks rather than identical
+		# yellow dots. The rig further bumps the font size for "substantial"
+		# shoot types to sell them as impact-y.
+		if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+				and GameState.active_rig.has_method("register_entity"):
+			var glyph: String
+			var color: Color
+			if source == "player":
+				match shoot_type:
+					"fire":
+						glyph = "@"
+						color = Color(1.0, 0.42, 0.08)
+					"freeze":
+						glyph = "*"
+						color = Color(0.55, 0.92, 1.0)
+					"shock":
+						glyph = "Z"
+						color = Color(1.0, 1.0, 0.40)
+					"pierce":
+						glyph = "-"
+						color = Color(0.95, 0.95, 0.20)
+					"ricochet":
+						glyph = "o"
+						color = Color(0.20, 1.0, 0.35)
+					"nova_shard":
+						glyph = "+"
+						color = Color(0.85, 0.30, 1.0)
+					"homing":
+						glyph = ">"
+						color = Color(0.95, 0.40, 1.0)
+					"grenade":
+						glyph = "O"
+						color = Color(1.0, 0.60, 0.15)
+					_:
+						glyph = "*"
+						color = Color(1.0, 0.85, 0.25)
+			else:
+				glyph = "o"
+				color = Color(1.0, 0.35, 0.35)
+			GameState.active_rig.register_entity(self, glyph, color)
+			tree_exiting.connect(_unregister_from_rig)
 	# Freeze bolts get a short leash — at default lifetime + speed they'd
 	# travel ~2000 px through corridor sight lines and pre-freeze enemies
 	# in distant rooms before the player ever engaged them. ~1.2 s is enough
@@ -98,6 +152,11 @@ func _ready() -> void:
 				_explode_grenade()
 			queue_free()
 	)
+
+func _unregister_from_rig() -> void:
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("unregister_entity"):
+		GameState.active_rig.unregister_entity(self)
 
 func _apply_visual() -> void:
 	var lbl := get_node_or_null("AsciiChar")

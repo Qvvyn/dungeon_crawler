@@ -94,7 +94,43 @@ func _ready() -> void:
 		_setup_label_font()
 	_setup_status_label()
 	_update_health_bar()
+	# First-person modes hide every top-down glyph the enemy owns
+	# (AsciiChar + status strip + HP bar). The rig draws its own
+	# representation; we don't want the 2D bits leaking through.
+	if not GameState.render_mode_changed.is_connected(_on_render_mode_changed):
+		GameState.render_mode_changed.connect(_on_render_mode_changed)
+	_apply_render_mode_visibility()
+	# If a first-person rig is already live (we spawned mid-run, after the
+	# user has cycled into a FP mode), self-register so the rig can render
+	# us. Entities that spawn during World._ready before the rig is active
+	# get bulk-registered by World._apply_render_mode.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("register_entity"):
+		var enemy_glyph: String = "B" if (is_elite or is_champion) else "d"
+		GameState.active_rig.register_entity(self, enemy_glyph, Color(0.95, 0.28, 0.22))
 	_on_ready_extra()
+
+func _exit_tree() -> void:
+	# Drop our entry from the rig's registry on death / despawn so the rig
+	# stops syncing a body that no longer exists.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("unregister_entity"):
+		GameState.active_rig.unregister_entity(self)
+
+func _on_render_mode_changed(_mode: int) -> void:
+	_apply_render_mode_visibility()
+
+func _apply_render_mode_visibility() -> void:
+	var fp_active: bool = GameState.render_mode != GameState.RenderMode.TOPDOWN
+	if _lbl != null:
+		_lbl.visible = not fp_active
+	if _status_lbl != null and fp_active:
+		_status_lbl.visible = false
+	# Hide the health bar's two ColorRect children too — the bar lives on the
+	# enemy body and would otherwise float in space behind the FP overlay.
+	var bar_bg := get_node_or_null("HealthBar")
+	if bar_bg != null:
+		bar_bg.visible = not fp_active
 
 # Tiny ASCII strip (e.g. "B5 C3") above the health bar showing active status
 # stacks at a glance. Updated each frame from _tick_anim_base.

@@ -19,6 +19,7 @@ func _ready() -> void:
 	var vis := get_node_or_null("Visual")
 	if vis:
 		vis.color = wall_color
+	GameState.attach_fp_visual(self, "?", Color(0.65, 0.65, 0.55), 0.55)
 
 	_hint = Label.new()
 	_hint.text = "[E] Open"

@@ -105,6 +105,7 @@ func _ready() -> void:
 	add_to_group("interactable")   # bullets pass through (Projectile group check)
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
+	GameState.attach_fp_visual(self, "+", Color(0.85, 0.45, 1.0), 0.40)
 
 	_hint = Label.new()
 	_hint.text = "[E] Enchant"

@@ -14,6 +14,7 @@ func _ready() -> void:
 	body_entered.connect(_on_body_entered)
 	_label = $AsciiChar
 	_set_idle()
+	GameState.attach_fp_visual(self, "x", Color(1.0, 0.40, 0.40), 0.45)
 
 func _process(delta: float) -> void:
 	if _state == State.COOLDOWN:

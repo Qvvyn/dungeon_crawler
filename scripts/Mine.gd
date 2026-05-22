@@ -26,6 +26,7 @@ static var _shared_font: Font = null
 func _ready() -> void:
 	body_entered.connect(_on_body_entered)
 	add_to_group("mine")
+	GameState.attach_fp_visual(self, "*", Color(1.0, 0.45, 0.15), 0.10)
 	if _shared_font == null:
 		_shared_font = MonoFont.get_font()
 	_lbl = Label.new()

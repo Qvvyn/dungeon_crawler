@@ -24,6 +24,7 @@ func _ready() -> void:
 	add_to_group("loot_bag")
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
+	GameState.attach_fp_visual(self, "$", Color(1.0, 0.85, 0.30), 0.30)
 
 	# Only generate random items if none were pre-set (e.g. from a discard)
 	if items.is_empty():

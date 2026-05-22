@@ -20,6 +20,7 @@ func _ready() -> void:
 	body_entered.connect(_on_body_entered)
 	_label = $AsciiChar
 	_set_idle()
+	GameState.attach_fp_visual(self, "^", Color(1.0, 0.40, 0.40), 0.10)
 
 func _physics_process(delta: float) -> void:
 	match _state:

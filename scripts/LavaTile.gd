@@ -10,6 +10,7 @@ var _label: Label        = null
 
 func _ready() -> void:
 	add_to_group("hazard")
+	GameState.attach_fp_visual(self, "~", Color(1.0, 0.45, 0.10), 0.05)
 	var cshape := CollisionShape2D.new()
 	var shape  := CircleShape2D.new()
 	shape.radius = 12.0

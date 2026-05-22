@@ -104,6 +104,8 @@ const PRESSURE_PLATE_SCRIPT   = preload("res://scripts/PressurePlate.gd")
 const TELEPORTER_SCRIPT       = preload("res://scripts/Teleporter.gd")
 const ASCII_WALLS_SCRIPT      = preload("res://scripts/AsciiWalls.gd")
 const MINIMAP_GLYPHS_SCRIPT   = preload("res://scripts/MinimapGlyphs.gd")
+const FIRST_PERSON_RIG_SCRIPT = preload("res://scripts/FirstPersonRig.gd")
+const RAYCASTER_RIG_SCRIPT    = preload("res://scripts/RaycasterRig.gd")
 const BOSS_ARCHITECT_SCRIPT   = preload("res://scripts/EnemyBossArchitect.gd")
 const BOSS_WRAITH_SCRIPT      = preload("res://scripts/EnemyBossWraith.gd")
 const BOSS_LICH_SCRIPT        = preload("res://scripts/EnemyBossLich.gd")
@@ -223,13 +225,26 @@ var _rooms: Array = []  # Array of Rect2i (tile coords), order = BSP depth-first
 var _portal_tile: Vector2i = Vector2i.ZERO
 var _floor_seed: int = 0   # captured per-floor RNG seed (shown on the minimap)
 
+# First-person rigs — both instantiated at level start, only the one matching
+# GameState.render_mode is visible at a time. TOPDOWN hides both. The active
+# rig is published on GameState.active_rig so newly-spawned entities (enemies,
+# projectiles) can register themselves with the rig from their own _ready.
+var _fp_rig: CanvasLayer        = null
+var _raycaster_rig: CanvasLayer = null
+var _wall_ascii: Node2D         = null   # the AsciiWalls overlay, hidden in FP modes
+
 # ── Entry ─────────────────────────────────────────────────────────────────────
 func _ready() -> void:
 	_init_grid()
+	# Render-mode plumbing — both rigs sit in the tree, only the active one
+	# is visible. World owns the toggle so it can also push the live grid to
+	# whichever rig the user cycles to and bulk-register existing entities.
+	_setup_render_rigs()
 
 	if GameState.test_mode:
 		_is_test_mode = true
 		_setup_test_arena()
+		_apply_render_mode(GameState.render_mode)
 		return
 
 	# Capture a seed for this floor and reseed the global RNG so the layout
@@ -367,6 +382,99 @@ func _ready() -> void:
 
 	if GameState.crt_enabled:
 		_spawn_crt_overlay()
+	# Apply the persisted render mode now that walls + floor + entities are
+	# all in place. _setup_render_rigs was called in _ready before generation,
+	# but the rigs need the live _grid for raycasting / wall mesh build.
+	_apply_render_mode(GameState.render_mode)
+
+# ── First-person rigs ─────────────────────────────────────────────────────────
+
+func _setup_render_rigs() -> void:
+	# Both rigs created up front so cycling is instant. They self-hide; the
+	# active one is shown in _apply_render_mode. Layer=1 puts them above the
+	# default 2D canvas (walls, floor, entity glyphs) but below any
+	# higher-layer UI (test wave label at 18, etc).
+	_fp_rig = CanvasLayer.new()
+	_fp_rig.set_script(FIRST_PERSON_RIG_SCRIPT)
+	_fp_rig.name = "FirstPersonRig"
+	add_child(_fp_rig)
+
+	_raycaster_rig = CanvasLayer.new()
+	_raycaster_rig.set_script(RAYCASTER_RIG_SCRIPT)
+	_raycaster_rig.name = "RaycasterRig"
+	add_child(_raycaster_rig)
+
+	if not GameState.render_mode_changed.is_connected(_on_render_mode_changed):
+		GameState.render_mode_changed.connect(_on_render_mode_changed)
+
+func _on_render_mode_changed(mode: int) -> void:
+	_apply_render_mode(mode)
+
+func _apply_render_mode(mode: int) -> void:
+	# Toggle the wall ascii overlay (and any other top-down-only nodes
+	# tagged into the group). The base wall colliders + floor shader stay
+	# visible because the FP rig overlays on top of them.
+	var top_down_visible: bool = (mode == GameState.RenderMode.TOPDOWN)
+	if _wall_ascii != null and is_instance_valid(_wall_ascii):
+		_wall_ascii.visible = top_down_visible
+	for n in get_tree().get_nodes_in_group("topdown_only"):
+		if is_instance_valid(n):
+			(n as CanvasItem).visible = top_down_visible
+
+	# Show whichever rig matches the mode; hide the other.
+	var rig_to_show: CanvasLayer = null
+	match mode:
+		GameState.RenderMode.FIRSTPERSON_SHADER:
+			rig_to_show = _fp_rig
+		GameState.RenderMode.FIRSTPERSON_RAYCASTER:
+			rig_to_show = _raycaster_rig
+		_:
+			rig_to_show = null
+	for rig in [_fp_rig, _raycaster_rig]:
+		if rig != null and is_instance_valid(rig):
+			rig.visible = (rig == rig_to_show)
+			# Wipe any stale entity entries that accumulated while this
+			# rig was inactive — entities die during off-mode play and
+			# their unregister hooks may target a different / null rig,
+			# leaving zombie references that crash on next _process.
+			if rig.has_method("clear_entities"):
+				rig.clear_entities()
+	GameState.active_rig = rig_to_show
+
+	# Feed the live grid to the newly-active rig + bulk-register every
+	# existing body so entities that spawned before the rig was shown
+	# (or that spawned during TOPDOWN play) get a visual representation.
+	if rig_to_show != null:
+		if rig_to_show.has_method("set_grid"):
+			rig_to_show.set_grid(_grid, GRID_W, GRID_H)
+		_register_all_entities_with(rig_to_show)
+
+func _register_all_entities_with(rig: Node) -> void:
+	if not rig.has_method("register_entity"):
+		return
+	# Player — registered for completeness, though the FP rigs anchor the
+	# camera to the player so the player's own glyph is suppressed each
+	# frame in the rig's _process.
+	var player: Node = get_tree().get_first_node_in_group("player")
+	if is_instance_valid(player) and player is Node2D:
+		rig.register_entity(player, "@", Color(0.55, 0.85, 1.0))
+	# Enemies — iterate the $Enemies node since EnemyBase doesn't auto-add
+	# to a group. Both flat enemies and bosses live under here.
+	var enemies_node: Node = get_node_or_null("Enemies")
+	if enemies_node != null:
+		for child in enemies_node.get_children():
+			if child is Node2D:
+				rig.register_entity(child, "D", Color(0.95, 0.28, 0.22))
+	# Everything else (shrines / traps / loot / portals / village shops /
+	# floor hazards) self-tags into "fp_visible" via GameState.attach_fp_visual,
+	# storing its preferred glyph + color as metadata. One loop handles them all.
+	for node in get_tree().get_nodes_in_group("fp_visible"):
+		if not is_instance_valid(node) or not (node is Node2D):
+			continue
+		var g: String = str(node.get_meta("fp_glyph", "?"))
+		var c_v: Variant = node.get_meta("fp_color", Color.WHITE)
+		var c: Color = c_v if c_v is Color else Color.WHITE
+		rig.register_entity(node, g, c)
 
 # ── Test Arena ────────────────────────────────────────────────────────────────
 
@@ -1114,6 +1222,7 @@ func _build_floor_visual() -> void:
 	floor_rect.material = mat
 	floor_rect.z_index = -20
 	floor_rect.modulate = BIOME_FLOOR_TINTS[GameState.biome]
+	floor_rect.add_to_group("topdown_only")
 	add_child(floor_rect)
 
 # ── Wall building (scanline batch) ────────────────────────────────────────────
@@ -1140,10 +1249,16 @@ func _build_wall_ascii(wall_col: Color) -> void:
 	var overlay := Node2D.new()
 	overlay.set_script(ASCII_WALLS_SCRIPT)
 	overlay.z_index = -4   # above wall fills (-5) but below entities (default 0)
+	overlay.add_to_group("topdown_only")
 	var glyph_col: Color = wall_col.lightened(0.55)
 	var outline_col: Color = wall_col.darkened(0.6)
 	add_child(overlay)
 	overlay.setup(_grid, GRID_W, GRID_H, TILE, glyph_col, outline_col)
+	# Cached so _apply_render_mode can flip its visibility without re-walking
+	# the topdown_only group. (Also the wall colorrect ColorRects inside the
+	# StaticBody2D wall strips stay visible — they read as wall fills behind
+	# the FP overlay, which is fine.)
+	_wall_ascii = overlay
 
 # A doorway is a floor tile sitting just outside a room rect on a side where
 # a corridor punches through the wall. We scan each room's perimeter and

@@ -7,6 +7,59 @@ const GAME_VERSION := "v0.2.3"
 
 signal leveled_up
 
+# Emitted whenever the active render mode changes (TOPDOWN ↔ either FP mode).
+# World.gd, Player.gd, EnemyBase.gd, Projectile.gd connect to flip visibility on
+# their top-down visuals and to swap in / out the active first-person rig.
+signal render_mode_changed(mode: int)
+
+enum RenderMode { TOPDOWN, FIRSTPERSON_SHADER, FIRSTPERSON_RAYCASTER }
+const RENDER_MODE_NAMES := ["TOP-DOWN", "FP: SHADER", "FP: RAYCAST"]
+
+var render_mode: int = RenderMode.TOPDOWN
+# The currently-active first-person rig node (FirstPersonRig or RaycasterRig)
+# during a run, or null while TOPDOWN. World.gd publishes it here when it
+# instantiates the rig so entities can register / unregister visuals without
+# needing a direct reference. Cleared on scene change.
+var active_rig: Node = null
+
+# Register a 2D body (interactable, hazard, loot, etc) so the active
+# first-person rig draws a glyph at its world position. Stores the glyph/color
+# as metadata + adds to the "fp_visible" group so World can bulk re-register
+# on mode toggle (entities created during top-down play still need to show
+# when the player cycles to an FP mode). Safe to call when no rig is active.
+# Optional `height` is in tile units (0 = floor, 1 = ceiling). Defaults to
+# chest height so a body / interactable reads at eye-ish level.
+func attach_fp_visual(body: Node2D, glyph: String, color: Color, height: float = 0.5) -> void:
+	if not is_instance_valid(body):
+		return
+	body.set_meta("fp_glyph", glyph)
+	body.set_meta("fp_color", color)
+	body.set_meta("fp_height", height)
+	if not body.is_in_group("fp_visible"):
+		body.add_to_group("fp_visible")
+	if active_rig != null and is_instance_valid(active_rig) \
+			and active_rig.has_method("register_entity"):
+		active_rig.register_entity(body, glyph, color)
+		# Bind self-cleanup on tree exit so the rig doesn't hold a freed ref.
+		var cb: Callable = _detach_fp_visual.bind(body)
+		if not body.tree_exiting.is_connected(cb):
+			body.tree_exiting.connect(cb)
+
+func _detach_fp_visual(body: Node) -> void:
+	if active_rig != null and is_instance_valid(active_rig) \
+			and active_rig.has_method("unregister_entity"):
+		active_rig.unregister_entity(body)
+
+func set_render_mode(mode: int) -> void:
+	mode = clampi(mode, 0, RenderMode.size() - 1)
+	if mode == render_mode:
+		return
+	render_mode = mode
+	render_mode_changed.emit(mode)
+
+func cycle_render_mode() -> void:
+	set_render_mode((render_mode + 1) % RenderMode.size())
+
 var has_saved_state: bool = false
 var player_health: int = 10
 
@@ -75,6 +128,10 @@ var master_volume: float = 1.0   # 0.0 – 1.0
 # rapid mine flicker, banshee pulse intensity, level-up pop). Slow sine
 # pulses and animation frame swaps stay since they're softer.
 var disable_flashing: bool = false
+# Debug / playtest toggle — when true, _spend_mana_or_hp short-circuits to
+# success so wand shots, nova, shield, levitate, etc. cost nothing. The
+# only thing that still gates is wand_charges (limited-use wands).
+var infinite_mana: bool = false
 # Display name for global leaderboard submissions. Empty until the player
 # fills in the prompt that appears on first top-10 death.
 var player_name: String  = ""
@@ -138,6 +195,8 @@ func save_settings() -> void:
 		"starting_climb_rate": starting_climb_rate,
 		"player_name":         player_name,
 		"disable_flashing":    disable_flashing,
+		"render_mode":         render_mode,
+		"infinite_mana":       infinite_mana,
 	}))
 	f.close()
 
@@ -157,6 +216,9 @@ func _load_settings() -> void:
 		starting_climb_rate = clampf(float(result.get("starting_climb_rate", 0.5)), 0.1, 4.0)
 		player_name         = String(result.get("player_name", "")).substr(0, 16)
 		disable_flashing    = bool(result.get("disable_flashing", false))
+		render_mode         = clampi(int(result.get("render_mode", RenderMode.TOPDOWN)),
+									 0, RenderMode.size() - 1)
+		infinite_mana       = bool(result.get("infinite_mana", false))
 		# Mirror the loaded difficulty into the active run value so the title
 		# screen's slider starts where the player last left it.
 		difficulty = starting_difficulty

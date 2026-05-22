@@ -9,6 +9,7 @@ func setup(pos: Vector2) -> void:
 	add_to_group("teleporter")
 	collision_layer = 0
 	collision_mask  = 1
+	GameState.attach_fp_visual(self, "T", Color(0.55, 1.0, 0.85), 0.45)
 
 	var cshape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()
