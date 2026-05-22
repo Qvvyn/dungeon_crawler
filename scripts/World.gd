@@ -33,6 +33,62 @@ const MISSILE_SCENE      = preload("res://scenes/EnemyMissileTurret.tscn")
 const SPIDER_SCENE       = preload("res://scenes/EnemySpider.tscn")
 const WIZARD_SCENE       = preload("res://scenes/EnemyWizard.tscn")
 const BOSS_SCENE         = preload("res://scenes/EnemyBoss.tscn")
+# New enemies (this pass) — added to the test-arena pool and addressable
+# by name from the test-mode spawn-override dropdown.
+const BOMBER_SCENE       = preload("res://scenes/EnemyBomber.tscn")
+const BERSERKER_SCENE    = preload("res://scenes/EnemyBerserker.tscn")
+const PHANTOM_SCENE      = preload("res://scenes/EnemyPhantom.tscn")
+const BANSHEE_SCENE      = preload("res://scenes/EnemyBanshee.tscn")
+const REFLECTOR_SCENE    = preload("res://scenes/EnemyReflector.tscn")
+# Biome-themed (only appear in their biome under normal play; available
+# everywhere in the test arena via the override).
+const BONEDRAKE_SCENE    = preload("res://scenes/EnemyBoneDrake.tscn")
+const FROSTSENT_SCENE    = preload("res://scenes/EnemyFrostSentinel.tscn")
+const MAGMASLUG_SCENE    = preload("res://scenes/EnemyMagmaSlug.tscn")
+const SPLITTER_SCENE     = preload("res://scenes/EnemySplitter.tscn")
+const STALKER_SCENE      = preload("res://scenes/EnemyStalker.tscn")
+
+# Maps the GameState.test_spawn_override key → PackedScene. Players see
+# the keys in the pause-menu dropdown (humanized via _humanize_test_key).
+# An empty key in the dropdown means "Regular mixed pool".
+static func test_spawn_keys() -> Array:
+	return [
+		"chaser", "shooter", "tank", "sniper", "archer", "spider",
+		"charger", "grenadier", "minelayer", "beamsweep", "missileturret",
+		"enchanter", "summoner", "spiralmage", "wizard",
+		"bomber", "berserker", "phantom", "banshee", "reflector",
+		"bonedrake", "frostsentinel", "magmaslug",
+		"splitter", "stalker",
+	]
+
+func _scene_for_test_key(key: String) -> PackedScene:
+	match key:
+		"chaser":         return CHASER_SCENE
+		"shooter":        return SHOOTER_SCENE
+		"tank":           return TANK_SCENE
+		"sniper":         return SNIPER_SCENE
+		"archer":         return ARCHER_SCENE
+		"spider":         return SPIDER_SCENE
+		"charger":        return CHARGER_SCENE
+		"grenadier":      return GRENADIER_SCENE
+		"minelayer":      return MINELAYER_SCENE
+		"beamsweep":      return BEAMSWEEP_SCENE
+		"missileturret":  return MISSILE_SCENE
+		"enchanter":      return ENCHANTER_SCENE
+		"summoner":       return SUMMONER_SCENE
+		"spiralmage":     return SPIRAL_SCENE
+		"wizard":         return WIZARD_SCENE
+		"bomber":         return BOMBER_SCENE
+		"berserker":      return BERSERKER_SCENE
+		"phantom":        return PHANTOM_SCENE
+		"banshee":        return BANSHEE_SCENE
+		"reflector":      return REFLECTOR_SCENE
+		"bonedrake":      return BONEDRAKE_SCENE
+		"frostsentinel":  return FROSTSENT_SCENE
+		"magmaslug":      return MAGMASLUG_SCENE
+		"splitter":       return SPLITTER_SCENE
+		"stalker":        return STALKER_SCENE
+	return null
 const SPIKE_TRAP_SCENE   = preload("res://scenes/SpikeTrap.tscn")
 const SPIN_TRAP_SCENE    = preload("res://scenes/SpinTrap.tscn")
 const SHRINE_SCENE       = preload("res://scenes/Shrine.tscn")
@@ -50,6 +106,10 @@ const ASCII_WALLS_SCRIPT      = preload("res://scripts/AsciiWalls.gd")
 const MINIMAP_GLYPHS_SCRIPT   = preload("res://scripts/MinimapGlyphs.gd")
 const BOSS_ARCHITECT_SCRIPT   = preload("res://scripts/EnemyBossArchitect.gd")
 const BOSS_WRAITH_SCRIPT      = preload("res://scripts/EnemyBossWraith.gd")
+const BOSS_LICH_SCRIPT        = preload("res://scripts/EnemyBossLich.gd")
+const BOSS_DEVOURER_SCRIPT    = preload("res://scripts/EnemyBossDevourer.gd")
+const BOSS_MAGMA_SCRIPT       = preload("res://scripts/EnemyBossMagma.gd")
+const SURVIVAL_ARENA_SCRIPT   = preload("res://scripts/SurvivalArena.gd")
 
 # ── Biome palette ─────────────────────────────────────────────────────────────
 const BIOME_NAMES := ["Dungeon", "Catacombs", "Ice Cavern", "Lava Rift"]
@@ -154,7 +214,7 @@ class BSPNode:
 		return left == null and right == null
 
 # ── Generation mode ───────────────────────────────────────────────────────────
-enum GenMode { ROOMS, CAVE, HALLS }
+enum GenMode { ROOMS, CAVE, HALLS, ARENA }
 var _gen_mode: GenMode = GenMode.ROOMS
 
 # ── State ─────────────────────────────────────────────────────────────────────
@@ -178,6 +238,12 @@ func _ready() -> void:
 	_floor_seed = randi() & 0x7FFFFFFF
 	seed(_floor_seed)
 
+	# Reset the per-floor drop dedup history so every fresh floor's
+	# drops are evaluated against a clean slate. Without this, a long
+	# session would gradually exhaust the dedup pool and revert to
+	# fully-random picks.
+	GameState.floor_drop_history.clear()
+
 	_roll_gen_mode()
 	_generate_level()
 
@@ -185,9 +251,25 @@ func _ready() -> void:
 	# / cover patterns) before walls are built so the changes render properly.
 	var is_boss_floor := GameState.portals_used > 0 and GameState.portals_used % 5 == 4
 	var is_shop_floor := GameState.portals_used > 0 and GameState.portals_used % 5 == 0
+	var is_arena_floor := _gen_mode == GenMode.ARENA
 	var boss_arena_room := Rect2i()
 	if is_boss_floor:
 		boss_arena_room = _carve_boss_arena()
+
+	# Pre-pick spawn / portal so the room-layout pass can skip them — we
+	# don't want the player or the portal landing inside a stamped pillar.
+	var layout_player_room: Rect2i = _pick_spawn_room(boss_arena_room)
+	var layout_portal_room: Rect2i
+	if is_boss_floor and boss_arena_room.size.x > 0:
+		layout_portal_room = boss_arena_room
+	else:
+		layout_portal_room = _farthest_room(layout_player_room)
+
+	# Stamp interior layouts into a subset of regular rooms before walls are
+	# built so the new wall tiles render through _build_walls / AsciiWalls.
+	# Skipped on cave / arena floors (cave is non-rectangular; arena has
+	# its own pattern stamped in _gen_arena).
+	_apply_room_layouts(layout_player_room, layout_portal_room, boss_arena_room)
 
 	_build_floor_visual()
 	_build_walls()
@@ -195,29 +277,54 @@ func _ready() -> void:
 	if _gen_mode == GenMode.ROOMS:
 		_place_secret_doors()
 
-	var player_room: Rect2i = _pick_spawn_room(boss_arena_room)
-	var portal_room: Rect2i
-	if is_boss_floor and boss_arena_room.size.x > 0:
-		portal_room = boss_arena_room
+	var player_room: Rect2i = layout_player_room
+	var portal_room: Rect2i = layout_portal_room
+	# In ARENA mode there's just one room, so spawn / portal would otherwise
+	# overlap at the centre. Offset them to opposite corners of the arena
+	# so the player has to traverse the boss + minions to reach the exit.
+	var player_pos: Vector2
+	var portal_pos: Vector2
+	if is_arena_floor:
+		var arena := player_room
+		player_pos = _tile_center(Vector2i(
+			arena.position.x + 3,
+			arena.position.y + arena.size.y / 2))
+		portal_pos = _tile_center(Vector2i(
+			arena.position.x + arena.size.x - 4,
+			arena.position.y + arena.size.y / 2))
 	else:
-		portal_room = _farthest_room(player_room)
-	var player_pos  := _tile_center(player_room.get_center())
-	var portal_pos  := _tile_center(portal_room.get_center())
+		player_pos = _tile_center(player_room.get_center())
+		portal_pos = _tile_center(portal_room.get_center())
 
 	_spawn_player(player_pos)
-	_spawn_portal(portal_pos)
+	# Floor-50 gauntlet hijacks the boss-floor flow: skip the pre-spawned
+	# portal (the gauntlet watcher spawns the right portal type after all
+	# bosses die) and spawn a 3-boss arena instead of the usual single boss.
+	var floor_n: int = GameState.portals_used + 1
+	var is_gauntlet_floor: bool = (floor_n == 50)
+	if not is_gauntlet_floor:
+		_spawn_portal(portal_pos)
 	# Exit portal at every 10th floor — lets the player bail back to the
 	# village with their loot intact instead of risking it for another
 	# level. Placed offset from the regular portal so the two portals
-	# don't overlap visually / collision-wise.
-	var floor_n: int = GameState.portals_used + 1
-	if floor_n > 0 and floor_n % 10 == 0:
+	# don't overlap visually / collision-wise. Floor 50 is gauntlet-handled
+	# (the watcher decides exit vs continue) so we skip the auto-exit here
+	# even though 50 % 10 == 0.
+	if floor_n > 0 and floor_n % 10 == 0 and not is_gauntlet_floor:
 		_spawn_exit_portal(portal_pos + Vector2(96.0, 0.0))
 
 	if is_shop_floor:
 		_spawn_sell_chest(portal_room)
-	if is_boss_floor:
+	if is_gauntlet_floor:
+		_spawn_boss_gauntlet(portal_room)
+	elif is_boss_floor:
 		_spawn_boss(portal_room)
+	elif is_arena_floor:
+		# ARENA floors get a centre-staged boss + the regular portal wizard
+		# guarding the exit corner. Skip the mini-boss roll since the
+		# arena's already gauntlet-style.
+		_spawn_boss(player_room)
+		_spawn_portal_wizard(player_room)
 	else:
 		# Rival wizard in the portal room — guards the exit and drops its
 		# wand on death. Skipped on boss floors so the arena fight stays
@@ -237,9 +344,15 @@ func _ready() -> void:
 	_spawn_shrine(player_room)
 	# Pick themed rooms BEFORE the regular spawn pass — they replace the
 	# normal enemy mix in their room with a flavored encounter (spider den,
-	# charger pit, etc.) and need to be skipped by _spawn_enemies.
-	_spawn_themed_rooms(player_room, portal_room if is_boss_floor else Rect2i())
-	_spawn_enemies(player_room, portal_room if is_boss_floor else Rect2i())
+	# charger pit, etc.) and need to be skipped by _spawn_enemies. Arena
+	# floors are a single huge room, so themed sub-rooms don't apply —
+	# the arena itself IS the encounter.
+	if not is_arena_floor:
+		_spawn_themed_rooms(player_room, portal_room if is_boss_floor else Rect2i())
+	if is_arena_floor:
+		_spawn_arena_enemies(player_room, player_pos)
+	else:
+		_spawn_enemies(player_room, portal_room if is_boss_floor else Rect2i())
 	_spawn_hazard_rooms(player_room, portal_room)
 	_spawn_challenge_room(player_room, portal_room if is_boss_floor else Rect2i())
 	if _gen_mode == GenMode.ROOMS:
@@ -348,6 +461,19 @@ func _start_test_wave() -> void:
 	_test_boss_active    = false
 	_test_kill_threshold = 20
 
+# Wipes every live enemy and the queued spawn list. Called by the test
+# pause-menu spawn dropdown right after the override changes so the
+# player sees the new enemy type populate immediately instead of
+# waiting for old enemies to die off naturally.
+func clear_test_arena_enemies() -> void:
+	_test_spawn_queue.clear()
+	_test_boss_active = false
+	for e: Node in get_tree().get_nodes_in_group("enemy"):
+		if is_instance_valid(e) and not e.is_queued_for_deletion():
+			e.queue_free()
+	# Reset the kill-threshold + check timer so wave logic refills cleanly.
+	_test_check_timer = 0.0
+
 func _spawn_test_enemy(scene: PackedScene, hp_mult: float) -> void:
 	var enemy := scene.instantiate()
 	var center := _tile_center(_test_arena_room.get_center())
@@ -393,6 +519,20 @@ func _tick_test_wave(delta: float) -> void:
 			_spawn_test_boss()
 		var need := TEST_TARGET - total
 		if need > 0:
+			# Spawn override — when set, every refill picks the same scene
+			# so the player can isolate one enemy type for tuning. Empty
+			# string falls through to the mixed default pool.
+			var override_key := String(GameState.test_spawn_override)
+			if override_key != "":
+				var override_scene := _scene_for_test_key(override_key)
+				if override_scene != null:
+					for _i in mini(need, TEST_REFILL_BATCH):
+						_test_spawn_queue.append({
+							"scene": override_scene,
+							"hp_mult": GameState.test_difficulty,
+						})
+					return
+				# Bad key → fall through to default pool rather than spinning silent.
 			var scenes: Array[PackedScene] = [
 				CHASER_SCENE, CHASER_SCENE, CHASER_SCENE,
 				SHOOTER_SCENE, SHOOTER_SCENE,
@@ -403,6 +543,11 @@ func _tick_test_wave(delta: float) -> void:
 				CHARGER_SCENE, CHARGER_SCENE,
 				MINELAYER_SCENE, BEAMSWEEP_SCENE, MISSILE_SCENE,
 				SPIDER_SCENE, SPIDER_SCENE, SPIDER_SCENE, SPIDER_SCENE, SPIDER_SCENE,
+				# New enemies seeded into the default pool too
+				BOMBER_SCENE, BERSERKER_SCENE, PHANTOM_SCENE,
+				BANSHEE_SCENE, REFLECTOR_SCENE,
+				BONEDRAKE_SCENE, FROSTSENT_SCENE, MAGMASLUG_SCENE,
+				SPLITTER_SCENE, STALKER_SCENE,
 			]
 			for _i in mini(need, TEST_REFILL_BATCH):
 				_test_spawn_queue.append({"scene": scenes[randi() % scenes.size()], "hp_mult": GameState.test_difficulty})
@@ -419,18 +564,23 @@ func _spawn_test_boss() -> void:
 	var offset := Vector2(randf_range(-96.0, 96.0), randf_range(-96.0, 96.0))
 	var diff   := GameState.test_difficulty
 	var boss: Node2D
-	# Test arena bosses follow the bumped bases too.
-	match randi() % 3:
+	# Test arena bosses follow the bumped bases too. Magma joined the pool
+	# so all four biome signature bosses can be tested without leaving the
+	# arena.
+	match randi() % 4:
 		0:
 			boss = BOSS_SCENE.instantiate()
 			if "max_health" in boss:
-				boss.max_health = int(200.0 * (1.0 + diff * 0.85))
+				boss.max_health = int(200.0 * (1.0 + diff * 1.0))
 		1:
 			boss = BOSS_ARCHITECT_SCRIPT.new()
-			boss.max_health = int(260.0 * (1.0 + diff * 0.85))
+			boss.max_health = int(260.0 * (1.0 + diff * 1.0))
 		2:
 			boss = BOSS_WRAITH_SCRIPT.new()
-			boss.max_health = int(220.0 * (1.0 + diff * 0.85))
+			boss.max_health = int(220.0 * (1.0 + diff * 1.0))
+		3:
+			boss = BOSS_MAGMA_SCRIPT.new()
+			boss.max_health = int(280.0 * (1.0 + diff * 1.0))
 	boss.position = center + offset
 	boss.tree_exited.connect(_on_test_boss_died)
 	$Enemies.add_child(boss)
@@ -650,10 +800,22 @@ func _roll_gen_mode() -> void:
 	if is_boss or is_shop:
 		_gen_mode = GenMode.ROOMS
 		return
+	# ARENA is rare (~6 %) and only rolls past floor 2 so the player has at
+	# least seen a normal dungeon layout before being dropped into a single
+	# open killing-field. Catacombs/Lava-Rift biomes get a slight bump to
+	# the chance since the theme suits one-room "thunderdome" encounters.
+	var floor_n: int = GameState.portals_used + 1
+	var arena_chance: float = 0.0
+	if floor_n >= 3:
+		arena_chance = 0.06
+		if GameState.biome == 1 or GameState.biome == 3:
+			arena_chance = 0.10
 	var r := randf()
-	if r < 0.50:
+	if r < arena_chance:
+		_gen_mode = GenMode.ARENA
+	elif r < arena_chance + 0.46:
 		_gen_mode = GenMode.ROOMS
-	elif r < 0.80:
+	elif r < arena_chance + 0.46 + 0.30:
 		_gen_mode = GenMode.CAVE
 	else:
 		_gen_mode = GenMode.HALLS
@@ -663,7 +825,11 @@ func _generate_level() -> void:
 		GenMode.ROOMS: _gen_rooms()
 		GenMode.CAVE:  _gen_cave()
 		GenMode.HALLS: _gen_halls()
-	if _rooms.size() < 3:
+		GenMode.ARENA: _gen_arena()
+	# ARENA carves a single huge room and uses it as the spawn room, so
+	# the usual "need at least 3 rooms" fallback would replace our intent
+	# with regular BSP. Bypass that check when the arena succeeded.
+	if _rooms.size() < 3 and _gen_mode != GenMode.ARENA:
 		_init_grid()
 		_rooms.clear()
 		_gen_mode = GenMode.ROOMS
@@ -1030,7 +1196,13 @@ func _make_wall_strip(tx: int, ty: int, tw: int, wall_col: Color = Color(0.12, 0
 	var cx := float(tx * TILE) + pw * 0.5
 	var cy := float(ty * TILE) + ph * 0.5
 
-	if tw <= 3 and randf() < 0.06:
+	# Breakable-wall conversion — only short interior strips. Skip if any tile
+	# touches the map perimeter, otherwise breaking that segment opens a hole
+	# directly out of the playable area and the player can wander into the
+	# void grid past GRID_W / GRID_H.
+	var on_edge: bool = (ty <= 0 or ty >= GRID_H - 1
+		or tx <= 0 or tx + tw - 1 >= GRID_W - 1)
+	if tw <= 3 and not on_edge and randf() < 0.06:
 		var bw := BREAKABLE_WALL_SCRIPT.new()
 		add_child(bw)
 		bw.setup(Vector2(cx, cy), Vector2(pw, ph), wall_col)
@@ -1175,6 +1347,64 @@ func _spawn_exit_portal(pos: Vector2) -> void:
 	ex.position = pos
 	add_child(ex)
 
+# Lava Rift "eruption" event — picks a floor tile within a few tiles of
+# the player, shows a 3-second telegraph (pulsing red ASCII glyph), then
+# spawns a real LavaTile at that spot.
+func _spawn_eruption_near_player() -> void:
+	var ply := get_tree().get_first_node_in_group("player")
+	if ply == null:
+		return
+	var ply_tile := Vector2i(int(ply.global_position.x / float(TILE)),
+		int(ply.global_position.y / float(TILE)))
+	# Try up to 8 nearby tiles; pick the first one that's actually on a
+	# floor (not a wall, not already a hazard cell).
+	var candidates: Array = []
+	for _i in 12:
+		var dx := randi_range(-5, 5)
+		var dy := randi_range(-5, 5)
+		if dx * dx + dy * dy < 4:
+			continue   # too close to the player — would feel unfair
+		var t := ply_tile + Vector2i(dx, dy)
+		if t.y < 0 or t.y >= _grid.size():
+			continue
+		if t.x < 0 or t.x >= (_grid[t.y] as Array).size():
+			continue
+		if int((_grid[t.y] as Array)[t.x]) != 0:   # FLOOR == 0
+			continue
+		candidates.append(t)
+	if candidates.is_empty():
+		return
+	var tile: Vector2i = candidates[randi() % candidates.size()]
+	var pos := _tile_center(tile)
+
+	# Telegraph — animated red label that fades up over 3 s, then we drop
+	# the lava tile and free the telegraph.
+	var warn := Label.new()
+	warn.text = "(!)"
+	warn.add_theme_font_override("font", MonoFont.get_font())
+	warn.add_theme_font_size_override("font_size", 30)
+	warn.add_theme_color_override("font_color", Color(1.0, 0.45, 0.05, 0.0))
+	warn.add_theme_color_override("font_outline_color", Color(0.45, 0.05, 0.0))
+	warn.add_theme_constant_override("outline_size", 3)
+	warn.size = Vector2(60, 40)
+	warn.position = pos - Vector2(30, 20)
+	warn.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	warn.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	warn.z_index = 5
+	add_child(warn)
+	var tw := warn.create_tween()
+	tw.tween_property(warn, "modulate:a", 1.0, 1.4)
+	tw.tween_interval(1.6)
+	tw.tween_callback(warn.queue_free)
+
+	# Spawn the actual lava tile after the telegraph completes. Reuses
+	# the same script-instantiation pattern the static hazard pass uses.
+	var t := get_tree().create_timer(3.0)
+	t.timeout.connect(func() -> void:
+		var lava: Node = LAVA_TILE_SCRIPT.new()
+		lava.position = pos
+		add_child(lava))
+
 # Returns a pixel-center position safely inside a room, with an optional tile offset
 # clamped so it never lands on a wall.
 func _safe_pos_in_room(room: Rect2i, dx: int = 0, dy: int = 0) -> Vector2:
@@ -1205,6 +1435,10 @@ func _spawn_portal_wizard(room: Rect2i) -> void:
 	var dx := -2 if randf() > 0.5 else 2
 	var dy := -2 if randf() > 0.5 else 2
 	wiz.position = _safe_pos_in_room(room, dx, dy)
+	# Portal lock — Portal.gd treats this group as a gate, same as bosses.
+	# Other wizards spawned by random encounters don't get this group, so
+	# only the sentinel-wizard at the portal blocks progress.
+	wiz.add_to_group("portal_wizard")
 	$Enemies.add_child(wiz)
 
 @warning_ignore("integer_division")
@@ -1218,7 +1452,11 @@ func _spawn_enemies(player_room: Rect2i, skip_room: Rect2i = Rect2i()) -> void:
 	# Spiders/chasers stay poppy because their base HP is small (5–7); the
 	# multiplier separates feels-tankier vs feels-fragile by the *base*,
 	# not the multiplier itself.
-	var health_mult := 1.0 + diff * 1.0
+	# Regular-enemy HP scaling — gentler (0.5 slope) than the old 1.0
+	# slope. Combined with the doubled base HP across the regular roster,
+	# this gives chunkier-feeling enemies up front and a more predictable
+	# HP curve at deep difficulty (instead of HP exploding linearly).
+	var health_mult := 1.0 + diff * 0.5
 	var player_center := _tile_center(player_room.get_center())
 	# Density peaks near diff=1 and falls off sharply — bulk + damage carry the
 	# Spawn density grows with difficulty (each +1.0 = +25 %), but capped at
@@ -1341,6 +1579,41 @@ func _spawn_enemies(player_room: Rect2i, skip_room: Rect2i = Rect2i()) -> void:
 		_queue_enemy(BEAMSWEEP_SCENE, room, health_mult, n_beams)
 		_queue_enemy(MISSILE_SCENE,   room, health_mult, n_missiles)
 		_queue_enemy(SPIDER_SCENE,    room, health_mult, n_spiders)
+
+		# New-enemy seeding — small per-room counts so they show up as
+		# unusual surprises, not the dominant fill. Skipped on the
+		# starter room so the very first encounters stay readable.
+		if room != _rooms[0]:
+			var n_bombers: int    = randi_range(0, 1) if diff >= 1.5 else 0
+			var n_berserkers: int = randi_range(0, 1) if diff >= 2.0 else 0
+			var n_phantoms: int   = randi_range(0, 1) if diff >= 2.5 else 0
+			var n_banshees: int   = 1 if diff >= 3.0 and randf() < 0.30 else 0
+			var n_reflectors: int = 1 if diff >= 3.5 and randf() < 0.25 else 0
+			_queue_enemy(BOMBER_SCENE,    room, health_mult, n_bombers)
+			_queue_enemy(BERSERKER_SCENE, room, health_mult, n_berserkers)
+			_queue_enemy(PHANTOM_SCENE,   room, health_mult, n_phantoms)
+			_queue_enemy(BANSHEE_SCENE,   room, health_mult, n_banshees)
+			_queue_enemy(REFLECTOR_SCENE, room, health_mult, n_reflectors)
+			# Splitter (low frequency, any difficulty) + Stalker (rare,
+			# higher diff). Stalker's hide-then-rush pattern requires a
+			# bit of arena to read — gate behind diff 2.5.
+			var n_splitters: int = 1 if randf() < 0.35 else 0
+			var n_stalkers: int  = 1 if diff >= 2.5 and randf() < 0.20 else 0
+			_queue_enemy(SPLITTER_SCENE, room, health_mult, n_splitters)
+			_queue_enemy(STALKER_SCENE,  room, health_mult, n_stalkers)
+			# Biome-specific enemies — Catacombs / Ice Cavern / Lava Rift
+			# each get one signature creature in addition to the generic
+			# pool, so the biome flavor reads at the enemy level too.
+			match GameState.biome:
+				1:  # Catacombs
+					_queue_enemy(BONEDRAKE_SCENE, room, health_mult,
+						randi_range(0, 1) if diff >= 1.5 else 0)
+				2:  # Ice Cavern
+					_queue_enemy(FROSTSENT_SCENE, room, health_mult,
+						1 if diff >= 2.0 and randf() < 0.40 else 0)
+				3:  # Lava Rift
+					_queue_enemy(MAGMASLUG_SCENE, room, health_mult,
+						randi_range(0, 1) if diff >= 1.5 else 0)
 
 	# Spawn closer rooms first so what the player can actually see populates
 	# immediately, while distant rooms drain in the background. Cuts perceived
@@ -1583,7 +1856,7 @@ func _make_hazard_room(room: Rect2i) -> void:
 				break
 
 	var bag := LOOT_BAG_SCENE.instantiate()
-	bag.position = _tile_center(room.get_center())
+	bag.position = _safe_loot_pos(_tile_center(room.get_center()), room)
 	bag.set("items", [ItemDB.random_drop(), ItemDB.random_drop(), ItemDB.random_drop()])
 	add_child(bag)
 
@@ -1648,6 +1921,61 @@ func _spawn_one_champion(room: Rect2i) -> void:
 # in feels like stumbling into a *thing* rather than another generic room.
 # Each theme is meant to be mean — the loot bag in the centre is the carrot.
 
+# Arena floors fill the single big room with a varied minion mix in
+# addition to the centre-staged boss + wizard. Spawns are biased away
+# from the player's corner so the bot has a beat to assess before being
+# rushed. Density scales with difficulty using the same slope as the
+# regular spawn pass.
+func _spawn_arena_enemies(arena: Rect2i, player_pos: Vector2) -> void:
+	var diff: float = GameState.difficulty
+	var health_mult: float = 1.0 + diff * 0.5
+	# Roster — biome-aware mix, slightly weighted toward melee + ranged
+	# mid-tiers so the arena reads as a "everything at once" brawl.
+	var roster: Array = [CHASER_SCENE, SHOOTER_SCENE, ARCHER_SCENE,
+		SNIPER_SCENE, CHARGER_SCENE, TANK_SCENE, SPIDER_SCENE,
+		ENCHANTER_SCENE, GRENADIER_SCENE]
+	match GameState.biome:
+		1:   # Catacombs
+			roster.append(PHANTOM_SCENE)
+			roster.append(BANSHEE_SCENE)
+			roster.append(SUMMONER_SCENE)
+		2:   # Ice Cavern
+			roster.append(FROSTSENT_SCENE)
+			roster.append(BEAMSWEEP_SCENE)
+		3:   # Lava Rift
+			roster.append(MAGMASLUG_SCENE)
+			roster.append(BOMBER_SCENE)
+			roster.append(BERSERKER_SCENE)
+	# Total minion count scales with arena area + difficulty.
+	var base_count: int = clampi(int(arena.size.x * arena.size.y / 70), 14, 28)
+	var count: int = int(base_count * clampf(1.0 + (diff - 1.0) * 0.20, 0.7, 1.8))
+	var placed: int = 0
+	for _i in count * 3:   # generous attempts since we filter by distance
+		if placed >= count:
+			break
+		var tx: int = randi_range(arena.position.x + 2,
+			arena.position.x + arena.size.x - 3)
+		var ty: int = randi_range(arena.position.y + 2,
+			arena.position.y + arena.size.y - 3)
+		if _grid[ty][tx] != FLOOR:
+			continue
+		var p: Vector2 = _tile_center(Vector2i(tx, ty))
+		# Keep a 6-tile breathing radius around the player's spawn corner so
+		# the player doesn't get instantly surrounded the moment the floor
+		# loads.
+		if p.distance_to(player_pos) < float(TILE) * 6.0:
+			continue
+		var scene: PackedScene = roster[randi() % roster.size()] as PackedScene
+		var enemy := scene.instantiate()
+		enemy.position = p
+		if "max_health" in enemy:
+			enemy.max_health = maxi(1, int(enemy.max_health * health_mult))
+		$Enemies.add_child(enemy)
+		placed += 1
+	# Banner — make it clear the floor is a planned brawl.
+	BossIntro.show_for(get_tree().current_scene,
+		"OPEN ARENA", Color(1.0, 0.55, 0.20))
+
 func _spawn_themed_rooms(player_room: Rect2i, skip_room: Rect2i) -> void:
 	var candidates: Array = []
 	for _r in _rooms:
@@ -1684,7 +2012,10 @@ func _spawn_themed_rooms(player_room: Rect2i, skip_room: Rect2i) -> void:
 # loot bag in the centre as a reward for clearing.
 func _make_themed_room(room: Rect2i) -> void:
 	var diff := GameState.difficulty
-	var hp_mult: float = 1.0 + diff * 0.45
+	# Themed rooms use the same regular-mob slope as the rest of the
+	# floor (0.5) so a "Charger Pit" doesn't feel out of step with the
+	# surrounding population.
+	var hp_mult: float = 1.0 + diff * 0.5
 	var themes: Array = [
 		{"name": "SPIDER DEN",     "tint": Color(0.40, 0.05, 0.45, 0.20), "color": Color(1.0, 0.55, 1.0)},
 		{"name": "SNIPER ALLEY",   "tint": Color(0.05, 0.30, 0.70, 0.20), "color": Color(0.6, 0.85, 1.0)},
@@ -1695,6 +2026,18 @@ func _make_themed_room(room: Rect2i) -> void:
 		{"name": "SPIRAL CHOIR",   "tint": Color(0.55, 0.05, 0.55, 0.22), "color": Color(1.0, 0.45, 1.0)},
 		{"name": "GRENADE GAUNTLET", "tint": Color(0.65, 0.30, 0.05, 0.22), "color": Color(1.0, 0.65, 0.25)},
 		{"name": "ENCHANTED HALL", "tint": Color(0.10, 0.45, 0.15, 0.22), "color": Color(0.55, 1.0, 0.65)},
+		# ── New themes ─────────────────────────────────────────────────────
+		{"name": "TANK YARD",      "tint": Color(0.35, 0.30, 0.10, 0.22), "color": Color(0.95, 0.85, 0.30)},
+		{"name": "PHANTOM HALL",   "tint": Color(0.20, 0.30, 0.55, 0.22), "color": Color(0.65, 0.80, 1.0)},
+		{"name": "BOMBER COVE",    "tint": Color(0.65, 0.35, 0.10, 0.22), "color": Color(1.0, 0.50, 0.15)},
+		{"name": "FROST CAVERN",   "tint": Color(0.10, 0.30, 0.55, 0.22), "color": Color(0.65, 0.90, 1.0)},
+		{"name": "REFLECTOR LAB",  "tint": Color(0.10, 0.50, 0.45, 0.22), "color": Color(0.55, 1.0, 0.85)},
+		{"name": "BERSERKER ARENA", "tint": Color(0.75, 0.10, 0.05, 0.22), "color": Color(1.0, 0.35, 0.20)},
+		# Survival arena — DPS check. Doesn't pre-spawn enemies; instead
+		# the room itself becomes a hostile encounter (constant waves)
+		# until the timer expires. Handled by SurvivalArena.gd which we
+		# instantiate below instead of running the normal _place_enemy path.
+		{"name": "SURVIVAL ARENA", "tint": Color(0.55, 0.10, 0.10, 0.30), "color": Color(1.0, 0.40, 0.30)},
 	]
 	var theme: Dictionary = themes[randi() % themes.size()]
 
@@ -1765,11 +2108,79 @@ func _make_themed_room(room: Rect2i) -> void:
 				_place_enemy(roster[randi() % roster.size()] as PackedScene, room, hp_mult * 1.4)
 			for _i in randi_range(2, 3):
 				_place_enemy(ENCHANTER_SCENE, room, hp_mult)
+		"TANK YARD":
+			# Heavy armour line — 3-4 Tanks with a Shooter back-row. Each
+			# Tank is a damage sponge so the room rewards focused fire and
+			# proper positioning.
+			for _i in randi_range(3, 4):
+				_place_enemy(TANK_SCENE, room, hp_mult * 1.25)
+			for _i in randi_range(2, 3):
+				_place_enemy(SHOOTER_SCENE, room, hp_mult)
+		"PHANTOM HALL":
+			# Wraith-themed room — Phantoms slip in and out of cover, Banshees
+			# scream stunlocks. Light traps trip on careless dashes.
+			for _i in randi_range(3, 4):
+				_place_enemy(PHANTOM_SCENE, room, hp_mult * 1.15)
+			for _i in randi_range(2, 3):
+				_place_enemy(BANSHEE_SCENE, room, hp_mult)
+			_sprinkle_traps(room, randi_range(1, 3))
+		"BOMBER COVE":
+			# Stand-off threat — Bombers detonate close-range. Mix in a
+			# Reflector so beam-spam doesn't trivialise the room.
+			for _i in randi_range(3, 4):
+				_place_enemy(BOMBER_SCENE, room, hp_mult * 1.15)
+			for _i in 1:
+				_place_enemy(REFLECTOR_SCENE, room, hp_mult * 1.2)
+		"FROST CAVERN":
+			# Ice-themed pocket inside any biome — slow-aim turrets +
+			# Frost Sentinels that radiate chill. Plays best in non-Ice
+			# biomes where the mechanic is unexpected.
+			for _i in randi_range(2, 3):
+				_place_enemy(FROSTSENT_SCENE, room, hp_mult * 1.25)
+			for _i in randi_range(2, 3):
+				_place_enemy(SNIPER_SCENE, room, hp_mult)
+		"REFLECTOR LAB":
+			# Anti-cheese room — multiple Reflectors that bounce projectiles
+			# back. Forces the player to switch off pierce/ricochet wands
+			# or eat their own DPS.
+			for _i in randi_range(2, 3):
+				_place_enemy(REFLECTOR_SCENE, room, hp_mult * 1.2)
+			for _i in randi_range(2, 3):
+				_place_enemy(ENCHANTER_SCENE, room, hp_mult)
+		"BERSERKER ARENA":
+			# All-in melee chaos — Berserkers with low cooldowns + a
+			# Splitter or two so the pool keeps growing as kills happen.
+			for _i in randi_range(3, 5):
+				_place_enemy(BERSERKER_SCENE, room, hp_mult * 1.20)
+			for _i in randi_range(1, 2):
+				_place_enemy(SPLITTER_SCENE, room, hp_mult)
+		"SURVIVAL ARENA":
+			# Doesn't pre-spawn anything — the SurvivalArena node manages
+			# its own wave timer and spawn-portal markers at room corners.
+			# When the timer expires it drops a fat loot bag in the centre
+			# and unlocks. Early-return so the shared loot-bag drop below
+			# isn't placed redundantly.
+			var sa: Node = SURVIVAL_ARENA_SCRIPT.new()
+			sa.set("room", room)
+			sa.set("hp_mult", hp_mult)
+			sa.set("theme_color", theme["color"] as Color)
+			get_tree().current_scene.add_child(sa)
+			# Banner + early return — survival arena writes its own loot.
+			FloatingText.spawn_str(_tile_center(room.get_center()) + Vector2(0.0, -36.0),
+				String(theme["name"]),
+				theme["color"] as Color,
+				get_tree().current_scene)
+			if SoundManager:
+				SoundManager.play("summon", randf_range(0.85, 1.0))
+			return
 
 	# Shared reward — themed rooms always drop a centred bag with two items
-	# so the player has a tangible payoff for clearing them.
+	# so the player has a tangible payoff for clearing them. _safe_loot_pos
+	# nudges the bag away from any shrine / enchant table / sell chest
+	# already placed in the same room so the loot doesn't smother the
+	# interactable's hint label.
 	var bag := LOOT_BAG_SCENE.instantiate()
-	bag.position = _tile_center(room.get_center())
+	bag.position = _safe_loot_pos(_tile_center(room.get_center()), room)
 	bag.set("items", [ItemDB.random_drop(), ItemDB.random_drop()])
 	add_child(bag)
 
@@ -1860,8 +2271,11 @@ func _carve_boss_arena() -> Rect2i:
 		return Rect2i()
 	# Expand outward by EXPAND tiles each side, clamped to grid edges. Walls
 	# inside the expanded region are converted to floor — corridors / small
-	# adjacent rooms get absorbed into the arena, which is the intent.
-	const EXPAND: int = 6
+	# adjacent rooms get absorbed into the arena, which is the intent. The
+	# bosses themselves are physically larger now (collision radius up to
+	# 34 px / ~1 tile), so the arena needs proportionally more open space
+	# for kiting and sight-line management — bumped 6 → 11.
+	const EXPAND: int = 11
 	var nx: int = maxi(2, best.position.x - EXPAND)
 	var ny: int = maxi(2, best.position.y - EXPAND)
 	var nx_end: int = mini(GRID_W - 2, best.position.x + best.size.x + EXPAND)
@@ -1939,28 +2353,445 @@ func _stamp_wall_block(tx: int, ty: int, w: int, h: int) -> void:
 				continue
 			_grid[y][x] = WALL
 
+# ── ARENA generator — single huge open room ───────────────────────────────────
+# Carves one massive rectangle (~52×38, randomised ± a few tiles) centred
+# on the map. Used for the "thunderdome" floor type where the player is
+# dropped into a boss + wizard + minion melee in wide-open space. Adds the
+# arena rect to _rooms so spawn / portal selection and the regular enemy
+# spawn pass all just work.
+@warning_ignore("integer_division")
+func _gen_arena() -> void:
+	var w: int = randi_range(48, 56)
+	var h: int = randi_range(34, 42)
+	w = mini(w, GRID_W - 6)
+	h = mini(h, GRID_H - 6)
+	var x: int = (GRID_W - w) / 2 + randi_range(-2, 2)
+	var y: int = (GRID_H - h) / 2 + randi_range(-2, 2)
+	x = clampi(x, 3, GRID_W - w - 3)
+	y = clampi(y, 3, GRID_H - h - 3)
+	var arena := Rect2i(x, y, w, h)
+	_carve_room(arena)
+	_rooms.append(arena)
+	# Scatter a handful of cover stamps so the arena isn't a billiard table.
+	# Layout choice rotates with floor index so consecutive arena rolls
+	# don't read identically.
+	@warning_ignore("integer_division")
+	var pat: int = (GameState.portals_used / 3) % 4
+	match pat:
+		0: _arena_layout_pillars(arena)
+		1: _arena_layout_cross(arena)
+		2: _arena_layout_corners(arena)
+		3: _layout_scatter_pillars(arena, randi_range(6, 10), 2)
+
+# ── Per-room interior layouts ────────────────────────────────────────────────
+# Applied to a subset of regular rooms above 10×8 during generation, before
+# walls are built. Each function stamps a wall pattern that gives the room
+# a distinctive silhouette without breaking pathing — clearance for the bot
+# is preserved via _layout_pinch_safe (skips stamps that would seal the
+# room's only entrance or trap a tile against a wall).
+#
+# Stamps are budget-limited: low-tile-count patterns on small rooms, more
+# expressive patterns reserved for big rooms. Every layout leaves a 1-tile
+# clear ring against the room border so corridor doorways stay reachable.
+const ROOM_LAYOUT_MIN_W: int = 10
+const ROOM_LAYOUT_MIN_H: int = 8
+
+# Picks a layout function appropriate to the room's size and stamps it.
+# Caller is expected to gate eligibility (skip player/portal/themed/arena
+# rooms) before invoking. ~40 % of eligible rooms get a layout — the rest
+# stay empty for pacing variety.
+@warning_ignore("integer_division")
+func _stamp_room_layout(room: Rect2i) -> void:
+	if room.size.x < ROOM_LAYOUT_MIN_W or room.size.y < ROOM_LAYOUT_MIN_H:
+		return
+	# Eight layout buckets; bigger rooms unlock the wider ones.
+	var pool: Array = ["pillars_small", "diagonals", "alcoves",
+		"scatter", "zigzag", "ring", "split_wall", "rubble"]
+	# Tighten the pool on very-large rooms so they pick the spacier layouts.
+	if room.size.x >= 16 and room.size.y >= 12:
+		pool = ["scatter", "zigzag", "ring", "split_wall", "alcoves", "rubble"]
+	var pick: String = pool[randi() % pool.size()]
+	match pick:
+		"pillars_small": _layout_pillars_small(room)
+		"diagonals":     _layout_diagonals(room)
+		"alcoves":       _layout_alcoves(room)
+		"scatter":       _layout_scatter_pillars(room, randi_range(3, 5), 1)
+		"zigzag":        _layout_zigzag(room)
+		"ring":          _layout_ring(room)
+		"split_wall":    _layout_split_wall(room)
+		"rubble":        _layout_rubble(room)
+
+# True when stamping `(x,y)` would leave (x,y) inside the room interior
+# and at least one adjacent tile clear. Used by stamp passes to avoid
+# pinching corridor doorways.
+func _layout_pinch_safe(room: Rect2i, x: int, y: int) -> bool:
+	# Keep a 1-tile ring next to the room border untouched so doorways
+	# / wall-adjacent corridors stay open.
+	if x <= room.position.x or x >= room.position.x + room.size.x - 1:
+		return false
+	if y <= room.position.y or y >= room.position.y + room.size.y - 1:
+		return false
+	return true
+
+# 4 single-tile pillars at quartile positions — minimum cover.
+@warning_ignore("integer_division")
+func _layout_pillars_small(room: Rect2i) -> void:
+	var px_l: int = room.position.x + room.size.x / 4
+	var px_r: int = room.position.x + 3 * room.size.x / 4
+	var py_t: int = room.position.y + room.size.y / 4
+	var py_b: int = room.position.y + 3 * room.size.y / 4
+	for cx in [px_l, px_r]:
+		for cy in [py_t, py_b]:
+			if _layout_pinch_safe(room, cx, cy):
+				_grid[cy][cx] = WALL
+
+# Two short diagonal wall strips angling into the room — biased cover.
+@warning_ignore("integer_division")
+func _layout_diagonals(room: Rect2i) -> void:
+	var ax: int = room.position.x + 2
+	var ay: int = room.position.y + 2
+	var bx: int = room.position.x + room.size.x - 3
+	var by: int = room.position.y + room.size.y - 3
+	var length: int = mini(room.size.x, room.size.y) / 3
+	for i in length:
+		if _layout_pinch_safe(room, ax + i, ay + i):
+			_grid[ay + i][ax + i] = WALL
+		if _layout_pinch_safe(room, bx - i, by - i):
+			_grid[by - i][bx - i] = WALL
+
+# 1-tile-deep alcove notches on each long wall — minor sight blockers
+# without big footprint. Carved INTO the room's interior at the edges.
+@warning_ignore("integer_division")
+func _layout_alcoves(room: Rect2i) -> void:
+	var cx: int = room.position.x + room.size.x / 2
+	var cy: int = room.position.y + room.size.y / 2
+	# Top + bottom — 3-tile wide alcove protrusions
+	for dx in range(-1, 2):
+		var tx: int = cx + dx
+		if _layout_pinch_safe(room, tx, room.position.y + 1):
+			_grid[room.position.y + 1][tx] = WALL
+		if _layout_pinch_safe(room, tx, room.position.y + room.size.y - 2):
+			_grid[room.position.y + room.size.y - 2][tx] = WALL
+
+# N random 1×1 (or 2×2 if size>1) pillars scattered inside the room.
+# Used both by per-room layouts and by ARENA's pattern 3.
+@warning_ignore("integer_division")
+func _layout_scatter_pillars(room: Rect2i, count: int, size: int) -> void:
+	for _i in count:
+		for _attempt in 6:
+			var tx: int = randi_range(room.position.x + 2,
+				room.position.x + room.size.x - 2 - size)
+			var ty: int = randi_range(room.position.y + 2,
+				room.position.y + room.size.y - 2 - size)
+			if not _layout_pinch_safe(room, tx, ty):
+				continue
+			# Don't double-stamp on a tile that's already wall (overlap).
+			if _grid[ty][tx] == WALL:
+				continue
+			for dx in size:
+				for dy in size:
+					if _layout_pinch_safe(room, tx + dx, ty + dy):
+						_grid[ty + dy][tx + dx] = WALL
+			break
+
+# Two staggered partial walls forming a zigzag — forces serpentine kiting.
+@warning_ignore("integer_division")
+func _layout_zigzag(room: Rect2i) -> void:
+	var y_top: int = room.position.y + room.size.y / 3
+	var y_bot: int = room.position.y + 2 * room.size.y / 3
+	var wall_len: int = (room.size.x * 2) / 3
+	var x_start_top: int = room.position.x + 1
+	var x_start_bot: int = room.position.x + room.size.x - 1 - wall_len
+	for i in wall_len:
+		if _layout_pinch_safe(room, x_start_top + i, y_top):
+			_grid[y_top][x_start_top + i] = WALL
+		if _layout_pinch_safe(room, x_start_bot + i, y_bot):
+			_grid[y_bot][x_start_bot + i] = WALL
+
+# A 1-tile-thick rectangular ring around the room centre with one gap on
+# each side, like a small inner courtyard with archways.
+@warning_ignore("integer_division")
+func _layout_ring(room: Rect2i) -> void:
+	var inset: int = 3
+	var rx: int = room.position.x + inset
+	var ry: int = room.position.y + inset
+	var rw: int = room.size.x - inset * 2
+	var rh: int = room.size.y - inset * 2
+	if rw < 4 or rh < 4:
+		return
+	# Horizontal segments
+	for x in range(rx, rx + rw):
+		# Skip a 2-tile gap in the centre of each side
+		if absi(x - (rx + rw / 2)) <= 1:
+			continue
+		if _layout_pinch_safe(room, x, ry):
+			_grid[ry][x] = WALL
+		if _layout_pinch_safe(room, x, ry + rh - 1):
+			_grid[ry + rh - 1][x] = WALL
+	# Vertical segments
+	for y in range(ry, ry + rh):
+		if absi(y - (ry + rh / 2)) <= 1:
+			continue
+		if _layout_pinch_safe(room, rx, y):
+			_grid[y][rx] = WALL
+		if _layout_pinch_safe(room, rx + rw - 1, y):
+			_grid[y][rx + rw - 1] = WALL
+
+# A single bisecting wall with one 3-tile gap — splits the room into two
+# halves but leaves a clean choke. Direction depends on aspect ratio.
+@warning_ignore("integer_division")
+func _layout_split_wall(room: Rect2i) -> void:
+	if room.size.x >= room.size.y:
+		# Vertical wall splitting left/right
+		var sx: int = room.position.x + room.size.x / 2
+		var gap_y: int = room.position.y + room.size.y / 2
+		for y in range(room.position.y + 1, room.position.y + room.size.y - 1):
+			if absi(y - gap_y) <= 1:
+				continue
+			if _layout_pinch_safe(room, sx, y):
+				_grid[y][sx] = WALL
+	else:
+		# Horizontal wall splitting top/bottom
+		var sy: int = room.position.y + room.size.y / 2
+		var gap_x: int = room.position.x + room.size.x / 2
+		for x in range(room.position.x + 1, room.position.x + room.size.x - 1):
+			if absi(x - gap_x) <= 1:
+				continue
+			if _layout_pinch_safe(room, x, sy):
+				_grid[sy][x] = WALL
+
+# Many 1×1 pillars scattered randomly — "broken rubble" feel.
+@warning_ignore("integer_division")
+func _layout_rubble(room: Rect2i) -> void:
+	var area: int = room.size.x * room.size.y
+	var count: int = clampi(area / 14, 5, 18)
+	for _i in count:
+		var tx: int = randi_range(room.position.x + 2,
+			room.position.x + room.size.x - 3)
+		var ty: int = randi_range(room.position.y + 2,
+			room.position.y + room.size.y - 3)
+		if not _layout_pinch_safe(room, tx, ty):
+			continue
+		if _grid[ty][tx] == WALL:
+			continue
+		# Keep at least one orthogonal neighbour open so we don't form
+		# 2-wide wall clusters that re-emerge as solid blocks.
+		var floor_neighbors: int = 0
+		for d in [Vector2i(1,0), Vector2i(-1,0), Vector2i(0,1), Vector2i(0,-1)]:
+			if _grid[ty + d.y][tx + d.x] == FLOOR:
+				floor_neighbors += 1
+		if floor_neighbors < 3:
+			continue
+		_grid[ty][tx] = WALL
+
+# Walks `_rooms` and stamps an interior layout into ~40 % of eligible ones.
+# Eligibility: room is large enough, isn't the player spawn, isn't the
+# portal room, isn't a boss arena, isn't already themed. Run AFTER
+# _carve_boss_arena (which has its own dedicated layouts) but BEFORE
+# _build_walls so the new wall tiles render properly.
+func _apply_room_layouts(player_room: Rect2i, portal_room: Rect2i,
+		boss_arena_room: Rect2i) -> void:
+	if _gen_mode == GenMode.CAVE or _gen_mode == GenMode.ARENA:
+		return   # cave-style rooms aren't axis-aligned, arena has its own
+	for r in _rooms:
+		var room: Rect2i = r
+		if room == player_room or room == portal_room:
+			continue
+		if boss_arena_room.size.x > 0 and room == boss_arena_room:
+			continue
+		# Skip degenerate sample rooms used by cave-gen.
+		if room.size.x < ROOM_LAYOUT_MIN_W or room.size.y < ROOM_LAYOUT_MIN_H:
+			continue
+		# 40 % chance per eligible room — keeps half the floor blank for
+		# straightforward combat encounters.
+		if randf() > 0.40:
+			continue
+		_stamp_room_layout(room)
+
 func _spawn_boss(room: Rect2i) -> void:
 	var diff := GameState.difficulty
 	var pos := _tile_center(room.get_center())
-	var boss_pick := randi() % 3
+	# Each biome has a signature boss for early floors so the player learns
+	# one boss per biome and the legendary drop reads as "earned in this
+	# biome." Deep floors (20+) open the pool so all five bosses are on
+	# the table for variety.
+	#   biome 0 Dungeon     → Brute (signature: Brutehammer shotgun)
+	#   biome 1 Catacombs   → Wraith (signature: Wraithcaster shock)
+	#   biome 2 Ice Cavern  → Architect (signature: Compass homing)
+	#   biome 3 Lava Rift   → Magma Tyrant (signature: Magmaspitter fire-nova)
+	var floor_n: int = GameState.portals_used + 1
 	var boss: Node2D
-	# Boss bases bumped (40/55/45 → 200/260/220) and per-diff multiplier
-	# bumped (0.25 → 0.85) so every boss is a real fight, scaling up hard
-	# on deep floors. Mirrors the enemy-base bumps in EnemyBoss.gd /
-	# EnemyBossArchitect.gd / EnemyBossWraith.gd.
-	match boss_pick:
-		0:
-			boss = BOSS_SCENE.instantiate()
-			if "max_health" in boss:
-				boss.max_health = int(200.0 * (1.0 + diff * 0.85))
-		1:
-			boss = BOSS_ARCHITECT_SCRIPT.new()
-			boss.max_health = int(260.0 * (1.0 + diff * 0.85))
-		2:
-			boss = BOSS_WRAITH_SCRIPT.new()
-			boss.max_health = int(220.0 * (1.0 + diff * 0.85))
+	if floor_n < 20:
+		boss = _instantiate_biome_boss(GameState.biome, diff)
+	else:
+		# Deep-floor pool: biome boss + the two universal advanced bosses
+		# (Lich, Devourer) so each biome still has its themed boss in rotation.
+		match randi() % 3:
+			0: boss = _instantiate_biome_boss(GameState.biome, diff)
+			1:
+				boss = BOSS_LICH_SCRIPT.new()
+				boss.max_health = int(280.0 * (1.0 + diff * 1.0))
+			2:
+				boss = BOSS_DEVOURER_SCRIPT.new()
+				boss.max_health = int(600.0 * (1.0 + diff * 1.0))
 	boss.position = pos
 	$Enemies.add_child(boss)
+
+# Floor-50 gauntlet — spawns 3 unique bosses around the arena center
+# at once, then watches them. When the last boss dies the watcher drops
+# the Crown of Conquest and spawns either an ExitPortal (back to village)
+# or a regular Portal (continue deeper) depending on whether the player's
+# difficulty is above 50 (the user-configurable "endless mode" threshold).
+# Bosses get +HP scaling like the regular boss spawn so deeper-tier
+# starts (Hellpit) hit floor 50 with proportionally tougher bosses.
+func _spawn_boss_gauntlet(arena_room: Rect2i) -> void:
+	var diff := GameState.difficulty
+	var center: Vector2 = _tile_center(arena_room.get_center())
+
+	# Pick 3 distinct boss types from the full pool of 4 biome signatures
+	# so the gauntlet rolls a different mix each visit (Brute / Wraith /
+	# Architect / Magma).
+	var pool: Array = [0, 1, 2, 3]
+	pool.shuffle()
+	var picks: Array = pool.slice(0, 3)
+
+	# Spread the bosses around the center on a triangle so the player
+	# can't AoE all three before any of them moves. Distance scales
+	# with arena size to avoid clipping into walls on smaller arenas.
+	# Cap raised alongside the arena EXPAND bump — larger arenas give the
+	# fight more room to breathe, and the bigger boss sprites need the
+	# extra spacing so they don't overlap each other at spawn.
+	var ring: float = minf(280.0, float(mini(arena_room.size.x, arena_room.size.y)) * float(TILE) * 0.32)
+	var watcher: Node = Node.new()
+	watcher.name = "GauntletWatcher"
+	watcher.set_meta("alive", picks.size())
+	watcher.set_meta("portal_pos", center)
+	add_child(watcher)
+	for i in picks.size():
+		var ang: float = (TAU / float(picks.size())) * float(i) - PI * 0.5
+		var pos: Vector2 = center + Vector2(cos(ang), sin(ang)) * ring
+		var boss: Node2D = _instantiate_biome_boss(int(picks[i]), diff)
+		# Trim per-boss HP so the gauntlet doesn't multiply total HP by 3 —
+		# instead each boss has ~70% of its solo HP, summing to ~2.1× a
+		# normal boss-floor encounter. Tense, not interminable.
+		if "max_health" in boss:
+			boss.max_health = int(boss.max_health * 0.70)
+		boss.position = pos
+		boss.tree_exited.connect(_on_gauntlet_boss_died.bind(watcher))
+		$Enemies.add_child(boss)
+
+	# Banner so the player understands what they walked into.
+	BossIntro.show_for(get_tree().current_scene,
+		"FLOOR 50 — GAUNTLET",
+		Color(1.0, 0.85, 0.30))
+
+func _on_gauntlet_boss_died(watcher: Node) -> void:
+	if not is_instance_valid(watcher):
+		return
+	var alive: int = int(watcher.get_meta("alive", 0)) - 1
+	watcher.set_meta("alive", alive)
+	if alive > 0:
+		FloatingText.spawn_str(Vector2(800, 120),
+			"%d BOSS%s REMAINING" % [alive, "" if alive == 1 else "ES"],
+			Color(1.0, 0.85, 0.30), get_tree().current_scene)
+		return
+	# All down — spawn the trophy and the appropriate portal.
+	var pos: Vector2 = watcher.get_meta("portal_pos", Vector2.ZERO)
+	_spawn_gauntlet_reward(pos)
+	# Continue deeper at extreme difficulty (the user's "endless mode"
+	# threshold); otherwise drop back to the village with the trophy.
+	if GameState.difficulty > 50.0:
+		_spawn_portal(pos + Vector2(0.0, 64.0))
+		FloatingText.spawn_str(pos + Vector2(0.0, -60.0),
+			"DEEPER STILL...", Color(1.0, 0.40, 0.40),
+			get_tree().current_scene)
+	else:
+		_spawn_exit_portal(pos + Vector2(0.0, 64.0))
+		FloatingText.spawn_str(pos + Vector2(0.0, -60.0),
+			"RETURN VICTORIOUS", Color(0.55, 1.0, 0.65),
+			get_tree().current_scene)
+	watcher.queue_free()
+
+func _spawn_gauntlet_reward(pos: Vector2) -> void:
+	# Special loot bag — Crown of Conquest plus a guaranteed legendary
+	# wand and a couple random drops. Loot table is deliberately sparse
+	# until the wider drop pool gets iterated; the Crown alone justifies
+	# the run.
+	var bag := LOOT_BAG_SCENE.instantiate()
+	bag.global_position = pos
+	bag.items = [ItemDB.crown_of_conquest(),
+		ItemDB.generate_wand(Item.RARITY_LEGENDARY),
+		ItemDB.random_drop(),
+		ItemDB.random_drop()]
+	get_tree().current_scene.call_deferred("add_child", bag)
+	# Bonus gold pile so the moment of victory has a visceral payoff.
+	for i in 12:
+		var gold := GOLD_PICKUP_SCENE.instantiate()
+		gold.global_position = pos + Vector2(
+			randf_range(-90.0, 90.0), randf_range(-90.0, 90.0))
+		gold.value = int(randi_range(20, 40) * GameState.loot_multiplier)
+		get_tree().current_scene.call_deferred("add_child", gold)
+	if SoundManager:
+		SoundManager.play("crystal", 0.95)
+
+# Returns a position inside `room` that's at least LOOT_MIN_DIST_PX away
+# from any interactable (shrine / enchant table / sell chest / etc.) and
+# from already-placed loot bags. If the preferred position is already
+# clear it's returned untouched; otherwise we sample a handful of random
+# floor tiles in the room and pick the first that clears. Final fallback
+# is the original — prefer a slightly overlapping bag to no bag at all.
+const LOOT_MIN_DIST_PX: float = 96.0   # ~3 tiles
+
+func _safe_loot_pos(preferred: Vector2, room: Rect2i) -> Vector2:
+	if _loot_pos_clear(preferred):
+		return preferred
+	for _attempt in 12:
+		var tx := randi_range(room.position.x + 1, room.position.x + room.size.x - 2)
+		var ty := randi_range(room.position.y + 1, room.position.y + room.size.y - 2)
+		if _grid[ty][tx] != FLOOR:
+			continue
+		var p: Vector2 = _tile_center(Vector2i(tx, ty))
+		if _loot_pos_clear(p):
+			return p
+	return preferred
+
+func _loot_pos_clear(p: Vector2) -> bool:
+	var d2: float = LOOT_MIN_DIST_PX * LOOT_MIN_DIST_PX
+	for n in get_tree().get_nodes_in_group("interactable"):
+		if not is_instance_valid(n):
+			continue
+		var n2: Node2D = n as Node2D
+		if n2 == null:
+			continue
+		if n2.global_position.distance_squared_to(p) < d2:
+			return false
+	for n in get_tree().get_nodes_in_group("loot_bag"):
+		if not is_instance_valid(n):
+			continue
+		var n2: Node2D = n as Node2D
+		if n2 == null:
+			continue
+		if n2.global_position.distance_squared_to(p) < d2:
+			return false
+	return true
+
+func _instantiate_biome_boss(biome: int, diff: float) -> Node2D:
+	var boss: Node2D
+	match biome:
+		1:   # Catacombs → Wraith (ghosts in tombs)
+			boss = BOSS_WRAITH_SCRIPT.new()
+			boss.max_health = int(220.0 * (1.0 + diff * 1.0))
+		2:   # Ice Cavern → Architect (cold mechanical turret)
+			boss = BOSS_ARCHITECT_SCRIPT.new()
+			boss.max_health = int(260.0 * (1.0 + diff * 1.0))
+		3:   # Lava Rift → Magma Tyrant
+			boss = BOSS_MAGMA_SCRIPT.new()
+			boss.max_health = int(280.0 * (1.0 + diff * 1.0))
+		_:   # 0 Dungeon (and any unknown biome) → Brute
+			boss = BOSS_SCENE.instantiate()
+			if "max_health" in boss:
+				boss.max_health = int(200.0 * (1.0 + diff * 1.0))
+	return boss
 
 # Probability that a non-boss floor at high difficulty hosts a mini-boss.
 # Climbs from 0 % at diff 4 to ~40 % at diff 6+.
@@ -1976,21 +2807,12 @@ func _spawn_mini_boss(player_room: Rect2i) -> void:
 	if room.size.x < 8 or room.size.y < 6:
 		return
 	var diff := GameState.difficulty
-	var pick := randi() % 3
-	var boss: Node2D
-	# 60 % of full boss HP — meant as a tough optional encounter, not
-	# the main floor objective. Bases + multiplier follow _spawn_boss.
-	match pick:
-		0:
-			boss = BOSS_SCENE.instantiate()
-			if "max_health" in boss:
-				boss.max_health = int(200.0 * (1.0 + diff * 0.85) * 0.6)
-		1:
-			boss = BOSS_ARCHITECT_SCRIPT.new()
-			boss.max_health = int(260.0 * (1.0 + diff * 0.85) * 0.6)
-		2:
-			boss = BOSS_WRAITH_SCRIPT.new()
-			boss.max_health = int(220.0 * (1.0 + diff * 0.85) * 0.6)
+	# Mini-boss is the current biome's themed boss at 60% HP — keeps the
+	# encounter on-theme with the rest of the floor instead of spawning a
+	# random boss that may not match the visual/mechanical setting.
+	var boss: Node2D = _instantiate_biome_boss(GameState.biome, diff)
+	if "max_health" in boss:
+		boss.max_health = int(boss.max_health * 0.6)
 	boss.position = _tile_center(room.get_center())
 	$Enemies.add_child(boss)
 	if SoundManager:
@@ -2076,9 +2898,9 @@ func _try_secret_off_room(base: Rect2i) -> bool:
 	# Try east side only (simplest, least likely to go OOB)
 	var sx := base.position.x + base.size.x + 1
 	@warning_ignore("integer_division")
-	var sy := base.position.y + base.size.y / 2 - 2
-	var sw := 6
-	var sh := 5
+	var sy := base.position.y + base.size.y / 2 - 3
+	var sw := 7
+	var sh := 7
 	@warning_ignore("integer_division")
 	var entrance := Vector2i(base.position.x + base.size.x, base.position.y + base.size.y / 2)
 
@@ -2116,15 +2938,31 @@ func _place_secret_doors() -> void:
 		door.set("wall_color", wall_col)
 		door.set("loot_world_pos", _tile_center(loot_tile))
 		door.set("loot_items", [ItemDB.random_drop(), ItemDB.random_drop(), ItemDB.random_drop()])
+		# 5 % roll for an ambush boss inside the secret room. SecretDoor
+		# spawns the boss alongside the loot when opened, so the player
+		# fights for what they thought was a free pile.
+		if randf() < 0.05:
+			door.set("spawn_boss_biome", GameState.biome)
 		door.position = _tile_center(entrance)
 		add_child(door)
 
-		# Cover the secret room so it can't be seen until the door opens.
-		# Room starts 1 tile east of entrance, 2 tiles north — 6×5 tiles.
+		# Cover the secret room AND its surrounding wall ring so the room
+		# doesn't telegraph its existence through the ASCII border glyphs
+		# that AsciiWalls draws on every wall tile facing a floor — those
+		# glyphs render at the wall/floor boundary just outside the
+		# previous (interior-only) cover. Extending the cover one tile
+		# (32 px) on the N / E / S sides hides those glyphs as well as the
+		# rectangular protrusion of "extra" wall area east of the parent
+		# room. West stays flush with the door body so the door visual
+		# itself reads as the wall surface the player approaches.
 		var cover := ColorRect.new()
 		cover.color = wall_col
-		cover.position = Vector2(16.0, -80.0)   # door-local: right edge of entrance, 2 tiles up
-		cover.size = Vector2(192.0, 160.0)       # 6×5 tiles
+		# Room interior is 7×7 (224×224 px). Extend the cover one extra tile
+		# (32 px) on N / E / S to bury the AsciiWalls border glyphs that
+		# would otherwise reveal the room's outline. West stays flush with
+		# the door so the door visual reads as the wall surface.
+		cover.position = Vector2(16.0, -144.0)
+		cover.size = Vector2(256.0, 288.0)
 		cover.z_index = 2
 		door.add_child(cover)
 
@@ -2191,9 +3029,12 @@ func _create_minimap() -> void:
 	canvas.add_child(mini_root)
 	_minimap_root = mini_root
 
-	# Dark surround border (relative to mini_root: top-left of the box)
+	# Dark surround border (relative to mini_root: top-left of the box).
+	# Dropped from alpha 0.88 → 0.32 so world content (enemies in the
+	# top-right corner of the viewport) shows through the minimap. The
+	# tile glyphs themselves are also alpha-thinned in MinimapGlyphs.
 	var bg := ColorRect.new()
-	bg.color = Color(0.02, 0.02, 0.06, 0.88)
+	bg.color = Color(0.02, 0.02, 0.06, 0.32)
 	bg.position = Vector2(0.0, 0.0)
 	bg.size = Vector2(MINIMAP_W + 4.0, MINIMAP_H + 4.0)
 	mini_root.add_child(bg)
@@ -2353,9 +3194,20 @@ func _on_room_cleared() -> void:
 				"MEGA BAG (×%d merged)" % bag_count_announce,
 				Color(1.0, 0.85, 0.25), scene_root_ref))
 
+var _eruption_t: float = 5.0   # first eruption ~5 s after entering a Lava Rift floor
+
 func _process(delta: float) -> void:
 	if _is_test_mode:
 		_tick_test_wave(delta)
+	# Lava Rift biome mechanic — periodic eruptions near the player.
+	# Telegraph for 3 s, then drop a LavaTile that lingers like the
+	# baseline biome-hazard tiles. Adds positional pressure during
+	# combat without feeling random across the whole map.
+	if GameState.biome == 3:
+		_eruption_t -= delta
+		if _eruption_t <= 0.0:
+			_eruption_t = randf_range(7.0, 10.0)
+			_spawn_eruption_near_player()
 	# Drain queued dungeon-mode spawns over time. Burst hard for the first
 	# second after a level loads (so the world feels populated immediately),
 	# then drop to the steady fast/slow rates. Slow rate kicks in only when

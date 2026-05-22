@@ -3,9 +3,16 @@ extends RefCounted
 
 enum Type { WAND, HAT, ROBES, FEET, RING, NECKLACE, SHIELD, TOME, VALUABLE, POTION }
 
+# Ordered ascending so `item.rarity > other.rarity` still means "better."
+# Renumbering note: rare and legendary moved up by 1 to make room for
+# uncommon. Save files written before this change get silently down-
+# shifted (an old "rare" saved as 1 will load as "uncommon"). Acceptable
+# churn for a one-time loot-rule change; if a stronger migration is
+# needed later, add a version key to to_dict / from_dict.
 const RARITY_COMMON    := 0
-const RARITY_RARE      := 1
-const RARITY_LEGENDARY := 2
+const RARITY_UNCOMMON  := 1
+const RARITY_RARE      := 2
+const RARITY_LEGENDARY := 3
 
 var type: Type
 var display_name: String
@@ -14,19 +21,39 @@ var color: Color
 var icon_char: String = "?"
 var sell_value: int = 5
 var rarity: int = RARITY_COMMON
+# Lowest rarity this item can drop at. Drop logic re-rolls every fixed
+# gear template's rarity per drop (the +4 VIT Pointed Hat is a base
+# template; the actual drop rolls common/uncommon/rare and scales stats
+# by the rarity multiplier). min_rarity puts a floor on that roll —
+# stat rings use UNCOMMON so they never drop as common.
+var min_rarity: int = RARITY_COMMON
+# Item tier — primary scaling axis for procedurally generated gear. Set
+# by ItemDB.generate_gear / generate_wand from a roll keyed off the
+# floor's difficulty (between max(1, floor(diff) - 5) and floor(diff)).
+# Tier drives the stat magnitude curve; rarity is a separate axis that
+# determines stat COUNT and a flat magnitude bump on top.
+# Tier 0 = static / unscaled item (fixed legendaries, valuables, potions).
+var tier: int = 0
 # Flat bonuses applied while equipped. Keys: "speed", "max_health", "fire_rate_reduction", "DEF", "projectile_count"
 var stat_bonuses: Dictionary = {}
 var set_tag: String = ""   # "arcane" | "iron" | "swift" | ""
-# Stack count for stackable items (potions). Always 1 for non-stackable types.
-# InventoryManager.add_item folds an incoming stackable into an existing
-# stack of the same kind instead of consuming a fresh grid slot.
+# Stack count for stackable items (potions, valuables). Always 1 for
+# non-stackable types. InventoryManager.add_item folds an incoming
+# stackable into an existing stack of the same kind, capped at STACK_CAP
+# per slot before overflowing into a new slot.
 var quantity: int = 1
 
-# Items that fold into a single inventory slot when picked up. Currently
-# limited to potions — gear / wands / valuables stay distinct since they
-# carry per-instance state (charges, rolled stats, etc.).
+# Per-slot stack ceiling. Anything past this rolls into a fresh slot so
+# the bag isn't a single 999-deep pile that obscures inventory pressure.
+const STACK_CAP: int = 10
+
+# Items that fold into a single inventory slot when picked up. Potions
+# stack because consumables shouldn't bloat the bag; valuables (gems,
+# coins, crystals) stack because they're functionally currency. Gear /
+# wands stay distinct since they carry per-instance state (rolled stats,
+# affixes, charges).
 func is_stackable() -> bool:
-	return type == Type.POTION
+	return type == Type.POTION or type == Type.VALUABLE
 
 # Wand-specific fields (only meaningful when type == WAND)
 var wand_shoot_type: String  = "regular"  # regular/pierce/ricochet/chain/freeze/fire/beam
@@ -44,13 +71,18 @@ var wand_flaws: Array        = []         # backwards/clunky/sloppy/mana_guzzle/
 # create high-power "consumable" wands on the drop table.
 var wand_max_charges: int    = 0
 var wand_charges: int        = 0
+# Number of times this wand has been forged at the enchanting table.
+# Each subsequent forge costs 1.5× the previous so chain-forging the
+# same wand into a god-roll has a visible escalating price tag.
+var wand_forge_count: int    = 0
 
 func is_limited_use() -> bool:
 	return wand_max_charges > 0
 
 ## Returns the equipment slot name this item occupies, or "" if not equippable.
-## Offhand items (SHIELD / TOME) are intentionally unequippable for now —
-## the offhand slot and its projectile-count tomes are disabled.
+## SHIELD / TOME items return "" — the offhand slot was removed, but the
+## item types still exist (drops, sell value, fusion) so they round-trip
+## through the bag. They just can't be equipped.
 func get_equip_slot_name() -> String:
 	match type:
 		Type.WAND:     return "wand"
@@ -90,6 +122,9 @@ func to_dict() -> Dictionary:
 		"wand_flaws":        (wand_flaws as Array).duplicate(),
 		"wand_max_charges":  wand_max_charges,
 		"wand_charges":      wand_charges,
+		"wand_forge_count":  wand_forge_count,
+		"tier":              tier,
+		"min_rarity":        min_rarity,
 		"quantity":          quantity,
 	}
 
@@ -118,5 +153,8 @@ static func from_dict(d: Dictionary) -> Item:
 	it.wand_flaws        = (d.get("wand_flaws", []) as Array).duplicate()
 	it.wand_max_charges  = int(d.get("wand_max_charges", 0))
 	it.wand_charges      = int(d.get("wand_charges", 0))
+	it.wand_forge_count  = int(d.get("wand_forge_count", 0))
+	it.tier              = int(d.get("tier", 0))
+	it.min_rarity        = int(d.get("min_rarity", RARITY_COMMON))
 	it.quantity          = int(d.get("quantity", 1))
 	return it

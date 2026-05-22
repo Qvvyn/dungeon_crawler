@@ -10,19 +10,58 @@ var _fuse_selected: Array = []
 var _fuse_cell_rects: Array = []
 var _fuse_cell_indices: Array = []
 
-const REROLL_COST := 40
-const FORGE_COST  := 60
-const FUSE_COST   := 80
-const REFINE_COST := 110   # transforms one flaw into a stronger perk affix
+const REROLL_COST   := 40
+const FORGE_COST    := 60
+const FUSE_COST     := 80
+const REFINE_COST   := 110   # transforms one flaw into a stronger perk affix
+const TRANSMUTE_COST := 200  # picks the wand's shoot type, rerolls type-keyed stats
+# Imbue tier costs — Common→Rare is cheap so early upgrades are accessible,
+# Rare→Legendary is the milestone that costs real money. Single flat 250g
+# cost for both tiers made the second jump trivial relative to the value
+# delta and the first jump too steep.
+const IMBUE_COST_TO_RARE      := 150
+const IMBUE_COST_TO_LEGENDARY := 800
 
 # Difficulty-scaled price helpers — apply GameState.price_multiplier() so
 # upgrade costs come down at high tiers and the player can actually afford
 # to keep their gear matching the harder fights. Existing call sites that
 # still reference the BASE constants are fine; new code should use these.
 func _reroll_cost() -> int: return int(round(float(REROLL_COST) * GameState.price_multiplier()))
-func _forge_cost()  -> int: return int(round(float(FORGE_COST)  * GameState.price_multiplier()))
+func _forge_cost()  -> int:
+	# Two stacking modifiers:
+	#   1. Per-wand escalation — each prior forge on the equipped wand
+	#      multiplies the next one's price by 1.5. A FRESH wand resets to
+	#      base since wand_forge_count starts at 0.
+	#   2. Difficulty surcharge — base cost climbs with the active floor
+	#      difficulty so deep-floor forging stays a meaningful gold sink.
+	#      +20 % per +1 difficulty above the first floor; capped at 5×.
+	# Note: forge intentionally does NOT use GameState.price_multiplier()
+	# (which DISCOUNTS at high diff for shop / fuse / etc.) because the
+	# user wants forging to feel pricier as the dungeon gets harder.
+	var stack: float = 1.0
+	var w: Item = InventoryManager.equipped.get("wand") as Item
+	if w != null and w.type == Item.Type.WAND and w.wand_forge_count > 0:
+		stack = pow(1.5, float(w.wand_forge_count))
+	var d: float = GameState.test_difficulty if GameState.test_mode else GameState.difficulty
+	var diff_scale: float = clampf(1.0 + maxf(0.0, d - 1.0) * 0.20, 1.0, 5.0)
+	return int(round(float(FORGE_COST) * diff_scale * stack))
 func _fuse_cost()   -> int: return int(round(float(FUSE_COST)   * GameState.price_multiplier()))
 func _refine_cost() -> int: return int(round(float(REFINE_COST) * GameState.price_multiplier()))
+func _transmute_cost() -> int: return int(round(float(TRANSMUTE_COST) * GameState.price_multiplier()))
+# Imbue cost depends on the equipped wand's *current* rarity (the cost to
+# bump it up one tier). Cheap for the early rarity steps, expensive for
+# the legendary jump. Falls back to the legendary cost when the wand is
+# missing or already legendary so the label still reads sensibly.
+func _imbue_cost() -> int:
+	var wand: Item = InventoryManager.equipped.get("wand") as Item
+	if wand == null or wand.type != Item.Type.WAND:
+		return int(round(float(IMBUE_COST_TO_LEGENDARY) * GameState.price_multiplier()))
+	var base: int = IMBUE_COST_TO_LEGENDARY
+	match wand.rarity:
+		Item.RARITY_COMMON:    base = IMBUE_COST_TO_RARE       # → uncommon
+		Item.RARITY_UNCOMMON:  base = IMBUE_COST_TO_RARE       # → rare
+		Item.RARITY_RARE:      base = IMBUE_COST_TO_LEGENDARY  # → legendary
+	return int(round(float(base) * GameState.price_multiplier()))
 const CELL_W := 110.0
 const CELL_H := 90.0
 const GAP    := 8.0
@@ -36,6 +75,23 @@ const AFFIX_POOL := [
 	{"name": "+60 ProjSpd",  "stat": "wand_proj_speed", "val": 60.0},
 ]
 
+# Affix-compatibility filter. Pierce and ricochet are mutually exclusive
+# on non-legendary wands — only legendaries can carry both. Forge / refine
+# / imbue / autoplay forge all roll affixes through this picker so the
+# rule holds regardless of which call site does the application.
+func _random_compatible_affix(wand: Item) -> Dictionary:
+	var pool: Array = AFFIX_POOL
+	if wand != null and wand.rarity < Item.RARITY_LEGENDARY:
+		if wand.wand_pierce > 0:
+			# Wand already has pierce → ricochet affix is off the table.
+			pool = AFFIX_POOL.filter(func(a: Dictionary) -> bool:
+				return a["stat"] != "wand_ricochet")
+		elif wand.wand_ricochet > 0:
+			# Wand already has ricochet → pierce affix is off the table.
+			pool = AFFIX_POOL.filter(func(a: Dictionary) -> bool:
+				return a["stat"] != "wand_pierce")
+	return pool[randi() % pool.size()]
+
 # Value ranges for rerolling each stat
 const STAT_RANGES := {
 	"speed":              [10.0,  60.0],
@@ -46,6 +102,7 @@ const STAT_RANGES := {
 }
 
 func _ready() -> void:
+	add_to_group("interactable")   # bullets pass through (Projectile group check)
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
 
@@ -98,7 +155,7 @@ func _auto_upgrade(player: Node) -> void:
 		GameState.gold -= _refine_cost()
 		var removed: String = String(wand.wand_flaws[0])
 		wand.wand_flaws.remove_at(0)
-		_apply_affix(wand, AFFIX_POOL[randi() % AFFIX_POOL.size()], 1.6)
+		_apply_affix(wand, _random_compatible_affix(wand), 1.6)
 		FloatingText.spawn_str(player.global_position,
 			"REFINED: -%s" % removed.to_upper(),
 			Color(0.85, 0.55, 1.0), get_tree().current_scene)
@@ -108,7 +165,8 @@ func _auto_upgrade(player: Node) -> void:
 	elif wand != null and wand.type == Item.Type.WAND \
 			and GameState.gold >= _forge_cost() + 80:
 		GameState.gold -= _forge_cost()
-		_apply_affix(wand, AFFIX_POOL[randi() % AFFIX_POOL.size()], 1.0)
+		_apply_affix(wand, _random_compatible_affix(wand), 1.0)
+		wand.wand_forge_count += 1   # match manual forge cost-escalation
 		FloatingText.spawn_str(player.global_position,
 			"FORGED!",
 			Color(1.0, 0.75, 0.2), get_tree().current_scene)
@@ -151,8 +209,17 @@ func _open_popup() -> void:
 	_build_ui()
 
 func _build_ui() -> void:
+	# Remove-from-tree + queue_free instead of plain free(). _build_ui is
+	# called from Button.pressed handlers (forge / refine / imbue / fuse /
+	# transmute), so the Button that fired the click is among the popup's
+	# children. Calling free() on it while it's mid-dispatch crashes
+	# Godot's signal stack on the next input event. Removing it first
+	# drops it from the tree (subsequent input traversal skips it) and
+	# queue_free schedules the actual deletion for next idle, after the
+	# pressed signal has finished unwinding.
 	for child in _popup.get_children():
-		child.free()
+		_popup.remove_child(child)
+		child.queue_free()
 	_cell_rects.clear()
 	_cell_indices.clear()
 	_fuse_cell_rects.clear()
@@ -173,7 +240,9 @@ func _build_ui() -> void:
 	var row_w   := float(cols) * CELL_W + float(cols - 1) * GAP
 	var panel_w := maxf(row_w + 48.0, 380.0)
 	var cells_h := float(rows) * (CELL_H + GAP) if count > 0 else 28.0
-	var panel_h := 30.0 + 56.0 + cells_h + 24.0 + (108.0 if has_wand else 0.0)
+	# Wand action panel grew 108 → 158 to fit the TRANSMUTE row beneath
+	# IMBUE without overlapping the inventory grid.
+	var panel_h := 30.0 + 56.0 + cells_h + 24.0 + (158.0 if has_wand else 0.0)
 	var ox      := (1600.0 - panel_w) / 2.0
 	var oy      := (900.0 - panel_h) / 2.0
 
@@ -290,9 +359,13 @@ func _build_ui() -> void:
 			lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			_popup.add_child(lbl)
 
-	# ── Forge section ─────────────────────────────────────────────────────────
+	# ── Forge / Refine / Imbue / Transmute section ───────────────────────────
+	# sep_y bumped further to fit the fourth action row (transmute). Overall
+	# math: title 20 + button 26 = 46 px per row, four rows = 184 px, with
+	# the current 30 + 56 (tabs/title) plus 24 padding = ~206. The panel_h
+	# baseline has 158 reserved.
 	if has_wand:
-		var sep_y := oy + panel_h - 108.0
+		var sep_y := oy + panel_h - 206.0
 		var sep := ColorRect.new()
 		sep.color = Color(0.45, 0.2, 0.7, 0.5)
 		sep.position = Vector2(ox + 8.0, sep_y)
@@ -370,6 +443,91 @@ func _build_ui() -> void:
 			refine_lbl.add_theme_color_override("font_color",
 				Color(0.75, 0.5, 1.0) if can_refine else Color(0.35, 0.28, 0.45)))
 		_popup.add_child(refine_btn)
+
+		# Imbue — third row. Bumps wand rarity by one step
+		# (common → uncommon → rare → legendary). Disabled when the
+		# wand is already legendary or gold is short.
+		var is_max_tier: bool = wand.rarity >= Item.RARITY_LEGENDARY
+		var can_imbue := GameState.gold >= _imbue_cost() and not is_max_tier
+		var imbue_title := Label.new()
+		var tier_text: String = "MAX TIER"
+		if not is_max_tier:
+			match wand.rarity:
+				Item.RARITY_COMMON:   tier_text = "COMMON → UNCOMMON"
+				Item.RARITY_UNCOMMON: tier_text = "UNCOMMON → RARE"
+				Item.RARITY_RARE:     tier_text = "RARE → LEGENDARY"
+		imbue_title.text = "★  IMBUE WAND  —  %dg  —  %s" % [_imbue_cost(), tier_text]
+		imbue_title.position = Vector2(ox, sep_y + 106.0)
+		imbue_title.size = Vector2(panel_w, 20.0)
+		imbue_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		imbue_title.add_theme_font_size_override("font_size", 11)
+		imbue_title.add_theme_color_override("font_color",
+			Color(1.0, 0.7, 1.0) if not is_max_tier else Color(0.45, 0.35, 0.55))
+		_popup.add_child(imbue_title)
+
+		var imbue_lbl := Label.new()
+		imbue_lbl.text = "[ MAX TIER ]" if is_max_tier else "[ IMBUE WAND ]"
+		imbue_lbl.position = Vector2(ox, sep_y + 126.0)
+		imbue_lbl.size = Vector2(panel_w, 26.0)
+		imbue_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		imbue_lbl.add_theme_font_size_override("font_size", 15)
+		imbue_lbl.add_theme_color_override("font_color",
+			Color(1.0, 0.75, 1.0) if can_imbue else Color(0.45, 0.30, 0.55))
+		_popup.add_child(imbue_lbl)
+
+		var imbue_btn := Button.new()
+		imbue_btn.flat = true
+		imbue_btn.text = ""
+		imbue_btn.position = Vector2(ox, sep_y + 126.0)
+		imbue_btn.size = Vector2(panel_w, 26.0)
+		imbue_btn.disabled = not can_imbue
+		imbue_btn.pressed.connect(_imbue_wand)
+		imbue_btn.mouse_entered.connect(func() -> void:
+			if can_imbue:
+				imbue_lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 1.0)))
+		imbue_btn.mouse_exited.connect(func() -> void:
+			imbue_lbl.add_theme_color_override("font_color",
+				Color(1.0, 0.75, 1.0) if can_imbue else Color(0.45, 0.30, 0.55)))
+		_popup.add_child(imbue_btn)
+
+		# Transmute — picks the wand's shoot type. Opens a sub-popup with
+		# the 8 shoot types so the player can target a specific build (e.g.
+		# convert a Sloppy Beam to a clean Pierce). Costs more than a forge
+		# (200g base) since it dramatically reshapes the wand.
+		var can_transmute := GameState.gold >= _transmute_cost()
+		var trans_title := Label.new()
+		trans_title.text = "↻  TRANSMUTE WAND  —  %dg  —  pick a new shoot type" % _transmute_cost()
+		trans_title.position = Vector2(ox, sep_y + 156.0)
+		trans_title.size = Vector2(panel_w, 20.0)
+		trans_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		trans_title.add_theme_font_size_override("font_size", 11)
+		trans_title.add_theme_color_override("font_color", Color(0.55, 1.0, 0.85))
+		_popup.add_child(trans_title)
+
+		var trans_lbl := Label.new()
+		trans_lbl.text = "[ TRANSMUTE WAND ]"
+		trans_lbl.position = Vector2(ox, sep_y + 176.0)
+		trans_lbl.size = Vector2(panel_w, 26.0)
+		trans_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		trans_lbl.add_theme_font_size_override("font_size", 15)
+		trans_lbl.add_theme_color_override("font_color",
+			Color(0.55, 1.0, 0.85) if can_transmute else Color(0.30, 0.45, 0.40))
+		_popup.add_child(trans_lbl)
+
+		var trans_btn := Button.new()
+		trans_btn.flat = true
+		trans_btn.text = ""
+		trans_btn.position = Vector2(ox, sep_y + 176.0)
+		trans_btn.size = Vector2(panel_w, 26.0)
+		trans_btn.disabled = not can_transmute
+		trans_btn.pressed.connect(_open_transmute_picker)
+		trans_btn.mouse_entered.connect(func() -> void:
+			if can_transmute:
+				trans_lbl.add_theme_color_override("font_color", Color(0.75, 1.0, 0.95)))
+		trans_btn.mouse_exited.connect(func() -> void:
+			trans_lbl.add_theme_color_override("font_color",
+				Color(0.55, 1.0, 0.85) if can_transmute else Color(0.30, 0.45, 0.40)))
+		_popup.add_child(trans_btn)
 
 func _build_fuse_content(ox: float, oy: float, panel_w: float, _panel_h: float) -> void:
 	var fusable: Array = []
@@ -474,6 +632,7 @@ func _close_popup() -> void:
 	if _popup:
 		_popup.queue_free()
 		_popup = null
+	_close_transmute_picker()
 	_cell_rects.clear()
 	_cell_indices.clear()
 	_fuse_cell_rects.clear()
@@ -611,7 +770,8 @@ func _forge_wand() -> void:
 				"Need %dg" % _forge_cost(), Color(1.0, 0.3, 0.3), get_tree().current_scene)
 		return
 	GameState.gold -= _forge_cost()
-	_apply_affix(wand, AFFIX_POOL[randi() % AFFIX_POOL.size()], 1.0)
+	_apply_affix(wand, _random_compatible_affix(wand), 1.0)
+	wand.wand_forge_count += 1   # next forge on this wand is 1.5× pricier
 	if player:
 		FloatingText.spawn_str(player.global_position,
 			"FORGED!", Color(1.0, 0.75, 0.2), get_tree().current_scene)
@@ -636,12 +796,236 @@ func _refine_wand() -> void:
 	var removed: String = String(wand.wand_flaws[0])
 	wand.wand_flaws.remove_at(0)
 	# Refine grants a 1.6× scaled affix — meaningfully better than a forge.
-	_apply_affix(wand, AFFIX_POOL[randi() % AFFIX_POOL.size()], 1.6)
+	_apply_affix(wand, _random_compatible_affix(wand), 1.6)
 	if player:
 		FloatingText.spawn_str(player.global_position,
 			"REFINED: -%s" % removed.to_upper(), Color(0.85, 0.55, 1.0), get_tree().current_scene)
 	InventoryManager.inventory_changed.emit()
 	_build_ui()
+
+# Imbue — bumps a wand's rarity tier. COMMON → RARE → LEGENDARY (capped).
+# Also hard-rerolls damage on the new tier band and grants a free affix
+# so the upgrade is visibly stronger, not just a name change. Steep cost
+# (250g base) keeps it as a milestone payoff rather than a routine action.
+func _imbue_wand() -> void:
+	var wand: Item = InventoryManager.equipped.get("wand") as Item
+	if wand == null or wand.type != Item.Type.WAND:
+		return
+	var player := InventoryManager._player_ref
+	if wand.rarity >= Item.RARITY_LEGENDARY:
+		if player:
+			FloatingText.spawn_str(player.global_position,
+				"ALREADY LEGENDARY", Color(1.0, 0.6, 0.2), get_tree().current_scene)
+		return
+	if GameState.gold < _imbue_cost():
+		if player:
+			FloatingText.spawn_str(player.global_position,
+				"Need %dg" % _imbue_cost(), Color(1.0, 0.3, 0.3), get_tree().current_scene)
+		return
+	GameState.gold -= _imbue_cost()
+	wand.rarity += 1
+	# Damage tier-up — pull a fresh roll from the new rarity band so the
+	# upgrade actually packs more punch. Mirrors the bands in
+	# ItemDB.generate_wand: COMMON 2-3, UNCOMMON 2-4, RARE 3-5, LEGENDARY 5-10.
+	match wand.rarity:
+		Item.RARITY_UNCOMMON:  wand.wand_damage = maxi(wand.wand_damage, randi_range(2, 4))
+		Item.RARITY_RARE:      wand.wand_damage = maxi(wand.wand_damage, randi_range(3, 5))
+		Item.RARITY_LEGENDARY: wand.wand_damage = maxi(wand.wand_damage, randi_range(5, 10))
+	# Free bonus affix at 1.4× scale — between forge (1.0×) and refine (1.6×).
+	# Note: imbue increments rarity FIRST, so a wand that just became
+	# legendary in this call already passes the legendary check inside
+	# _random_compatible_affix and can roll either pierce or ricochet.
+	_apply_affix(wand, _random_compatible_affix(wand), 1.4)
+	# Visual color shift to match the new tier (mirrors ItemDB).
+	match wand.rarity:
+		Item.RARITY_LEGENDARY:
+			wand.color = wand.color.lerp(Color(1.0, 0.55, 1.0), 0.45)
+		Item.RARITY_RARE:
+			wand.color = wand.color.lerp(Color(1.0, 0.92, 0.45), 0.30)
+		Item.RARITY_UNCOMMON:
+			wand.color = wand.color.lerp(Color(0.45, 1.0, 0.55), 0.25)
+	if player:
+		var label: String = "IMBUED!"
+		match wand.rarity:
+			Item.RARITY_UNCOMMON:  label = "IMBUED → UNCOMMON"
+			Item.RARITY_RARE:      label = "IMBUED → RARE"
+			Item.RARITY_LEGENDARY: label = "IMBUED → LEGENDARY"
+		FloatingText.spawn_str(player.global_position,
+			label, Color(1.0, 0.7, 1.0), get_tree().current_scene)
+	if SoundManager:
+		SoundManager.play("crystal", randf_range(0.95, 1.10))
+	InventoryManager.inventory_changed.emit()
+	_build_ui()
+
+# Sub-overlay for picking the transmute target shoot type. Spawns above
+# the main enchant popup so the user can cancel without losing context.
+# Each tile costs the player 0g — the gold is deducted in _do_transmute
+# only when a type is actually chosen.
+const _TRANS_TYPES: Array = ["pierce", "ricochet", "shotgun", "freeze",
+	"fire", "shock", "homing", "nova"]
+
+var _transmute_overlay: CanvasLayer = null
+
+func _open_transmute_picker() -> void:
+	var wand: Item = InventoryManager.equipped.get("wand") as Item
+	if wand == null or wand.type != Item.Type.WAND:
+		return
+	if GameState.gold < _transmute_cost():
+		var p1 := InventoryManager._player_ref
+		if p1:
+			FloatingText.spawn_str(p1.global_position,
+				"Need %dg" % _transmute_cost(),
+				Color(1.0, 0.3, 0.3), get_tree().current_scene)
+		return
+	if is_instance_valid(_transmute_overlay):
+		_transmute_overlay.queue_free()
+	_transmute_overlay = CanvasLayer.new()
+	_transmute_overlay.layer = 14
+	get_tree().current_scene.add_child(_transmute_overlay)
+
+	var dim := ColorRect.new()
+	dim.color = Color(0.0, 0.0, 0.0, 0.6)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_transmute_overlay.add_child(dim)
+
+	var pw := 560.0
+	var ph := 280.0
+	var ox2 := (1600.0 - pw) / 2.0
+	var oy2 := (900.0 - ph) / 2.0
+	var bg := ColorRect.new()
+	bg.color = Color(0.05, 0.10, 0.08, 0.97)
+	bg.position = Vector2(ox2, oy2)
+	bg.size = Vector2(pw, ph)
+	_transmute_overlay.add_child(bg)
+	var border := ColorRect.new()
+	border.color = Color(0.30, 0.85, 0.65, 0.85)
+	border.position = Vector2(ox2 - 2.0, oy2 - 2.0)
+	border.size = Vector2(pw + 4.0, ph + 4.0)
+	border.z_index = -1
+	_transmute_overlay.add_child(border)
+
+	var title := Label.new()
+	title.text = "↻  TRANSMUTE — pick a shoot type  (current: %s)" % wand.wand_shoot_type.to_upper()
+	title.position = Vector2(ox2, oy2 + 12.0)
+	title.size = Vector2(pw, 24.0)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 14)
+	title.add_theme_color_override("font_color", Color(0.55, 1.0, 0.85))
+	_transmute_overlay.add_child(title)
+
+	# 4×2 grid of type tiles.
+	var tw := 120.0
+	var th := 56.0
+	var gap := 8.0
+	var grid_x: float = ox2 + (pw - (4.0 * tw + 3.0 * gap)) / 2.0
+	var grid_y: float = oy2 + 50.0
+	for i in _TRANS_TYPES.size():
+		var stype: String = _TRANS_TYPES[i]
+		var col_i: int = i % 4
+		var row_i: int = i / 4
+		var tx: float = grid_x + float(col_i) * (tw + gap)
+		var ty: float = grid_y + float(row_i) * (th + gap)
+		var tile := ColorRect.new()
+		var tcol: Color = _shoot_type_tint(stype)
+		tile.color = tcol.darkened(0.55)
+		tile.position = Vector2(tx, ty)
+		tile.size = Vector2(tw, th)
+		_transmute_overlay.add_child(tile)
+		var lbl := Label.new()
+		lbl.text = stype.to_upper()
+		lbl.position = Vector2(tx, ty + 18.0)
+		lbl.size = Vector2(tw, 22.0)
+		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		lbl.add_theme_font_size_override("font_size", 14)
+		lbl.add_theme_color_override("font_color",
+			Color(0.55, 0.55, 0.55) if stype == wand.wand_shoot_type
+			else tcol.lightened(0.35))
+		_transmute_overlay.add_child(lbl)
+		var btn := Button.new()
+		btn.flat = true
+		btn.position = Vector2(tx, ty)
+		btn.size = Vector2(tw, th)
+		btn.disabled = (stype == wand.wand_shoot_type)
+		var t_cap := stype
+		btn.pressed.connect(func() -> void:
+			_do_transmute(t_cap))
+		_transmute_overlay.add_child(btn)
+
+	var cancel_lbl := Label.new()
+	cancel_lbl.text = "[ CANCEL ]"
+	cancel_lbl.position = Vector2(ox2, oy2 + ph - 36.0)
+	cancel_lbl.size = Vector2(pw, 22.0)
+	cancel_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	cancel_lbl.add_theme_font_size_override("font_size", 13)
+	cancel_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.8))
+	_transmute_overlay.add_child(cancel_lbl)
+	var cancel_btn := Button.new()
+	cancel_btn.flat = true
+	cancel_btn.position = Vector2(ox2, oy2 + ph - 36.0)
+	cancel_btn.size = Vector2(pw, 22.0)
+	cancel_btn.pressed.connect(_close_transmute_picker)
+	_transmute_overlay.add_child(cancel_btn)
+
+func _close_transmute_picker() -> void:
+	if is_instance_valid(_transmute_overlay):
+		_transmute_overlay.queue_free()
+	_transmute_overlay = null
+
+func _do_transmute(target_type: String) -> void:
+	var wand: Item = InventoryManager.equipped.get("wand") as Item
+	if wand == null or wand.type != Item.Type.WAND:
+		_close_transmute_picker()
+		return
+	if GameState.gold < _transmute_cost():
+		_close_transmute_picker()
+		return
+	if target_type == wand.wand_shoot_type:
+		_close_transmute_picker()
+		return
+	GameState.gold -= _transmute_cost()
+	wand.wand_shoot_type = target_type
+	# Clear type-specific stat fields so the new type doesn't drag legacy
+	# values from the old one (e.g. a pierce wand transmuted to nova
+	# shouldn't keep its pierce count).
+	wand.wand_pierce        = 0
+	wand.wand_ricochet      = 0
+	wand.wand_status_stacks = 0
+	# Reseed the type-specific fields with sensible defaults for the new
+	# shoot type — mirrors the shoot-type adjustments in ItemDB.generate_wand.
+	match target_type:
+		"pierce":   wand.wand_pierce        = randi_range(1, 2 + wand.rarity)
+		"ricochet": wand.wand_ricochet      = randi_range(1, 2 + wand.rarity)
+		"freeze", "fire", "shock":
+			wand.wand_status_stacks = randi_range(1, 1 + wand.rarity)
+	# Update the wand's icon glyph so the inventory matches the new type.
+	wand.icon_char = ItemDB._wand_icon_for_type(target_type)
+	# Visual feedback
+	var p2 := InventoryManager._player_ref
+	if p2:
+		FloatingText.spawn_str(p2.global_position,
+			"TRANSMUTED → %s" % target_type.to_upper(),
+			_shoot_type_tint(target_type), get_tree().current_scene)
+	if SoundManager:
+		SoundManager.play("crystal", randf_range(0.92, 1.08))
+	_close_transmute_picker()
+	InventoryManager.inventory_changed.emit()
+	if p2 and p2.has_method("update_equip_stats"):
+		p2.update_equip_stats()
+	_build_ui()
+
+# Per-shoot-type tint for the transmute picker tiles. Mirrors the wand
+# colour palette in ItemDB so the player makes the visual association.
+func _shoot_type_tint(stype: String) -> Color:
+	match stype:
+		"pierce":   return Color(0.95, 0.95, 0.30)
+		"ricochet": return Color(0.35, 1.00, 0.50)
+		"shotgun":  return Color(1.00, 0.65, 0.20)
+		"freeze":   return Color(0.30, 0.75, 1.00)
+		"fire":     return Color(1.00, 0.40, 0.10)
+		"shock":    return Color(0.90, 0.95, 0.30)
+		"homing":   return Color(0.55, 0.30, 1.00)
+		"nova":     return Color(0.85, 0.40, 1.00)
+	return Color(0.70, 0.70, 0.70)
 
 # Shared affix-application helper — `scale` multiplies the affix's value so
 # REFINE can grant a stronger version than FORGE while reusing the same pool.

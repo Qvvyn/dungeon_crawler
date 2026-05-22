@@ -31,7 +31,15 @@ var assassin_mark: bool       = false  # Assassin's Mark: homing deals 2x damage
 var player_intelligence: int = 1    # scales elemental AoE/chain — set by Player._fire()
 var arc_target: Vector2      = Vector2.ZERO  # enemy arc shots steer toward this point
 var _hit_entities: Array     = []   # instance IDs already struck (pierce/chain dedup)
-var _bounce_cd: float        = 0.0  # brief cooldown to prevent double-bounce
+# Per-collider dedup for wall bounces — replaces the old time-based
+# _bounce_cd cooldown. At high projectile speeds (shock at 1.7×, deep-
+# diff wand_proj_speed) the time cooldown crossed multiple walls and
+# silently queue_freed the projectile when the second wall arrived
+# during the cooldown window. Tracking the last-hit collider id is
+# geometry-correct: the reflected direction already prevents same-wall
+# re-hits in the same arc, and a different collider always allows a
+# bounce regardless of how recent the last one was.
+var _last_bounce_collider_id: int = 0
 var _trail_timer: float      = 0.0
 var _base_direction: Vector2 = Vector2.ZERO
 var _zigzag_t: float         = 0.0
@@ -143,9 +151,6 @@ func _apply_visual() -> void:
 			lbl.add_theme_color_override("font_color", Color(0.72, 0.72, 0.88))
 
 func _physics_process(delta: float) -> void:
-	if _bounce_cd > 0.0:
-		_bounce_cd -= delta
-
 	# Fire bolts arc gently — flames feel like they're flickering and
 	# curling toward the target. Tightened from ±22° / 12 rad/s to ±10° /
 	# 16 rad/s so the lateral deviation stays inside ~25 px and the bot
@@ -210,13 +215,19 @@ func _physics_process(delta: float) -> void:
 
 	var move := direction * speed * delta
 
-	# CCD wall check — raycasts ahead to prevent tunneling at high speeds
+	# CCD wall check — raycasts ahead to prevent tunneling at high speeds.
+	# Restricted to layer 1 (walls / static geometry) so the ray ignores
+	# enemies. Without the mask, the ray returned the closest collider of
+	# any kind, and a wall hidden behind a body returned a CharacterBody2D
+	# instead — which the `is StaticBody2D` check below rejected, so the
+	# wall bounce never fired and ricochet shots silently passed into walls.
 	var space := get_world_2d().direct_space_state
 	var ray := PhysicsRayQueryParameters2D.create(
 		global_position,
 		global_position + move + direction * 6.0   # small lookahead
 	)
 	ray.exclude = [get_rid()]
+	ray.collision_mask = 1
 	var hit := space.intersect_ray(ray)
 	if not hit.is_empty() and hit.get("collider") is StaticBody2D:
 		var wall_c = hit.get("collider")
@@ -229,14 +240,33 @@ func _physics_process(delta: float) -> void:
 				wall_c.take_damage(damage)
 			queue_free()
 			return
-		if ricochet_remaining > 0 and _bounce_cd <= 0.0:
+		# Per-collider dedup. Same-wall re-hit is geometrically prevented
+		# by the position adjustment + reflected direction below, so the
+		# only thing this guards against is a freak re-detection of the
+		# exact same StaticBody2D in consecutive frames (shouldn't happen
+		# in practice but cheap to assert).
+		var wall_id: int = wall_c.get_instance_id()
+		if ricochet_remaining > 0 and wall_id != _last_bounce_collider_id:
 			ricochet_remaining -= 1
-			_bounce_cd = 0.12
+			_last_bounce_collider_id = wall_id
 			var hit_pos: Vector2 = hit.get("position") as Vector2
 			var normal: Vector2  = hit.get("normal")  as Vector2
-			global_position = hit_pos - direction * 2.0
+			# Roll the projectile back ALONG THE WALL NORMAL, not along
+			# inbound direction. Inbound rollback is geometrically wrong
+			# at shallow angles: 2 px along a near-parallel inbound vector
+			# only nudges sideways, leaving the projectile still inside
+			# the wall's collision shape. The next CCD ray then starts
+			# from inside the body, returns empty, the projectile tunnels
+			# in via global_position += move, and the body_entered slow
+			# path queue-frees it under the same-collider dedup. Pushing
+			# along normal * 4 puts the projectile clearly outside the
+			# wall regardless of incidence angle.
+			global_position = hit_pos + normal * 4.0
 			direction = direction.bounce(normal)
 			rotation = direction.angle()
+			# Wall bounces also clear the per-hit tracker so a ricochet
+			# can re-damage an enemy it pierced earlier in the same shot.
+			_hit_entities.clear()
 		else:
 			queue_free()
 		return
@@ -266,14 +296,21 @@ func _on_body_entered(body: Node2D) -> void:
 				body.take_damage(damage)
 			queue_free()
 			return
-		if ricochet_remaining > 0 and _bounce_cd <= 0.0:
+		# Per-collider dedup matches the CCD path. Slow-projectile fallback
+		# uses an axis flip instead of a true normal reflection (the
+		# Area2D body_entered signal doesn't carry a normal), but the
+		# same dedup rule applies: skip if it's the very wall we just
+		# bounced off.
+		var wall_id: int = body.get_instance_id()
+		if ricochet_remaining > 0 and wall_id != _last_bounce_collider_id:
 			ricochet_remaining -= 1
-			_bounce_cd = 0.12
+			_last_bounce_collider_id = wall_id
 			if abs(direction.x) >= abs(direction.y):
 				direction.x = -direction.x
 			else:
 				direction.y = -direction.y
 			rotation = direction.angle()
+			_hit_entities.clear()
 		else:
 			queue_free()
 		return
@@ -349,15 +386,11 @@ func _on_body_entered(body: Node2D) -> void:
 				Color(0.78, 0.92, 1.0), get_tree().current_scene)
 			if SoundManager:
 				SoundManager.play("crit", randf_range(0.85, 1.0))
-		if ricochet_remaining > 0:
-			ricochet_remaining -= 1
-			_bounce_cd = 0.14
-			var bnormal := (global_position - body.global_position).normalized()
-			if bnormal == Vector2.ZERO:
-				bnormal = direction.rotated(PI)
-			direction = direction.bounce(bnormal)
-			rotation = direction.angle()
-			return
+		# Order: pierce charges spend FIRST, then ricochet kicks in once
+		# pierce is exhausted. A wand with both stats now genuinely punches
+		# through N enemies before bouncing — used to ricochet on the very
+		# first enemy hit and waste pierce entirely. Walls also consume a
+		# ricochet charge (handled in the CCD wall block above).
 		if shoot_type == "nova":
 			_detonate_nova()
 			queue_free()
@@ -365,6 +398,24 @@ func _on_body_entered(body: Node2D) -> void:
 		if pierce_remaining > 0:
 			pierce_remaining -= 1
 			damage += 1  # growing damage — each pierce hit is stronger
+			return
+		if ricochet_remaining > 0:
+			ricochet_remaining -= 1
+			# No bounce cooldown needed here — _hit_entities is cleared
+			# below so the projectile can re-strike, and the enemy is a
+			# CharacterBody2D not a wall (the wall dedup tracker is
+			# unrelated). Removing the old _bounce_cd entirely so fast
+			# elemental wands bounce off walls reliably.
+			var bnormal := (global_position - body.global_position).normalized()
+			if bnormal == Vector2.ZERO:
+				bnormal = direction.rotated(PI)
+			direction = direction.bounce(bnormal)
+			rotation = direction.angle()
+			# Allow this projectile to re-hit the same enemy after the bounce.
+			# Without clearing the per-hit tracker, a bounced ricochet can
+			# never damage an enemy it's already passed through, which makes
+			# tight pierce+ricochet rooms feel dead.
+			_hit_entities.clear()
 			return
 		queue_free()
 		return
@@ -551,6 +602,11 @@ func _on_area_entered(area: Area2D) -> void:
 				# the player is firing across them
 	if area.is_in_group("pressure_plate"):
 		return  # plates trigger off the player, not projectiles passing over
+	if area.is_in_group("interactable"):
+		return  # shrines / shops / enchant table / sell chest / bank / quest
+				# board / descend portal — never eat shots. The player should
+				# be able to fire across the village or past a shrine without
+				# the projectile dying mid-flight.
 	queue_free()
 
 # ── Visual helpers ────────────────────────────────────────────────────────────

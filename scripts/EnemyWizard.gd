@@ -103,7 +103,41 @@ func _ready() -> void:
 		_lbl.add_theme_constant_override("line_separation", -6)
 		_lbl.text = WIZARD_F0
 		_lbl.add_theme_color_override("font_color", _pick_robe_color())
+	# School indicator — tiny glyph above the wizard showing what type of
+	# damage to expect. Lets the player triage threats by element before
+	# engaging instead of getting surprised by what comes off the wand.
+	_setup_school_indicator()
 	_update_health_bar()
+
+# Maps the wand's shoot type to a one-character school marker rendered
+# in a tinted Label above the wizard's hat.
+func _setup_school_indicator() -> void:
+	var school_glyph: String = ""
+	var school_color: Color = Color.WHITE
+	match equipped_wand.wand_shoot_type:
+		"fire":     school_glyph = "F"; school_color = Color(1.0, 0.45, 0.10)
+		"freeze":   school_glyph = "I"; school_color = Color(0.55, 0.85, 1.0)
+		"shock":    school_glyph = "S"; school_color = Color(1.0, 0.95, 0.30)
+		"shotgun":  school_glyph = "C"; school_color = Color(1.0, 0.85, 0.20)
+		"homing":   school_glyph = "H"; school_color = Color(0.85, 0.40, 1.0)
+		"nova":     school_glyph = "N"; school_color = Color(0.85, 0.35, 1.0)
+		"beam":     school_glyph = "B"; school_color = Color(0.30, 1.0, 0.85)
+		"pierce":   school_glyph = "P"; school_color = Color(0.95, 0.95, 0.40)
+		"ricochet": school_glyph = "R"; school_color = Color(0.30, 1.0, 0.40)
+		_:          school_glyph = "*"; school_color = Color(0.85, 0.85, 0.95)
+	var ind := Label.new()
+	ind.name = "SchoolIndicator"
+	ind.text = "(%s)" % school_glyph
+	ind.add_theme_font_override("font", MonoFont.get_font())
+	ind.add_theme_font_size_override("font_size", 11)
+	ind.add_theme_color_override("font_color", school_color)
+	ind.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0))
+	ind.add_theme_constant_override("outline_size", 2)
+	ind.size = Vector2(40, 14)
+	ind.position = Vector2(-20, -50)   # above the hat tip
+	ind.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	ind.z_index = 3
+	add_child(ind)
 
 func _pick_robe_color() -> Color:
 	return ROBE_COLORS[randi() % ROBE_COLORS.size()]
@@ -112,18 +146,15 @@ func _pick_robe_color() -> Color:
 # table the player sees: commons dominate early, legendaries appear past
 # diff 2.5. Floors past diff 4 promise at least a rare.
 func _generate_wand_for_floor() -> Item:
-	var diff := GameState.difficulty
-	var roll := randf()
-	var rarity: int = Item.RARITY_COMMON
-	if diff >= 4.0:
-		rarity = Item.RARITY_LEGENDARY if roll < 0.30 else Item.RARITY_RARE
-	elif diff >= 2.5:
-		if roll < 0.15:
-			rarity = Item.RARITY_LEGENDARY
-		elif roll < 0.55:
-			rarity = Item.RARITY_RARE
-	elif diff >= 1.5:
-		rarity = Item.RARITY_RARE if roll < 0.30 else Item.RARITY_COMMON
+	# Rival wizards always carry a high-rarity staff scaled to the
+	# current floor difficulty (RARE base, since they're a step above
+	# regular enemies). Same unified diff*0.1% upgrade chance to
+	# LEGENDARY as every other drop path. The wand's stats also scale
+	# with difficulty automatically inside generate_wand.
+	var diff: float = GameState.difficulty
+	var rarity: int = Item.RARITY_RARE
+	if randf() < ItemDB.legendary_drop_chance(diff):
+		rarity = Item.RARITY_LEGENDARY
 	return ItemDB.generate_wand(rarity)
 
 func _physics_process(delta: float) -> void:

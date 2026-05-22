@@ -37,6 +37,10 @@ var _burn_stacks: int         = 0
 var _enflamed: bool           = false
 var _enflame_timer: float     = 0.0
 var _enflame_tick: float      = 0.0
+# Extra burn hits accumulated while already ENFLAMED. Every 2 hits spawn a
+# fresh ground-fire patch (same trigger as the initial enflame) so sustained
+# fire pressure on a burning target keeps stacking AoE pools at its feet.
+var _enflame_extra_hits: int  = 0
 var _shock_stacks: int        = 0
 var _stun_timer: float        = 0.0
 var _no_attack_timer: float   = 0.0
@@ -58,7 +62,7 @@ var _dmg_text_flush_t: float  = 0.0
 const _DMG_TEXT_WINDOW: float = 0.20
 var _lbl: Label               = null
 var _health_bar_fg: Control   = null
-var _status_lbl: Label        = null   # tiny status-stack readout above the bar
+var _status_lbl: RichTextLabel = null  # tiny per-element status-stack readout above the bar
 var _last_status_text: String = ""
 
 # Elite/champion (set externally by World._place_enemy)
@@ -95,15 +99,23 @@ func _ready() -> void:
 # Tiny ASCII strip (e.g. "B5 C3") above the health bar showing active status
 # stacks at a glance. Updated each frame from _tick_anim_base.
 func _setup_status_label() -> void:
-	_status_lbl = Label.new()
+	# RichTextLabel so each element's stack count can be its own color.
+	# Plain Label gave one global tint, which made it hard to tell at a
+	# glance whether the next chill stack would FREEZE or the next burn
+	# stack would ENFLAME — info builds care about a lot.
+	_status_lbl = RichTextLabel.new()
 	_status_lbl.name = "StatusStrip"
-	_status_lbl.position = Vector2(-26.0, -32.0)
-	_status_lbl.size     = Vector2(56.0, 14.0)
-	_status_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_status_lbl.add_theme_font_size_override("font_size", 9)
-	_status_lbl.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
+	_status_lbl.position = Vector2(-34.0, -34.0)
+	_status_lbl.size     = Vector2(72.0, 16.0)
+	_status_lbl.bbcode_enabled = true
+	_status_lbl.fit_content = false
+	_status_lbl.scroll_active = false
+	_status_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_status_lbl.add_theme_font_size_override("normal_font_size", 11)
+	_status_lbl.add_theme_color_override("default_color", Color(0.95, 0.95, 0.95))
 	_status_lbl.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0))
 	_status_lbl.add_theme_constant_override("outline_size", 2)
+	# Center-align via BBCode wrapper. RichTextLabel has no horiz_align prop.
 	_status_lbl.visible = false
 	add_child(_status_lbl)
 
@@ -220,7 +232,10 @@ func apply_status(effect: String, _duration: float) -> void:
 			if _enflamed:
 				# Re-igniting an already-burning target: extend timer and
 				# splash fire to neighbors instead of stacking further.
+				# Every 2 burn-hits while ENFLAMED also drop a fresh ground
+				# patch at the target's feet (handled by register_extra_burn).
 				EnflameOverlay.refresh_pulse(self)
+				EnflameOverlay.register_extra_burn(self, b_stacks)
 			else:
 				_burn_stacks = mini(_burn_stacks + b_stacks, 6)
 				# Enflame threshold dropped 10 → 6 so fire ramps up faster.
@@ -244,9 +259,13 @@ func _trigger_enflamed() -> void:
 	_enflamed = true
 	_enflame_timer = 5.0
 	_enflame_tick = 0.0
-	# Visual: ASCII flames mounted directly on the entity (no more ground
-	# patch). The visual tick keeps it in sync as enflamed flips.
+	_enflame_extra_hits = 0
+	# Visual: ASCII flames mounted directly on the entity AND a ground-fire
+	# patch spawned underneath. The mounted flames track the moving target;
+	# the ground patch lingers in place so kiting through a burned cluster
+	# leaves a trail of damaging tiles.
 	EnflameOverlay.sync_to(self, true)
+	EnflameOverlay.spawn_patch(self)
 	# Enflame trigger damage scales with INT — base 12, +1 per INT point.
 	var enflame_dmg: int = 12 + int(GameState.get_stat_bonus("INT"))
 	if not _credit_dot_damage("fire", enflame_dmg):
@@ -324,15 +343,66 @@ func take_damage(amount: int) -> void:
 			_dmg_text_pending = 0
 		_on_death()
 		GameState.kills += 1
+		GameState.last_kill_msec = Time.get_ticks_msec()
 		GameState.add_xp(5)
-		if is_champion:
-			_drop_champion_loot()
-		else:
-			if elite_modifier == 2 and _split_scene != null:
-				_do_split()
-			_drop_gold()
+		QuestLog.note_kill(self)
+		# Test-mode drops toggle — when disabled, enemies skip their entire
+		# drop block (gold, loot bags, champion treasure). Lets the user
+		# tune combat without piles of pickups cluttering the arena.
+		var drops_ok: bool = not (GameState.test_mode and not GameState.test_drops_enabled)
+		if drops_ok:
+			# Always spawn the gold coin pickup. The bag drop is split off
+			# into a separate path so the per-enemy bag count is exactly
+			# one OR zero — no more "champion drops three bags at high
+			# difficulty" piles.
+			_drop_gold_pickup()
+			if is_champion:
+				_drop_champion_loot()
+			else:
+				if elite_modifier == 2 and _split_scene != null:
+					_do_split()
+				_maybe_drop_bag()
+		# Catacombs biome mechanic — 25 % of regular non-boss / non-champion
+		# deaths roll a delayed zombie reanimation 5 s later at the corpse
+		# position. Schedule before queue_free; the timer callback does the
+		# spawn via the scene tree, never references self.
+		if GameState.biome == 1 and not is_champion:
+			_schedule_catacombs_reanimation(global_position)
 		EffectFx.spawn_death_pop(global_position, get_tree().current_scene)
 		queue_free()
+
+# Spawns a low-HP EnemyChaser at the given position 5 s after the host
+# died. Uses get_tree().create_timer so the host can be freed safely;
+# the captured `pos` is value-typed (Vector2), no dangling reference.
+func _schedule_catacombs_reanimation(pos: Vector2) -> void:
+	if randf() >= 0.25:
+		return
+	var tree := get_tree()
+	if tree == null:
+		return
+	var scene_root := tree.current_scene
+	if scene_root == null:
+		return
+	const CHASER_SCENE := preload("res://scenes/EnemyChaser.tscn")
+	var t := tree.create_timer(5.0)
+	t.timeout.connect(func() -> void:
+		var current := tree.current_scene
+		if current == null:
+			return
+		var enemies := current.get_node_or_null("Enemies")
+		if enemies == null:
+			return
+		# Faint green telegraph at the spawn point so the player knows
+		# something's about to rise.
+		FloatingText.spawn_str(pos, "RISES…",
+			Color(0.55, 0.95, 0.6), current)
+		var z: Node = CHASER_SCENE.instantiate()
+		if z is Node2D:
+			(z as Node2D).global_position = pos
+		# Mark as reanimated so EnemyChaser._ready can dial down HP/dmg.
+		# Set as metadata so we don't need a real property on the script.
+		z.set_meta("is_zombie_revive", true)
+		enemies.add_child(z))
 
 func _do_split() -> void:
 	FloatingText.spawn_str(global_position, "SPLIT!", Color(0.9, 0.4, 1.0), get_tree().current_scene)
@@ -360,15 +430,22 @@ func apply_buff(duration: float) -> void:
 	_buff_timer += duration
 	_on_buff_start()
 
+# Champion drop — a single fatter bag with two guaranteed items, instead
+# of two separate one-item bags (the old behavior). One-bag-per-enemy is
+# the project-wide invariant now; the room-clear merge no longer has to
+# fight piles of champion loot.
 func _drop_champion_loot() -> void:
-	_drop_gold()
-	for _i in 2:
-		var bag := LOOT_BAG_SCENE.instantiate()
-		bag.global_position = global_position + Vector2(randf_range(-32, 32), randf_range(-32, 32))
-		bag.items = [ItemDB.random_drop()]
-		get_tree().current_scene.call_deferred("add_child", bag)
+	var bag := LOOT_BAG_SCENE.instantiate()
+	bag.global_position = global_position + Vector2(randf_range(-24, 24), randf_range(-24, 24))
+	bag.items = [ItemDB.random_drop(), ItemDB.random_drop()]
+	get_tree().current_scene.call_deferred("add_child", bag)
 
-func _drop_gold() -> void:
+# Gold-coin pickup only. Used to be combined with the probabilistic bag
+# spawn inside `_drop_gold`, but that meant a champion enemy could end up
+# dropping 3 bags total (1 chance bag + 2 from _drop_champion_loot). Now
+# the bag spawn lives in `_maybe_drop_bag` so the kill path can pick AT
+# MOST one bag-drop call site per enemy.
+func _drop_gold_pickup() -> void:
 	if GameState.test_mode:
 		GameState.gold += int(randi_range(1, 5) * (3 if is_elite else 1) * GameState.loot_multiplier)
 		return
@@ -376,9 +453,14 @@ func _drop_gold() -> void:
 	gold.global_position = global_position
 	gold.value = int(randi_range(1, 5) * (3 if is_elite else 1) * GameState.loot_multiplier)
 	get_tree().current_scene.call_deferred("add_child", gold)
-	# Bag drop scales with difficulty so the gear pipeline keeps pace with
-	# the +HP / +density scaling. Base 8 % regular / 50 % elite, plus +3 %
-	# regular / +5 % elite per +1.0 difficulty above 1, capped.
+
+# Probabilistic bag drop for non-champion enemies. Chance scales with
+# difficulty so the gear pipeline keeps pace with the +HP / +density
+# scaling. Base 8 % regular / 50 % elite, +3 % / +5 % per +1 difficulty
+# above 1, capped at 25 / 80 respectively.
+func _maybe_drop_bag() -> void:
+	if GameState.test_mode:
+		return
 	var diff_extra: float = maxf(0.0, GameState.difficulty - 1.0)
 	var elite_chance: int = clampi(50 + int(diff_extra * 5.0), 50, 80)
 	var reg_chance: int   = clampi(8 + int(diff_extra * 3.0), 8, 25)
@@ -434,33 +516,53 @@ func _tick_anim_base(delta: float) -> void:
 		_last_modulate = target
 	_update_status_strip()
 
-# Refreshes the per-enemy status icon strip — only writes the Label text
-# when it actually changes, since most enemies have no statuses most frames.
+# Refreshes the per-enemy status icon strip. Each element gets its own
+# BBCode color so the player can scan for the build-relevant status at a
+# glance. When a stack count is one short of the threshold (or the proc
+# is currently active) the entry brightens / bolds so "next hit FREEZES"
+# is obvious without counting tiny digits.
 func _update_status_strip() -> void:
 	if _status_lbl == null:
 		return
 	var parts: Array = []
 	if _frozen:
-		parts.append("FRZ")
+		parts.append("[color=#aef0ff][b]FRZ[/b][/color]")
 	elif _chill_stacks > 0:
-		parts.append("C%d" % _chill_stacks)
+		# Threshold = 10. Brighten + bold once the next stack would freeze.
+		var hot: bool = _chill_stacks >= 9
+		var col: String = "#aef0ff" if hot else "#7ec8ff"
+		var bb: String = "[color=%s]C%d[/color]" % [col, _chill_stacks]
+		if hot:
+			bb = "[b]" + bb + "[/b]"
+		parts.append(bb)
 	if _enflamed:
-		parts.append("ENF")
+		parts.append("[color=#ffb060][b]ENF[/b][/color]")
 	elif _burn_stacks > 0:
-		parts.append("B%d" % _burn_stacks)
+		var hot: bool = _burn_stacks >= 5
+		var col: String = "#ffb060" if hot else "#ff8030"
+		var bb: String = "[color=%s]B%d[/color]" % [col, _burn_stacks]
+		if hot:
+			bb = "[b]" + bb + "[/b]"
+		parts.append(bb)
 	if _stun_timer > 0.0:
-		parts.append("STN")
+		parts.append("[color=#fff080][b]STN[/b][/color]")
 	elif _shock_stacks > 0:
-		parts.append("S%d" % _shock_stacks)
+		var hot: bool = _shock_stacks >= 9
+		var col: String = "#fff080" if hot else "#ffe040"
+		var bb: String = "[color=%s]S%d[/color]" % [col, _shock_stacks]
+		if hot:
+			bb = "[b]" + bb + "[/b]"
+		parts.append(bb)
 	if _poisoned:
-		parts.append("POI")
+		parts.append("[color=#a0ff80][b]POI[/b][/color]")
 	elif _poison_stacks > 0:
-		parts.append("P%d" % _poison_stacks)
+		parts.append("[color=#80d060]P%d[/color]" % _poison_stacks)
 	var txt: String = " ".join(parts)
 	if txt == _last_status_text:
 		return
 	_last_status_text = txt
-	_status_lbl.text = txt
+	# Wrap in a center tag so the multi-color line stays head-aligned.
+	_status_lbl.text = "[center]" + txt + "[/center]" if txt != "" else ""
 	_status_lbl.visible = txt != ""
 
 # DoT damage source attribution. Wraps take_damage and credits the deducted

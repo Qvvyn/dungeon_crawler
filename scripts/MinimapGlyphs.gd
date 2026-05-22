@@ -14,8 +14,12 @@ var _cell_w: float    = 3.0
 var _cell_h: float    = 4.0
 var _font: Font       = null
 var _font_size: int   = 6
-var _floor_color: Color = Color(0.45, 0.42, 0.6, 0.85)
-var _wall_color: Color  = Color(0.85, 0.85, 0.95, 1.0)
+# Glyph alphas thinned (0.85→0.45 for floors, 1.0→0.65 for walls) so
+# enemies / projectiles in the top-right of the viewport are still
+# readable through the minimap overlay. The walls stay slightly more
+# opaque since they carry more layout information.
+var _floor_color: Color = Color(0.45, 0.42, 0.6, 0.45)
+var _wall_color: Color  = Color(0.85, 0.85, 0.95, 0.65)
 
 func setup(grid: Array, grid_w: int, grid_h: int, cell_w: float, cell_h: float) -> void:
 	_grid   = grid

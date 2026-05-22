@@ -64,22 +64,22 @@ func _ready() -> void:
 
 	var cshape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()
-	circ.radius = 14.0
+	circ.radius = 24.0
 	cshape.shape = circ
 	add_child(cshape)
 
 	_lbl = Label.new()
 	var mono := MonoFont.get_font()
 	_lbl.add_theme_font_override("font", mono)
-	_lbl.add_theme_font_size_override("font_size", 15)
-	_lbl.add_theme_constant_override("line_separation", -2)
+	_lbl.add_theme_font_size_override("font_size", 22)
+	_lbl.add_theme_constant_override("line_separation", -3)
 	_lbl.add_theme_color_override("font_color", BOSS_COLOR)
 	_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_TOP
-	_lbl.offset_left   = -18
-	_lbl.offset_top    = -18
-	_lbl.offset_right  =  22
-	_lbl.offset_bottom =  22
+	_lbl.offset_left   = -28
+	_lbl.offset_top    = -28
+	_lbl.offset_right  =  34
+	_lbl.offset_bottom =  34
 	_lbl.text = BOSS_F0
 	add_child(_lbl)
 
@@ -296,6 +296,7 @@ func apply_status(effect: String, _duration: float) -> void:
 		"burn_hit":
 			if _enflamed:
 				EnflameOverlay.refresh_pulse(self)
+				EnflameOverlay.register_extra_burn(self, stacks)
 			else:
 				_burn_stacks = mini(_burn_stacks + stacks, BOSS_STACK_THRESHOLD)
 				if _burn_stacks >= BOSS_STACK_THRESHOLD:
@@ -307,6 +308,7 @@ func apply_status(effect: String, _duration: float) -> void:
 					take_damage(12)
 					if is_instance_valid(self):
 						EnflameOverlay.sync_to(self, true)
+						EnflameOverlay.spawn_patch(self)
 				else:
 					FloatingText.spawn_str(global_position, "BURN %d/%d" % [_burn_stacks, BOSS_STACK_THRESHOLD], Color(1.0, 0.55, 0.2), get_tree().current_scene)
 		"shock_hit":

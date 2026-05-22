@@ -16,6 +16,10 @@ var _detonated: bool  = false
 var _lbl: Label       = null
 var _anim_t: float    = 0.0
 var _anim_f: int      = 0
+# Faint danger-radius ring shown only while armed. Hidden during the
+# 1 s arming phase so the player has a moment to read the placement
+# before the visible threat band lights up.
+var _danger_ring: Line2D = null
 
 static var _shared_font: Font = null
 
@@ -50,16 +54,41 @@ func _process(delta: float) -> void:
 			_armed = true
 			_lbl.text = F_ARMED_0
 			_lbl.add_theme_color_override("font_color", Color(1.0, 0.15, 0.0))
+			_spawn_danger_ring()
 	if _armed and _lbl:
-		# Frame swap for menacing flicker
+		# Frame swap for menacing flicker. Slower swap when "reduce
+		# flashing" is on so the mine still moves but doesn't strobe.
+		var swap_period: float = 0.40 if GameState.disable_flashing else 0.12
 		_anim_t += delta
-		if _anim_t >= 0.18:
+		if _anim_t >= swap_period:
 			_anim_t = 0.0
 			_anim_f = 1 - _anim_f
 			_lbl.text = F_ARMED_0 if _anim_f == 0 else F_ARMED_1
-		# Pulse alpha
-		var p := sin(Time.get_ticks_msec() * 0.012) * 0.3 + 0.7
-		_lbl.modulate = Color(1.0, p * 0.5 + 0.3, p * 0.3, 1.0)
+		# Synced pulse — the sine is slow enough by default that it stays
+		# on for the accessibility mode, but we damp the alpha amplitude
+		# so the mine doesn't visibly throb hard.
+		var pulse_amp: float = 0.15 if GameState.disable_flashing else 0.50
+		var pulse: float = sin(Time.get_ticks_msec() * 0.018) * 0.5 + 0.5
+		_lbl.modulate = Color(1.0, 0.45 + pulse_amp * pulse, 0.10 + (pulse_amp * 0.4) * pulse, 1.0)
+		_lbl.scale = Vector2.ONE * (1.0 + (0.10 if not GameState.disable_flashing else 0.0) * pulse)
+		if is_instance_valid(_danger_ring):
+			var ring_amp: float = 0.20 if GameState.disable_flashing else 0.45
+			_danger_ring.default_color = Color(1.0, 0.30, 0.05,
+				0.45 + ring_amp * pulse)
+
+func _spawn_danger_ring() -> void:
+	# Quiet circle showing the mine's actual explosion footprint. Drawn
+	# behind the glyph so it doesn't block reads, but bright enough that
+	# the player can route around it instead of guessing at the radius.
+	_danger_ring = Line2D.new()
+	_danger_ring.width = 2.0
+	_danger_ring.z_index = -1
+	_danger_ring.default_color = Color(1.0, 0.30, 0.05, 0.55)
+	var segs := 28
+	for i in segs + 1:
+		var a := (TAU / float(segs)) * float(i)
+		_danger_ring.add_point(Vector2(cos(a), sin(a)) * RADIUS)
+	add_child(_danger_ring)
 
 func _on_body_entered(body: Node) -> void:
 	if not _armed or _detonated: return

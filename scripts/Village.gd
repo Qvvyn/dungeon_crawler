@@ -13,6 +13,8 @@ const INN_SCRIPT    = preload("res://scripts/Inn.gd")
 const BANK_SCRIPT   = preload("res://scripts/Bank.gd")
 const SHOP_SCRIPT   = preload("res://scripts/Shop.gd")
 const DESCEND_SCRIPT = preload("res://scripts/DescendPortal.gd")
+const HEARTH_SCRIPT  = preload("res://scripts/HearthSign.gd")
+const QUEST_SCRIPT   = preload("res://scripts/QuestBoard.gd")
 
 const VILLAGE_W := 1600
 const VILLAGE_H := 900
@@ -30,6 +32,8 @@ func _ready() -> void:
 	_build_bank(   Vector2(VILLAGE_W * 0.50, VILLAGE_H * 0.20))
 	_build_shop(   Vector2(VILLAGE_W * 0.80, VILLAGE_H * 0.30))
 	_build_descend(Vector2(VILLAGE_W * 0.50, VILLAGE_H * 0.85))
+	_build_hearth(Vector2(VILLAGE_W * 0.10, VILLAGE_H * 0.85))
+	_build_quest_board(Vector2(VILLAGE_W * 0.90, VILLAGE_H * 0.85))
 
 # ── World shell ────────────────────────────────────────────────────────────
 
@@ -114,6 +118,14 @@ func _build_shop(pos: Vector2) -> void:
 func _build_descend(pos: Vector2) -> void:
 	_make_building_area("DESCEND",
 		"Return to the Dungeon", Color(0.85, 0.40, 0.60), pos, DESCEND_SCRIPT, 90.0)
+
+func _build_hearth(pos: Vector2) -> void:
+	_make_building_area("HEARTH",
+		"Back to Title Screen", Color(0.65, 0.55, 0.85), pos, HEARTH_SCRIPT)
+
+func _build_quest_board(pos: Vector2) -> void:
+	_make_building_area("QUEST BOARD",
+		"View & track quests", Color(0.85, 0.65, 0.30), pos, QUEST_SCRIPT)
 
 # Builds the visual shell for a hub building: an ASCII sign on a tinted
 # Label, plus an Area2D that hosts the interaction script. The script is

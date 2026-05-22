@@ -1,9 +1,54 @@
 extends Node
 
+# Bump on each release. Surfaced on the title screen and available to
+# leaderboard submissions / debug snapshots so issues filed by players
+# can be matched against the build they were on.
+const GAME_VERSION := "v0.2.3"
+
 signal leveled_up
 
 var has_saved_state: bool = false
 var player_health: int = 10
+
+# Level carry-through for the village → dungeon round trip. ExitPortal
+# stashes the current level/xp into these; the next reset_run_stats restores
+# them so the player doesn't get knocked back to level 1 just for visiting
+# the hub. Cleared on death (run_stats reset clears them along with the
+# transient run state). 0 means "no carry pending."
+var carry_level: int = 0
+var carry_xp: int = 0
+
+# Levitate toggle state. Player presses SPACE to toggle on/off; the
+# bool persists in this autoload so the next floor (or village → dungeon
+# round trip) restores it without the player re-pressing. Cleared on
+# death so a new run doesn't inherit a stale lift.
+var levitate_toggled: bool = false
+
+# Per-floor drop history — set of template display_names that have
+# already dropped this floor. Used by ItemDB.random_drop to bias the
+# fixed-pool fallback toward templates the player hasn't seen yet, so
+# the same "Pointed Hat" doesn't show up three times in one room.
+# World._generate_floor clears this on floor entry.
+var floor_drop_history: Dictionary = {}
+
+# Run seed — when non-zero, all RNG for the run derives from this value so
+# two players who pick the same seed get identical floors / loot / events.
+# 0 means "random run, no fixed seed". Set by TitleScreen before scene
+# change and applied in reset_run_stats().
+var run_seed: int = 0
+# True when the active run was launched from the Daily Challenge button.
+# Surfaced on the death screen so leaderboard entries can be filtered.
+var is_daily_run: bool = false
+
+# Returns today's deterministic Daily Challenge seed. Same value for every
+# player on a given UTC date so the day's leaderboard is comparable.
+func daily_seed() -> int:
+	var d: Dictionary = Time.get_date_dict_from_system(true)
+	# Pack year/month/day into a single int — safe across years and easy
+	# to debug if you eyeball it (20260502 = May 2 2026).
+	return int(d.get("year", 1970)) * 10000 \
+		+ int(d.get("month", 1)) * 100 \
+		+ int(d.get("day", 1))
 
 # One-shot guard: when true, the next Player._try_load_save() returns
 # immediately without consuming user://save_run.json. The Village sets
@@ -25,11 +70,53 @@ var is_mobile: bool = false
 # User preferences (persist across sessions)
 var crt_enabled: bool    = false
 var master_volume: float = 1.0   # 0.0 – 1.0
+# Accessibility — when true, suppresses the high-contrast / high-frequency
+# visual flashes (player damage screen flash, enemy hit-flash modulate,
+# rapid mine flicker, banshee pulse intensity, level-up pop). Slow sine
+# pulses and animation frame swaps stay since they're softer.
+var disable_flashing: bool = false
 # Display name for global leaderboard submissions. Empty until the player
 # fills in the prompt that appears on first top-10 death.
 var player_name: String  = ""
 
 const SETTINGS_PATH := "user://settings.json"
+const SAVE_RUN_PATH := "user://save_run.json"
+
+# Reads run-state fields (difficulty, level, biome, portal count, etc.)
+# from save_run.json into GameState WITHOUT touching inventory or
+# deleting the file. Called by the CONTINUE flows (Village → Dungeon
+# DescendPortal, Title Screen → CONTINUE RUN) before scene change so
+# World._ready can generate the floor at the saved difficulty. Player.
+# _try_load_save still runs after the scene loads to restore inventory
+# and consume the file.
+# Returns true if the save was found and applied; false otherwise.
+func peek_save_run_state() -> bool:
+	if not FileAccess.file_exists(SAVE_RUN_PATH):
+		return false
+	var f := FileAccess.open(SAVE_RUN_PATH, FileAccess.READ)
+	if f == null:
+		return false
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	if not (parsed is Dictionary):
+		return false
+	var data := parsed as Dictionary
+	gold         = int(data.get("gold", 0))
+	kills        = int(data.get("kills", 0))
+	level        = int(data.get("level", 1))
+	xp           = int(data.get("xp", 0))
+	portals_used = int(data.get("portals_used", 0))
+	difficulty   = float(data.get("difficulty", starting_difficulty))
+	biome        = int(data.get("biome", 0))
+	damage_dealt = int(data.get("damage_dealt", 0))
+	if data.has("run_stat_bonuses"):
+		run_stat_bonuses = (data["run_stat_bonuses"] as Dictionary).duplicate()
+	if data.has("floor_modifiers"):
+		var mods_in: Array = data["floor_modifiers"]
+		floor_modifiers = []
+		for m in mods_in:
+			floor_modifiers.append(String(m))
+		floor_modifier = floor_modifiers[0] if not floor_modifiers.is_empty() else ""
+	return true
 
 func _ready() -> void:
 	_load_settings()
@@ -50,6 +137,7 @@ func save_settings() -> void:
 		"starting_difficulty": starting_difficulty,
 		"starting_climb_rate": starting_climb_rate,
 		"player_name":         player_name,
+		"disable_flashing":    disable_flashing,
 	}))
 	f.close()
 
@@ -68,6 +156,7 @@ func _load_settings() -> void:
 		starting_difficulty = clampf(float(result.get("starting_difficulty", 1.0)), 1.0, 6.0)
 		starting_climb_rate = clampf(float(result.get("starting_climb_rate", 0.5)), 0.1, 4.0)
 		player_name         = String(result.get("player_name", "")).substr(0, 16)
+		disable_flashing    = bool(result.get("disable_flashing", false))
 		# Mirror the loaded difficulty into the active run value so the title
 		# screen's slider starts where the player last left it.
 		difficulty = starting_difficulty
@@ -88,7 +177,7 @@ var xp: int = 0
 # duties, so a separate physical-damage stat just doubled up. Existing
 # saves with run_stat_bonuses["STR"] are harmless (get_stat_bonus("STR")
 # still returns the stored value but nothing reads it anymore).
-const STAT_NAMES := ["DEX", "AGI", "VIT", "END", "INT", "WIS", "SPR", "DEF", "LCK"]
+const STAT_NAMES := ["DEX", "AGI", "VIT", "END", "INT", "WIS", "MIND", "SPR", "DEF", "LCK"]
 const STAT_BASE  := 10
 
 # Run-scoped stat bonuses (e.g., from shrines). Cleared at run reset.
@@ -144,6 +233,24 @@ var biome: int = 0   # 0=Dungeon 1=Catacombs 2=Ice Cavern 3=Lava Rift
 # Wall-clock seconds when the current run started — used for the end-of-run
 # summary's gold/sec and damage/sec rates.
 var run_start_msec: int = 0
+# Timestamp of the most recent enemy death — set by EnemyBase. The
+# Ice Cavern hypothermia mechanic reads this to decide whether stamina
+# regen is at full speed or halved (penalty kicks in after 4 s without
+# a kill).
+var last_kill_msec: int = 0
+
+# Testing-arena enemy override. When non-empty, _tick_test_wave only
+# spawns enemies of this scene name (matches a key in the enemy
+# scene-by-name table in World.gd). Empty string = default mixed-pool
+# behavior. Set via the test-mode pause menu's spawn dropdown.
+var test_spawn_override: String = ""
+
+# Test-mode drops toggle. When false, EnemyBase skips its loot/gold
+# drop block entirely (champion + regular paths). When true, enemy
+# drops scale to GameState.test_difficulty (instead of starting_diff).
+# Defaults to true so tweaking test difficulty without flipping this
+# behaves like the regular game.
+var test_drops_enabled: bool = true
 
 # Per-shot-type stats keyed by wand shoot_type ("regular", "fire", "beam", ...).
 # Each entry: { "kills": int, "damage": int, "floors": Dictionary }
@@ -186,11 +293,30 @@ func reset_run_stats() -> void:
 	portals_used = 0
 	difficulty = starting_difficulty
 	biome = 0
-	level = 1
-	xp = 0
+	# Level carry-through — if the player exited to the village mid-run,
+	# ExitPortal stashed level/xp into carry_level/carry_xp so a subsequent
+	# DescendPortal preserves their progression. Otherwise it's a fresh
+	# level-1 run.
+	if carry_level > 0:
+		level = carry_level
+		xp = carry_xp
+		carry_level = 0
+		carry_xp = 0
+	else:
+		level = 1
+		xp = 0
 	run_stat_bonuses.clear()
 	weapon_stats.clear()
+	# Death (which calls reset_run_stats indirectly through the new-run
+	# path) wipes the levitate toggle so a fresh life starts grounded.
+	levitate_toggled = false
 	run_start_msec = Time.get_ticks_msec()
+	# Apply the run seed if one was set by the title screen. Calling
+	# `seed()` reseeds Godot's global RNG, so every randi/randf in floor
+	# generation, loot, modifiers, etc. derives deterministically from
+	# this value. run_seed == 0 means "no fixed seed" — leave RNG as-is.
+	if run_seed != 0:
+		seed(run_seed)
 
 func run_seconds() -> float:
 	return maxf(0.001, float(Time.get_ticks_msec() - run_start_msec) / 1000.0)
@@ -226,13 +352,21 @@ func add_xp(amount: int) -> void:
 		level += 1
 		leveled_up.emit()
 
-@warning_ignore("integer_division")
 func xp_to_next_level() -> int:
-	# Smooth quadratic curve — replaces the old "double every 10 levels"
-	# step function with a gradual climb. Lets early levels pop quickly
-	# while late levels still take meaningful effort, without the cliff
-	# that hit at every decade boundary in the old system.
-	#   L1   65 XP    L5   137 XP   L10  250 XP
-	#   L20  550 XP   L30  950 XP   L50 2050 XP
-	# Formula: 50 + level*15 + level*level/2
-	return 50 + level * 15 + (level * level) / 2
+	# Geometric curve — each level costs 20% more XP than the previous.
+	#   xp_to_next(L) = 42 * 1.20^(L - 1)
+	#
+	# Sample values (rounded):
+	#   L1   42       L2   50       L5   87       L10  217
+	#   L20  1,342    L30  8,308    L40  51,442   L50  318,544
+	#
+	# Cumulative to reach (closed-form: 42·(1.20^L − 1)/0.20):
+	#   L10  ~1,090    L20  ~7,840     L30  ~49,644
+	#   L40  ~308,448  L50  ~1.9M      L100 ~17B
+	#
+	# The 20% slope makes the late game a genuine vertical wall — L40+
+	# is for committed runs, L50 is meta-progression territory, and
+	# anything past L60 is essentially decorative without test-mode
+	# input. Power is meant to come from gear at deep difficulty, not
+	# stat-grinding levels.
+	return int(round(42.0 * pow(1.20, float(level - 1))))

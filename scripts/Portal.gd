@@ -19,13 +19,21 @@ func _process(delta: float) -> void:
 	var frame_idx := int(_anim_t / 0.18) % _FRAMES.size()
 	$AsciiArt.text = _BEFORE + _FRAMES[frame_idx] + _AFTER
 
-	# Locked while a boss is alive — dim red instead of pulsing cyan
+	# Locked while a boss OR the portal sentinel-wizard is alive. The
+	# wizard guards every non-boss floor's exit; killing him is now
+	# mandatory to descend.
 	var locked := _boss_alive()
+	var wiz_locked := _portal_wizard_alive() if not locked else false
 	if locked:
 		$AsciiArt.add_theme_color_override("font_color",
 			Color(0.55, 0.18, 0.18, 0.55))
 		if has_node("InteractHint"):
 			$InteractHint.text = "DEFEAT BOSS"
+	elif wiz_locked:
+		$AsciiArt.add_theme_color_override("font_color",
+			Color(0.55, 0.30, 0.55, 0.65))
+		if has_node("InteractHint"):
+			$InteractHint.text = "DEFEAT WIZARD"
 	else:
 		# Pulse colour between cyan and bright white-cyan
 		var pulse := 0.5 + 0.5 * sin(_anim_t * TAU * 0.7)
@@ -35,8 +43,9 @@ func _process(delta: float) -> void:
 			$InteractHint.text = "[E] Enter"
 
 	if _player_in_range:
-		# Locked while a boss is alive on this floor
-		if _boss_alive():
+		# Locked while a boss OR the portal-sentinel wizard is still alive
+		# on this floor. Both gates use the same "wait, then enter" UX.
+		if _boss_alive() or _portal_wizard_alive():
 			return
 		# Autoplay enters portals automatically — no key press required
 		var ply := get_tree().get_first_node_in_group("player")
@@ -49,6 +58,12 @@ func _process(delta: float) -> void:
 func _boss_alive() -> bool:
 	for b in get_tree().get_nodes_in_group("boss"):
 		if is_instance_valid(b):
+			return true
+	return false
+
+func _portal_wizard_alive() -> bool:
+	for w in get_tree().get_nodes_in_group("portal_wizard"):
+		if is_instance_valid(w):
 			return true
 	return false
 
@@ -77,6 +92,13 @@ func _difficulty_step() -> float:
 
 func _use_portal() -> void:
 	GameState.portals_used += 1
+	# Quest tracking — note the deepest floor reached in the current biome.
+	# floor count is portals_used (now incremented above) which also equals
+	# "floors descended"; mapped to biome key via the same table the
+	# Leaderboard uses.
+	const BIOME_KEYS := ["dungeon", "catacombs", "ice", "lava"]
+	var bk: String = BIOME_KEYS[clampi(GameState.biome, 0, 3)]
+	QuestLog.note_floor_reached(bk, GameState.portals_used)
 	GameState.difficulty  += _difficulty_step()
 	GameState.biome        = (GameState.portals_used / 3) % 4
 	var player := get_tree().get_first_node_in_group("player")
@@ -94,10 +116,13 @@ func _use_portal() -> void:
 		if player.get("_autoplay") == true and InventoryManager:
 			var w: Item = InventoryManager.equipped.get("wand") as Item
 			if w != null:
-				InventoryManager.equipped["wand"] = null
+				# Clear the wand from its row 0 slot. _sync_active_wand
+				# rewrites equipped["wand"] from the next held wand (or
+				# null when nothing else is in the row).
 				for i in InventoryManager.grid.size():
 					if InventoryManager.grid[i] == w:
 						InventoryManager.grid[i] = null
+				InventoryManager._sync_active_wand()
 			var has_permanent := false
 			for it_chk in InventoryManager.grid:
 				var w_chk: Item = it_chk as Item

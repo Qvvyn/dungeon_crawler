@@ -19,6 +19,7 @@ const CELL_H     := 95.0
 const GAP        := 10.0
 
 func _ready() -> void:
+	add_to_group("interactable")   # bullets pass through (Projectile group check)
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
 
@@ -80,7 +81,7 @@ func _auto_use(player: Node) -> void:
 			continue
 		var slot := item.get_equip_slot_name()
 		if slot == "":
-			continue   # offhand etc. — currently disabled
+			continue   # non-equippable type (SHIELD / TOME / valuable / potion)
 		var current: Item = InventoryManager.equipped.get(slot) as Item
 		var is_upgrade := false
 		if slot == "wand" and player.has_method("_wand_score"):
@@ -123,8 +124,12 @@ func _auto_use(player: Node) -> void:
 			var cur2: Item = InventoryManager.equipped.get(slot2) as Item
 			if cur2 == null or item.rarity > cur2.rarity:
 				continue
-		GameState.gold += item.sell_value
-		sold_total += item.sell_value
+		# Stackables (gems, coins, crystals) credit the FULL stack value
+		# instead of one item's sell_value, otherwise auto-sell silently
+		# threw away 9× the value of every stacked slot.
+		var lot: int = item.sell_value * maxi(1, item.quantity)
+		GameState.gold += lot
+		sold_total += lot
 		InventoryManager.grid[i] = null
 	if sold_total > 0:
 		FloatingText.spawn(player.global_position, sold_total, true,
@@ -404,10 +409,14 @@ func _input(event: InputEvent) -> void:
 			var grid_idx: int = _sell_grid_indices[i]
 			var item: Item = InventoryManager.grid[grid_idx]
 			if item != null:
-				GameState.gold += item.sell_value
+				# Sell the entire stack at once for stackables. Single-item
+				# sell would throw away the rest of the stack since the slot
+				# wipe below clears all of it anyway.
+				var lot: int = item.sell_value * maxi(1, item.quantity)
+				GameState.gold += lot
 				var player := InventoryManager._player_ref
 				if player:
-					FloatingText.spawn(player.global_position, item.sell_value,
+					FloatingText.spawn(player.global_position, lot,
 						true, get_tree().current_scene, Color(1.0, 0.85, 0.1))
 				InventoryManager.grid[grid_idx] = null
 				InventoryManager.inventory_changed.emit()

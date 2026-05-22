@@ -22,8 +22,8 @@ var _anim_t: float     = 0.0
 var _anim_f: int       = 0
 
 func _on_ready_extra() -> void:
-	max_health = 10
-	health = 10
+	max_health = 20   # doubled from 10
+	health = max_health
 	_sight_range = 520.0
 	if _lbl:
 		_lbl.text = F0

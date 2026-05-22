@@ -38,6 +38,14 @@ var _full_auto_state: bool         = false
 var _wand_btn: Button         = null
 var _wand_btn_label: Label    = null
 
+# Interact button — fires the existing `interact` input action so any
+# Area2D listening for it (Inn, Bank, Shop, Portal, Shrine, Loot Bag,
+# etc.) triggers the same as a desktop [E] press. Sits at the bottom of
+# the corner stack since interactions usually happen while standing
+# still — closest-to-thumb is the right pick.
+var _interact_btn: Button = null
+var _interact_btn_label: Label = null
+
 func _ready() -> void:
 	layer = 30
 	process_mode = Node.PROCESS_MODE_ALWAYS
@@ -55,6 +63,7 @@ func _build() -> void:
 	_build_auto_button(root)
 	_build_wand_button(root)
 	_build_full_auto_button(root)
+	_build_interact_button(root)
 	_build_pause_button(root)
 
 # ── Virtual joystick ───────────────────────────────────────────────────────
@@ -176,36 +185,53 @@ func _release_all_move_actions() -> void:
 
 func _build_auto_button(parent: Control) -> void:
 	# Auto-aim toggle (top of the bottom-right corner stack).
-	_auto_btn_label = _make_corner_label("[ AUTO ]", -640.0, -460.0, 26)
+	_auto_btn_label = _make_corner_label("[ AUTO ]", -780.0, -640.0, 24)
 	parent.add_child(_auto_btn_label)
-	_auto_btn = _make_corner_button(-640.0, -460.0)
+	_auto_btn = _make_corner_button(-780.0, -640.0)
 	_auto_btn.pressed.connect(_toggle_auto)
 	parent.add_child(_auto_btn)
 	_refresh_auto_visual()
 
 func _build_wand_button(parent: Control) -> void:
-	# Wand randomizer (middle slot). One-shot tap — equips a random wand
+	# Wand randomizer (second slot). One-shot tap — equips a random wand
 	# from the full pool. Calls Player._debug_random_wand which already
 	# handles the inventory swap, equip-stat refresh, and floating-text
 	# announce. No state to display — it's an action button, not a toggle.
-	_wand_btn_label = _make_corner_label("[ WAND? ]", -440.0, -260.0, 26)
+	_wand_btn_label = _make_corner_label("[ WAND? ]", -620.0, -480.0, 24)
 	_wand_btn_label.add_theme_color_override("font_color", Color(0.85, 0.7, 1.0))
 	parent.add_child(_wand_btn_label)
-	_wand_btn = _make_corner_button(-440.0, -260.0)
+	_wand_btn = _make_corner_button(-620.0, -480.0)
 	_wand_btn.pressed.connect(_press_wand)
 	parent.add_child(_wand_btn)
 
 func _build_full_auto_button(parent: Control) -> void:
-	# Full autoplay toggle — same effect as KEY_0 on desktop. Sits at the
-	# bottom (most thumb-reachable). Mutually exclusive with the auto-aim
-	# flag (full autoplay is a strict superset that also drives movement
-	# / pathing / perks).
-	_full_auto_btn_label = _make_corner_label("[ FULL AUTO ]", -240.0, -60.0, 24)
+	# Full autoplay toggle — same effect as KEY_0 on desktop. Mutually
+	# exclusive with the auto-aim flag (full autoplay is a strict superset
+	# that also drives movement / pathing / perks).
+	_full_auto_btn_label = _make_corner_label("[ FULL AUTO ]", -460.0, -320.0, 22)
 	parent.add_child(_full_auto_btn_label)
-	_full_auto_btn = _make_corner_button(-240.0, -60.0)
+	_full_auto_btn = _make_corner_button(-460.0, -320.0)
 	_full_auto_btn.pressed.connect(_toggle_full_auto)
 	parent.add_child(_full_auto_btn)
 	_refresh_full_auto_visual()
+
+func _build_interact_button(parent: Control) -> void:
+	# Interact button — bottom of the stack, most thumb-reachable. Drives
+	# the global "interact" input action so anything that listens for [E]
+	# (Inn, Bank, Shop, Portal, Shrine, EnchantTable, Loot Bag, etc.) is
+	# usable on mobile without a keyboard.
+	_interact_btn_label = _make_corner_label("[ E ]", -300.0, -60.0, 36)
+	_interact_btn_label.add_theme_color_override("font_color",
+		Color(0.95, 0.85, 0.45))
+	parent.add_child(_interact_btn_label)
+	_interact_btn = _make_corner_button(-300.0, -60.0)
+	_interact_btn.button_down.connect(func() -> void:
+		if InputMap.has_action("interact"):
+			Input.action_press("interact"))
+	_interact_btn.button_up.connect(func() -> void:
+		if InputMap.has_action("interact") and Input.is_action_pressed("interact"):
+			Input.action_release("interact"))
+	parent.add_child(_interact_btn)
 
 func _press_wand() -> void:
 	var p := get_parent()

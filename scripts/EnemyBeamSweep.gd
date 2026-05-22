@@ -5,7 +5,7 @@ const F1 := " \\-/ \n[ Θ ]\n |_| "
 
 const SWEEP_PERIOD     := 4.5
 const SWEEP_DURATION   := 1.6   # beam visible/active duration
-const TELEGRAPH_TIME   := 0.5
+const TELEGRAPH_TIME   := 0.85   # bumped from 0.5 — more reaction time
 const SWEEP_ARC        := PI * 0.55   # ~99° sweep arc
 const BEAM_RANGE       := 380.0
 const BEAM_DAMAGE      := 1     # per damage tick
@@ -25,8 +25,8 @@ var _anim_t: float      = 0.0
 var _anim_f: int        = 0
 
 func _on_ready_extra() -> void:
-	max_health = 11
-	health = 11
+	max_health = 22   # doubled from 11
+	health = max_health
 	_sight_range = 500.0
 	if _lbl:
 		_lbl.text = F0
@@ -71,8 +71,11 @@ func _enter_telegraph() -> void:
 	_end_angle   = aim_angle + arc_sign * (SWEEP_ARC * 0.5)
 	if _telegraph_line == null:
 		_telegraph_line = Line2D.new()
-		_telegraph_line.width = 1.5
-		_telegraph_line.default_color = Color(1.0, 0.4, 0.1, 0.45)
+		# Widened from 1.5 → 3.5 and alpha 0.45 → 0.85 so the windup is
+		# clearly readable. Brightness still ramps further in
+		# _update_telegraph_line as the sweep approaches.
+		_telegraph_line.width = 3.5
+		_telegraph_line.default_color = Color(1.0, 0.4, 0.1, 0.85)
 		_telegraph_line.z_index = -1
 		get_tree().current_scene.add_child(_telegraph_line)
 	if SoundManager:

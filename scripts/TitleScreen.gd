@@ -103,6 +103,12 @@ func _build_ui() -> void:
 		"WASD move  |  LMB shoot  |  E interact  |  I inventory  |  SHIFT dash  |  ESC pause",
 		660, 13, Color(0.35, 0.35, 0.45))
 
+	# ── Build version (bottom-right) ─────────────────────────────────────────
+	# Anchored to the bottom-right via offsets from a fixed-size root, since
+	# the rest of this screen uses absolute positions in the 1600×900 layout.
+	# Bump GameState.GAME_VERSION on each release.
+	_lbl(GameState.GAME_VERSION, Vector2(1500, 855), 11, Color(0.35, 0.30, 0.45))
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 # Multi-line ASCII art label, monospace, centered horizontally. Used for
@@ -233,6 +239,10 @@ func _on_village() -> void:
 # overrides it when Player._ready calls _try_load_save.
 func _on_continue_run() -> void:
 	GameState.test_mode = false
+	# Peek the save into GameState BEFORE scene change so World._ready
+	# generates the floor at the saved difficulty (mirrors DescendPortal's
+	# CONTINUE path).
+	GameState.peek_save_run_state()
 	get_tree().change_scene_to_file("res://scenes/World.tscn")
 
 func _show_dungeon_select() -> void:
@@ -298,8 +308,12 @@ func _show_dungeon_select() -> void:
 		 "col": Color(1.0, 0.18, 0.12),  "desc": "Pure malice.  You will not survive."},
 	]
 
+	# Seed row — sits between the subtitle and the tier list. ROW_Y0 was
+	# bumped 218 → 256 to make room for it.
+	_build_seed_row(overlay, 216.0)
+
 	const ROW_H  := 80.0
-	const ROW_Y0 := 218.0
+	const ROW_Y0 := 256.0
 
 	for i in TIERS.size():
 		var tier: Dictionary = TIERS[i]
@@ -348,12 +362,19 @@ func _show_dungeon_select() -> void:
 		row_btn.flat     = true
 		row_btn.position = Vector2(330, ry)
 		row_btn.size     = Vector2(940, ROW_H - 4)
+		# Hover callbacks guarded against scene-change teardown — the
+		# pressed signal queues a scene transition, and mouse_exited
+		# can fire on the freed button afterward, hitting null labels.
 		row_btn.mouse_entered.connect(func() -> void:
-			name_lbl.add_theme_color_override("font_color", col.lightened(0.3))
-			stats_lbl.add_theme_color_override("font_color", col.lightened(0.1)))
+			if is_instance_valid(name_lbl):
+				name_lbl.add_theme_color_override("font_color", col.lightened(0.3))
+			if is_instance_valid(stats_lbl):
+				stats_lbl.add_theme_color_override("font_color", col.lightened(0.1)))
 		row_btn.mouse_exited.connect(func() -> void:
-			name_lbl.add_theme_color_override("font_color", col)
-			stats_lbl.add_theme_color_override("font_color", col.darkened(0.15)))
+			if is_instance_valid(name_lbl):
+				name_lbl.add_theme_color_override("font_color", col)
+			if is_instance_valid(stats_lbl):
+				stats_lbl.add_theme_color_override("font_color", col.darkened(0.15)))
 		row_btn.pressed.connect(func() -> void:
 			GameState.test_mode           = false
 			GameState.starting_difficulty = _d
@@ -361,6 +382,9 @@ func _show_dungeon_select() -> void:
 			GameState.difficulty          = _d
 			GameState.loot_multiplier     = _l
 			GameState.save_settings()
+			# Pull the seed out of the SeedInput LineEdit before scene
+			# change. _apply_seed_from_overlay sets run_seed + is_daily_run.
+			_apply_seed_from_overlay(overlay)
 			# A new run from this screen is intended to start at the
 			# selected difficulty — wipe any leftover save so Player._ready
 			# doesn't load over our chosen settings (CONTINUE RUN is the
@@ -411,6 +435,9 @@ func _show_dungeon_select() -> void:
 		GameState.starting_climb_rate = 0.5
 		GameState.difficulty          = 1.0
 		GameState.loot_multiplier     = 1.0
+		# Test arena also honours the seed input so users can reproduce
+		# a particular wave roll while tuning balance.
+		_apply_seed_from_overlay(overlay)
 		# Same reasoning as the tier rows above — testing grounds is a
 		# fresh start, ignore any leftover save.
 		if FileAccess.file_exists("user://save_run.json"):
@@ -437,6 +464,77 @@ func _show_dungeon_select() -> void:
 	close_btn.mouse_exited.connect(func() -> void:
 		close_lbl.add_theme_color_override("font_color", Color(0.6, 0.5, 0.9)))
 	overlay.add_child(close_btn)
+
+# Seed input row for the dungeon-select overlay. A blank field means
+# "random run" (run_seed = 0). Typing any number locks the seed; the
+# DAILY button auto-fills today's deterministic seed. The chosen seed
+# is applied via GameState.run_seed when the player picks a tier — the
+# tier-row callbacks read the LineEdit through a closure.
+func _build_seed_row(overlay: Node, y: float) -> void:
+	var label := Label.new()
+	label.text = "SEED:"
+	label.position = Vector2(360, y + 6)
+	label.size = Vector2(80, 28)
+	label.add_theme_font_size_override("font_size", 14)
+	label.add_theme_color_override("font_color", Color(0.55, 0.45, 0.85))
+	overlay.add_child(label)
+
+	var input := LineEdit.new()
+	input.name = "SeedInput"   # tier callbacks find it by name
+	input.placeholder_text = "(blank = random)"
+	input.position = Vector2(450, y)
+	input.size = Vector2(280, 32)
+	input.max_length = 12
+	input.add_theme_font_size_override("font_size", 14)
+	overlay.add_child(input)
+
+	var daily_btn := Button.new()
+	daily_btn.text = "DAILY"
+	daily_btn.position = Vector2(740, y)
+	daily_btn.size = Vector2(96, 32)
+	daily_btn.add_theme_font_size_override("font_size", 14)
+	daily_btn.pressed.connect(func() -> void:
+		input.text = str(GameState.daily_seed()))
+	overlay.add_child(daily_btn)
+
+	var random_btn := Button.new()
+	random_btn.text = "RANDOM"
+	random_btn.position = Vector2(844, y)
+	random_btn.size = Vector2(96, 32)
+	random_btn.add_theme_font_size_override("font_size", 14)
+	random_btn.pressed.connect(func() -> void:
+		input.text = "")
+	overlay.add_child(random_btn)
+
+	var hint := Label.new()
+	hint.text = "Same seed → same run. Pick DAILY to share today's challenge."
+	hint.position = Vector2(360, y + 36)
+	hint.size = Vector2(580, 18)
+	hint.add_theme_font_size_override("font_size", 11)
+	hint.add_theme_color_override("font_color", Color(0.40, 0.32, 0.60))
+	overlay.add_child(hint)
+
+# Reads the SeedInput LineEdit out of an overlay tree, parses to an int,
+# and writes it into GameState. Returns true if the run is a Daily.
+func _apply_seed_from_overlay(overlay: Node) -> bool:
+	var input := overlay.find_child("SeedInput", true, false) as LineEdit
+	if input == null:
+		GameState.run_seed = 0
+		GameState.is_daily_run = false
+		return false
+	var raw := input.text.strip_edges()
+	if raw.is_empty():
+		GameState.run_seed = 0
+		GameState.is_daily_run = false
+		return false
+	if raw.is_valid_int():
+		GameState.run_seed = int(raw)
+	else:
+		# Allow shareable string seeds (hash → int) so players can paste
+		# a word like "speedrun" and get a reproducible run from it.
+		GameState.run_seed = raw.hash()
+	GameState.is_daily_run = (GameState.run_seed == GameState.daily_seed())
+	return GameState.is_daily_run
 
 func _on_quit() -> void:
 	get_tree().quit()

@@ -55,9 +55,12 @@ static func show_for(scene_root: Node, boss_name: String, color: Color) -> void:
 	banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	cl.add_child(banner)
 
-	# Fade in → hold → fade out → free
+	# Fade in → hold → fade out → free. Reduce-flashing slows the fade-in
+	# from 0.30s to 0.85s so the banner eases on instead of popping into
+	# view (the pop was a small but real flash trigger).
+	var fade_in: float = 0.85 if GameState.disable_flashing else 0.30
 	var tw := banner.create_tween()
-	tw.tween_property(banner, "modulate:a", 1.0, 0.30)
+	tw.tween_property(banner, "modulate:a", 1.0, fade_in)
 	tw.tween_interval(HOLD_T)
 	tw.tween_property(banner, "modulate:a", 0.0, FADE_T)
 	tw.tween_callback(cl.queue_free)

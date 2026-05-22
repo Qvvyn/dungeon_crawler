@@ -18,8 +18,8 @@ var _anim_f: int       = 0
 var _proj_scene: PackedScene = null
 
 func _on_ready_extra() -> void:
-	max_health = 8
-	health = 8
+	max_health = 16   # doubled from 8
+	health = max_health
 	_sight_range = 500.0
 	_proj_scene = load("res://scenes/Projectile.tscn")
 	if _lbl:

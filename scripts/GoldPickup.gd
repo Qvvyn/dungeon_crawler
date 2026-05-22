@@ -28,6 +28,7 @@ func _collect() -> void:
 		return
 	_collected = true
 	GameState.gold += value
+	QuestLog.note_gold_gained(value)
 	var pos := _player.global_position if is_instance_valid(_player) else global_position
 	FloatingText.spawn(pos, value, true, get_tree().current_scene, Color(1.0, 0.85, 0.1))
 	queue_free()

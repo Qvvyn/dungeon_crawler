@@ -3,7 +3,7 @@
 [ext_resource type="Script" path="res://scripts/EnemyBoss.gd" id="1_boss"]
 
 [sub_resource type="CircleShape2D" id="CircleShape2D_boss"]
-radius = 22.0
+radius = 32.0
 
 [node name="EnemyBoss" type="CharacterBody2D" groups=["enemy"]]
 script = ExtResource("1_boss")

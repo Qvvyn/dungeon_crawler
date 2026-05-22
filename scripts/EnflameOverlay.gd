@@ -1,10 +1,8 @@
 class_name EnflameOverlay
 extends Label
 
-# Visual overlay attached to an ENFLAMED enemy. Replaces the old ground
-# FirePatch — flames now stick to the burning entity itself so the player
-# can read who's currently on fire at a glance instead of trying to map
-# patches back to enemies.
+# Visual overlay attached to an ENFLAMED enemy. Mounts ASCII flames on the
+# host so the player can read who's currently on fire at a glance.
 #
 # Damage-over-time is still ticked by the host's `_tick_status` (each enemy
 # script already does that). This node is visual + serves as the helper
@@ -15,6 +13,8 @@ const FLAME_F0 := " ( "
 const FLAME_F1 := "((("
 const FLAME_F2 := ") ("
 const FLAME_F3 := "(*)"
+
+const FIRE_PATCH_SCRIPT := preload("res://scripts/FirePatch.gd")
 
 # AoE flare when a burn_hit lands on an already-enflamed target. Pulses
 # damage + burn stacks to enemies in range and adds 1 s to the host's
@@ -28,6 +28,46 @@ static var _shared_font: Font = null
 
 var _anim_t: float = 0.0
 var _frame: int    = 0
+
+# Drops a ground-fire patch at `host`'s current position. Used by both the
+# initial enflame proc and the every-2-burn-hits re-trigger. Free function
+# so every enemy script (base + the 5 boss classes) can call it without
+# duplicating the spawn boilerplate.
+static func spawn_patch(host: Node) -> void:
+	if not is_instance_valid(host) or not (host is Node2D):
+		return
+	var tree := (host as Node).get_tree()
+	if tree == null or tree.current_scene == null:
+		return
+	var patch := Node2D.new()
+	patch.set_script(FIRE_PATCH_SCRIPT)
+	patch.global_position = (host as Node2D).global_position
+	tree.current_scene.add_child(patch)
+
+# Centralised "every 2 burn-hits while ENFLAMED → drop a fresh ground patch"
+# counter. Caller passes the burn-hit stack count; this fold-in returns true
+# whenever the cumulative count crosses a multiple of 2 so the caller can
+# also do its own bookkeeping (FloatingText, sound, etc.) alongside the
+# patch spawn.
+const _PATCH_TRIGGER_HITS := 2
+static func register_extra_burn(host: Node, stacks: int) -> bool:
+	if not is_instance_valid(host):
+		return false
+	var hits: int = 0
+	if "_enflame_extra_hits" in host:
+		hits = int(host.get("_enflame_extra_hits")) + maxi(1, stacks)
+	else:
+		hits = int(host.get_meta("enflame_extra_hits", 0)) + maxi(1, stacks)
+	var triggered: bool = hits >= _PATCH_TRIGGER_HITS
+	if triggered:
+		hits = 0
+	if "_enflame_extra_hits" in host:
+		host.set("_enflame_extra_hits", hits)
+	else:
+		host.set_meta("enflame_extra_hits", hits)
+	if triggered:
+		spawn_patch(host)
+	return triggered
 
 # Mount/free helper. Idempotent on no-op frames — only allocates when the
 # enflame state actually flipped.

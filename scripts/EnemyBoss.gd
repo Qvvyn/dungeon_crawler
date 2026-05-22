@@ -58,6 +58,8 @@ var _burn_stacks: int     = 0
 var _enflamed: bool       = false
 var _enflame_timer: float = 0.0
 var _enflame_tick: float  = 0.0
+# Burn-hits accumulated while ENFLAMED — every 2 spawn another ground patch.
+var _enflame_extra_hits: int = 0
 
 # SHOCK
 var _shock_stacks: int     = 0
@@ -90,14 +92,14 @@ func _ready() -> void:
 	if lbl:
 		var mono := MonoFont.get_font()
 		lbl.add_theme_font_override("font", mono)
-		lbl.add_theme_font_size_override("font_size", 14)
-		lbl.add_theme_constant_override("line_separation", -3)
+		lbl.add_theme_font_size_override("font_size", 22)
+		lbl.add_theme_constant_override("line_separation", -4)
 		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		lbl.vertical_alignment   = VERTICAL_ALIGNMENT_TOP
-		lbl.offset_left   = -42
-		lbl.offset_top    = -28
-		lbl.offset_right  =  44
-		lbl.offset_bottom =  48
+		lbl.offset_left   = -64
+		lbl.offset_top    = -42
+		lbl.offset_right  =  68
+		lbl.offset_bottom =  72
 		lbl.text = BOSS_F0
 
 func _physics_process(delta: float) -> void:
@@ -255,6 +257,7 @@ func apply_status(effect: String, _duration: float) -> void:
 		"burn_hit":
 			if _enflamed:
 				EnflameOverlay.refresh_pulse(self)
+				EnflameOverlay.register_extra_burn(self, stacks)
 			else:
 				_burn_stacks = mini(_burn_stacks + stacks, BOSS_STACK_THRESHOLD)
 				if _burn_stacks >= BOSS_STACK_THRESHOLD:
@@ -284,7 +287,9 @@ func _trigger_enflamed() -> void:
 	_enflamed      = true
 	_enflame_timer = 5.0
 	_enflame_tick  = 0.0
+	_enflame_extra_hits = 0
 	EnflameOverlay.sync_to(self, true)
+	EnflameOverlay.spawn_patch(self)
 	take_damage(12)
 	if not is_instance_valid(self): return
 	for enemy in get_tree().get_nodes_in_group("enemy"):

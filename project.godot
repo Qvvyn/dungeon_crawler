@@ -28,6 +28,7 @@ RunHistory="*res://scripts/RunHistory.gd"
 SoundManager="*res://scripts/SoundManager.gd"
 OnlineLeaderboard="*res://scripts/OnlineLeaderboard.gd"
 PersistentStash="*res://scripts/PersistentStash.gd"
+QuestLog="*res://scripts/QuestLog.gd"
 
 [display]
 
@@ -35,6 +36,10 @@ window/size/viewport_width=1600
 window/size/viewport_height=900
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
+
+[dotnet]
+
+project/assembly_name="DungeonCrawler"
 
 [input]
 

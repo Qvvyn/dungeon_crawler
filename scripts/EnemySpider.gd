@@ -17,8 +17,8 @@ var _anim_t: float     = 0.0
 var _anim_f: int       = 0
 
 func _on_ready_extra() -> void:
-	max_health  = 2
-	health      = 2
+	max_health  = 2   # kept low — spiders are swarm fodder, the threat is volume
+	health      = max_health
 	_sight_range = SIGHT
 	if _lbl:
 		_lbl.text = F0
@@ -49,11 +49,16 @@ func _enemy_tick(delta: float) -> void:
 	# Zero velocity so the base class's move_and_slide is a no-op
 	velocity = Vector2.ZERO
 
-	# Contact damage on overlap
+	# Contact damage on overlap. Spider bites also stick a brief web slow
+	# on the player so a swarm visibly leans on you instead of just
+	# nibbling — slow stacks fresh on each hit, but the cooldown caps
+	# how often any one spider can apply it.
 	if to_p.length() <= CONTACT_RADIUS and _contact_cd <= 0.0:
 		if _player.has_method("take_damage"):
 			_player.take_damage(CONTACT_DAMAGE)
-			_contact_cd = CONTACT_COOLDOWN
+		if _player.has_method("apply_status"):
+			_player.apply_status("slow", 1.2)
+		_contact_cd = CONTACT_COOLDOWN
 
 func _move_through(delta: float, vel: Vector2) -> void:
 	var motion := vel * delta

@@ -84,7 +84,19 @@ func _use() -> void:
 	if GameState.gold > 0:
 		PersistentStash.add_gold(GameState.gold)
 		GameState.gold = 0
-	# Clear the saved run so re-entering the dungeon starts fresh.
-	if FileAccess.file_exists("user://save_run.json"):
-		DirAccess.remove_absolute("user://save_run.json")
+	# Stash level + xp so the next dungeon run picks up where this one
+	# left off. reset_run_stats reads these and restores them instead
+	# of dropping the player back to level 1. Death still wipes them
+	# (the death flow doesn't pass through ExitPortal).
+	GameState.carry_level = GameState.level
+	GameState.carry_xp = GameState.xp
+	# Save the run state so DescendPortal can offer a CONTINUE option
+	# back in the village. Used to delete save_run.json here; that meant
+	# the player lost their floor / inventory the moment they exited,
+	# defeating the purpose of "exit with loot intact" runs. The save
+	# itself uses Player._save_run so wand charges, potion stacks, gear,
+	# and run modifiers all round-trip.
+	var ply: Node = get_tree().get_first_node_in_group("player")
+	if ply != null and ply.has_method("_save_run"):
+		ply.call("_save_run")
 	get_tree().change_scene_to_file("res://scenes/Village.tscn")

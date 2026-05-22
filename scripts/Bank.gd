@@ -8,9 +8,11 @@ var _player_in_range: bool = false
 var _ui: CanvasLayer = null
 var _grid_btn_holder: Control = null
 var _stash_btn_holder: Control = null
+var _equip_btn_holder: Control = null
 var _gold_label: Label = null
 
 func _ready() -> void:
+	add_to_group("interactable")   # bullets pass through (Projectile group check)
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
 
@@ -91,33 +93,49 @@ func _open() -> void:
 	_ui.add_child(withdraw_gold_btn["btn"])
 	_ui.add_child(withdraw_gold_btn["lbl"])
 
-	# Two columns of items: run inventory (left) and stash (right).
-	var left_title := Label.new()
-	left_title.text = "RUN INVENTORY  (click to deposit)"
-	left_title.position = Vector2(220, 270)
-	left_title.size = Vector2(560, 28)
-	left_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	left_title.add_theme_font_size_override("font_size", 16)
-	left_title.add_theme_color_override("font_color", Color(0.85, 0.95, 0.55))
-	_ui.add_child(left_title)
+	# Three columns of items: equipped (left), run bag (middle), stash
+	# (right). Equipped column lets the player bank their kit (e.g. swap
+	# wands between runs without losing anything).
+	var equip_title := Label.new()
+	equip_title.text = "EQUIPPED  (click to unequip + deposit)"
+	equip_title.position = Vector2(200, 270)
+	equip_title.size = Vector2(380, 28)
+	equip_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	equip_title.add_theme_font_size_override("font_size", 14)
+	equip_title.add_theme_color_override("font_color", Color(0.85, 0.6, 1.0))
+	_ui.add_child(equip_title)
 
-	var right_title := Label.new()
-	right_title.text = "BANK STASH  (click to withdraw)"
-	right_title.position = Vector2(820, 270)
-	right_title.size = Vector2(560, 28)
-	right_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	right_title.add_theme_font_size_override("font_size", 16)
-	right_title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.30))
-	_ui.add_child(right_title)
+	var bag_title := Label.new()
+	bag_title.text = "RUN BAG  (click to deposit)"
+	bag_title.position = Vector2(600, 270)
+	bag_title.size = Vector2(400, 28)
+	bag_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	bag_title.add_theme_font_size_override("font_size", 14)
+	bag_title.add_theme_color_override("font_color", Color(0.85, 0.95, 0.55))
+	_ui.add_child(bag_title)
+
+	var stash_title := Label.new()
+	stash_title.text = "BANK STASH  (click to withdraw)"
+	stash_title.position = Vector2(1020, 270)
+	stash_title.size = Vector2(380, 28)
+	stash_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	stash_title.add_theme_font_size_override("font_size", 14)
+	stash_title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.30))
+	_ui.add_child(stash_title)
+
+	_equip_btn_holder = Control.new()
+	_equip_btn_holder.position = Vector2(200, 308)
+	_equip_btn_holder.size = Vector2(380, 440)
+	_ui.add_child(_equip_btn_holder)
 
 	_grid_btn_holder = Control.new()
-	_grid_btn_holder.position = Vector2(220, 308)
-	_grid_btn_holder.size = Vector2(560, 440)
+	_grid_btn_holder.position = Vector2(600, 308)
+	_grid_btn_holder.size = Vector2(400, 440)
 	_ui.add_child(_grid_btn_holder)
 
 	_stash_btn_holder = Control.new()
-	_stash_btn_holder.position = Vector2(820, 308)
-	_stash_btn_holder.size = Vector2(560, 440)
+	_stash_btn_holder.position = Vector2(1020, 308)
+	_stash_btn_holder.size = Vector2(380, 440)
 	_ui.add_child(_stash_btn_holder)
 
 	# Close button
@@ -136,8 +154,39 @@ func _close() -> void:
 
 func _refresh_all() -> void:
 	_refresh_gold()
+	_refresh_equip_column()
 	_refresh_grid_column()
 	_refresh_stash_column()
+
+func _refresh_equip_column() -> void:
+	if _equip_btn_holder == null:
+		return
+	for c in _equip_btn_holder.get_children():
+		c.queue_free()
+	# Show every equip slot in a fixed order so the layout doesn't jump.
+	# Empty slots render as dim placeholders; the player can see at a
+	# glance what's filled vs open.
+	var slots: Array = ["wand", "hat", "robes", "feet", "ring", "necklace"]
+	for i in slots.size():
+		var slot_name: String = slots[i]
+		var item: Item = InventoryManager.equipped.get(slot_name) as Item
+		var b := Button.new()
+		b.position = Vector2(0, i * 36)
+		b.size = Vector2(370, 32)
+		b.flat = true
+		b.add_theme_font_size_override("font_size", 13)
+		if item == null:
+			b.text = "%s :  (empty)" % slot_name.to_upper()
+			b.disabled = true
+			b.add_theme_color_override("font_color_disabled",
+				Color(0.45, 0.40, 0.55))
+		else:
+			b.text = "%s :  %s" % [slot_name.to_upper(), item.display_name]
+			b.add_theme_color_override("font_color", _rarity_color(item.rarity))
+			b.add_theme_color_override("font_color_hover",
+				_rarity_color(item.rarity).lightened(0.30))
+			b.pressed.connect(func() -> void: _deposit_equipped(slot_name))
+		_equip_btn_holder.add_child(b)
 
 func _refresh_gold() -> void:
 	if _gold_label == null:
@@ -150,12 +199,18 @@ func _refresh_grid_column() -> void:
 		return
 	for c in _grid_btn_holder.get_children():
 		c.queue_free()
-	var rows: int = 12
+	var rows: int = 13
+	# Use the actual grid index (i) to lay out the button — NOT
+	# get_child_count(). With get_child_count(), depositing an item
+	# would empty its slot in the grid, the next refresh would skip
+	# the now-null slot, and every later item would renumber and
+	# visually shift up one row. Anchoring on `i` keeps each item
+	# fixed at its grid position.
 	for i in InventoryManager.grid.size():
 		var item: Item = InventoryManager.grid[i] as Item
 		if item == null:
 			continue
-		var b := _item_button(item, _grid_btn_holder.get_child_count(), rows)
+		var b := _item_button(item, i, rows)
 		var idx := i
 		b.pressed.connect(func() -> void: _deposit(idx))
 		_grid_btn_holder.add_child(b)
@@ -165,7 +220,7 @@ func _refresh_stash_column() -> void:
 		return
 	for c in _stash_btn_holder.get_children():
 		c.queue_free()
-	var rows: int = 12
+	var rows: int = 13
 	for i in PersistentStash.slots.size():
 		var item: Item = PersistentStash.slots[i] as Item
 		if item == null:
@@ -181,10 +236,10 @@ func _item_button(item: Item, idx: int, rows: int) -> Button:
 	var row_n: int = idx % rows
 	var b := Button.new()
 	b.text = item.display_name if item.display_name != "" else "?"
-	b.position = Vector2(col_n * 280, row_n * 36)
-	b.size = Vector2(270, 32)
+	b.position = Vector2(col_n * 190, row_n * 32)
+	b.size = Vector2(184, 28)
 	b.flat = true
-	b.add_theme_font_size_override("font_size", 13)
+	b.add_theme_font_size_override("font_size", 12)
 	b.add_theme_color_override("font_color", _rarity_color(item.rarity))
 	b.add_theme_color_override("font_color_hover", _rarity_color(item.rarity).lightened(0.30))
 	return b
@@ -205,6 +260,39 @@ func _deposit(grid_idx: int) -> void:
 		return
 	InventoryManager.grid[grid_idx] = null
 	InventoryManager.inventory_changed.emit()
+	_refresh_all()
+
+func _deposit_equipped(slot_name: String) -> void:
+	var it: Item = InventoryManager.equipped.get(slot_name) as Item
+	if it == null:
+		return
+	if not PersistentStash.deposit(it):
+		FloatingText.spawn_str(global_position, "STASH FULL",
+			Color(1.0, 0.4, 0.4), get_tree().current_scene)
+		return
+	# Wand path goes through the wand-row helper so equipped["wand"] is
+	# kept in sync with grid[active_wand_slot]. Other slots assign null
+	# directly since they don't share state with the grid.
+	if slot_name == "wand":
+		# Find which wand slot this Item lives in and clear it. Then
+		# resync — the active pointer may need to skip to the next held
+		# wand or fall back to null.
+		for i in InventoryManager.WAND_SLOTS:
+			if InventoryManager.grid[i] == it:
+				InventoryManager.grid[i] = null
+		InventoryManager._sync_active_wand()
+	else:
+		InventoryManager.equipped[slot_name] = null
+		# Clear any matching grid copy too — auto-equip historically
+		# leaves the same Item in both the equipped slot and the bag.
+		for i in InventoryManager.grid.size():
+			if InventoryManager.grid[i] == it:
+				InventoryManager.grid[i] = null
+	InventoryManager.inventory_changed.emit()
+	# Notify Player so equip-stat caches recompute.
+	var p := get_tree().get_first_node_in_group("player")
+	if p != null and p.has_method("update_equip_stats"):
+		p.call("update_equip_stats")
 	_refresh_all()
 
 func _withdraw(stash_idx: int) -> void:

@@ -5,7 +5,7 @@ const LOOT_BAG_SCENE    := preload("res://scenes/LootBag.tscn")
 const FIRE_PATCH_SCRIPT = preload("res://scripts/FirePatch.gd")
 
 @export var move_speed: float         = 70.0
-@export var max_health: int           = 6
+@export var max_health: int           = 12   # doubled from 6
 @export var preferred_distance: float = 480.0
 
 # ASCII art frames — cloaked sniper
@@ -292,8 +292,11 @@ func _start_windup() -> void:
 	_winding_up    = true
 	_windup_elapsed = 0.0
 	_aim_line = Line2D.new()
-	_aim_line.width = 0.6   # hair-thin tracer — clearly readable but not a wall of orange
-	_aim_line.default_color = Color(1.0, 0.5, 0.0, 0.15)
+	# Bumped from 0.6→1.8 width and 0.15→0.40 starting alpha so the aim
+	# laser is genuinely visible from the moment the windup starts. Was
+	# easy to miss with the previous values, especially in busy rooms.
+	_aim_line.width = 1.8
+	_aim_line.default_color = Color(1.0, 0.5, 0.0, 0.40)
 	_aim_line.add_point(Vector2.ZERO)
 	_aim_line.add_point(Vector2.ZERO)
 	add_child(_aim_line)
@@ -306,7 +309,7 @@ func _update_windup_visual() -> void:
 	if _aim_line == null or not is_instance_valid(_player):
 		return
 	var progress := _windup_elapsed / WINDUP_TIME
-	_aim_line.default_color = Color(1.0, lerpf(0.5, 0.05, progress), 0.0, lerpf(0.15, 0.9, progress))
+	_aim_line.default_color = Color(1.0, lerpf(0.5, 0.05, progress), 0.0, lerpf(0.40, 1.0, progress))
 	var predicted := _player.global_position + _player_vel_est * 0.2
 	var dir := (predicted - global_position).normalized()
 	_aim_line.set_point_position(1, to_local(global_position + dir * 1200.0))
@@ -500,22 +503,23 @@ func take_damage(amount: int) -> void:
 	if health <= 0:
 		GameState.kills += 1
 		GameState.add_xp(6)
+		# One-bag-per-enemy invariant — see EnemyArcher for the full note.
+		_drop_gold_pickup()
 		if is_champion:
 			_drop_champion_loot()
 		else:
 			if elite_modifier == 2 and _split_scene != null:
 				_do_split()
-			_drop_gold()
+			_maybe_drop_bag()
 		EffectFx.spawn_death_pop(global_position, get_tree().current_scene)
 		queue_free()
 
 func _drop_champion_loot() -> void:
-	_drop_gold()
-	for _i in 2:
-		var bag := LOOT_BAG_SCENE.instantiate()
-		bag.global_position = global_position + Vector2(randf_range(-32, 32), randf_range(-32, 32))
-		bag.items = [ItemDB.random_drop()]
-		get_tree().current_scene.call_deferred("add_child", bag)
+	# Single fatter bag with two guaranteed items (was: two separate bags).
+	var bag := LOOT_BAG_SCENE.instantiate()
+	bag.global_position = global_position + Vector2(randf_range(-24, 24), randf_range(-24, 24))
+	bag.items = [ItemDB.random_drop(), ItemDB.random_drop()]
+	get_tree().current_scene.call_deferred("add_child", bag)
 
 func _do_split() -> void:
 	FloatingText.spawn_str(global_position, "SPLIT!", Color(0.9, 0.4, 1.0), get_tree().current_scene)
@@ -531,7 +535,7 @@ func _do_split() -> void:
 			clone.elite_modifier = 0
 		enemies_node.call_deferred("add_child", clone)
 
-func _drop_gold() -> void:
+func _drop_gold_pickup() -> void:
 	if GameState.test_mode:
 		GameState.gold += int(randi_range(2, 6) * (3 if is_elite else 1) * GameState.loot_multiplier)
 		return
@@ -539,6 +543,10 @@ func _drop_gold() -> void:
 	gold.global_position = global_position
 	gold.value = int(randi_range(2, 6) * (3 if is_elite else 1) * GameState.loot_multiplier)
 	get_tree().current_scene.call_deferred("add_child", gold)
+
+func _maybe_drop_bag() -> void:
+	if GameState.test_mode:
+		return
 	if (is_elite and randi() % 100 < 55) or randi() % 100 < 10:
 		var bag := LOOT_BAG_SCENE.instantiate()
 		bag.global_position = global_position + Vector2(randf_range(-20, 20), randf_range(-20, 20))

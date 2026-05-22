@@ -76,7 +76,10 @@ func _build_sounds() -> void:
 	_sounds["shoot_shock"]    = _gen_dual(380.0, 950.0, 0.09, 0.32, 7.0)
 	_sounds["shoot_shotgun"]  = _gen_buzz(120.0, 0.14, 0.55)
 	_sounds["shoot_homing"]   = _gen_sweep(220.0, 540.0, 0.12, 0.28)
-	_sounds["shoot_nova"]     = _gen_arpeggio([523.3, 698.5, 880.0], 0.04, 0.30)
+	# Nova arpeggio is short but the 3-note structure made it perceptually
+	# louder than other wand fire sounds. vol dropped 0.30 → 0.12 so the
+	# ring-burst no longer dominates the audio mix when nova wands fire.
+	_sounds["shoot_nova"]     = _gen_arpeggio([523.3, 698.5, 880.0], 0.04, 0.12)
 	_sounds["beam_hum"]       = _gen_dual(180.0, 270.0, 0.34, 0.30, 0.4)
 	_sounds["punch_hit"]      = _gen_tone(60.0, 0.13, 0.65, 14.0)
 

@@ -11,6 +11,13 @@ const CHECKPOINT_COST: int = 100
 # sell value so investing in a fresh charge is a real option, not strictly
 # worse than buying anything else.
 const RECHARGE_COST:   int = 60
+# Sacrifice — burns 25% of current HP for +5 to a random stat. The HP
+# floor at 1 keeps it non-lethal so the player can always at least try.
+const SACRIFICE_HP_PCT: float = 0.25
+const SACRIFICE_STAT_BONUS: int = 5
+# Gamble — bets 100g for 50/50 double-or-nothing. Quick risk-reward so
+# the gold-rich player has something to do besides hoarding.
+const GAMBLE_COST: int = 100
 
 var _used: bool       = false
 var _ui_layer: CanvasLayer = null
@@ -23,6 +30,7 @@ static var _shared_font: Font = null
 
 func _ready() -> void:
 	add_to_group("shrine")
+	add_to_group("interactable")   # bullets pass through (Projectile group check)
 	body_entered.connect(_on_body_entered)
 	if _shared_font == null:
 		_shared_font = MonoFont.get_font()
@@ -85,43 +93,50 @@ func _open_choice_ui() -> void:
 
 	var border := ColorRect.new()
 	border.color = Color(0.35, 0.45, 0.65, 0.95)
-	border.position = Vector2(540, 270)
-	border.size     = Vector2(520, 410)
+	border.position = Vector2(540, 220)
+	border.size     = Vector2(520, 510)
 	_ui_layer.add_child(border)
 	var inner := ColorRect.new()
 	inner.color = Color(0.04, 0.05, 0.10, 0.97)
-	inner.position = Vector2(543, 273)
-	inner.size     = Vector2(514, 404)
+	inner.position = Vector2(543, 223)
+	inner.size     = Vector2(514, 504)
 	_ui_layer.add_child(inner)
 
 	var title := Label.new()
 	title.text = "— SHRINE OF REST —"
-	title.position = Vector2(543, 286)
+	title.position = Vector2(543, 234)
 	title.size     = Vector2(514, 36)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 22)
 	title.add_theme_color_override("font_color", Color(0.85, 0.9, 1.0))
 	_ui_layer.add_child(title)
 
-	_make_choice_btn("Restore HP & Mana",   Vector2(580, 320), Color(0.5, 1.0, 0.6), _choose_heal)
-	_make_choice_btn("+5 Random Stat (run)", Vector2(580, 372), Color(1.0, 0.85, 0.3), _choose_stat)
-	_make_choice_btn("Mana Surge + Haste",   Vector2(580, 424), Color(0.5, 0.7, 1.0), _choose_mana)
+	# Tighter row spacing (44 px instead of 52) so all options fit without
+	# growing the panel further. Layout reads top→bottom: blessings, then
+	# risk/reward, then meta (recharge / checkpoint / walk away).
+	var y := 280.0
+	var step := 44.0
+	_make_choice_btn("Restore HP & Mana",            Vector2(580, y), Color(0.50, 1.00, 0.60), _choose_heal); y += step
+	_make_choice_btn("+5 Random Stat (run)",         Vector2(580, y), Color(1.00, 0.85, 0.30), _choose_stat); y += step
+	_make_choice_btn("Mana Surge + Haste",           Vector2(580, y), Color(0.50, 0.70, 1.00), _choose_mana); y += step
+	# Risk/reward block — cheap colors signal "darker bargain" so the player
+	# scans these as different from the safe blessings above.
+	var sac_lbl := "Sacrifice 25%% HP → +%d random stat" % SACRIFICE_STAT_BONUS
+	_make_choice_btn(sac_lbl,                        Vector2(580, y), Color(0.95, 0.35, 0.45), _choose_sacrifice); y += step
+	var gam_color := Color(0.95, 0.85, 0.45) if GameState.gold >= GAMBLE_COST else Color(0.45, 0.40, 0.25)
+	var gam_lbl := "Gamble %dg (50/50 double-or-nothing)" % GAMBLE_COST
+	_make_choice_btn(gam_lbl,                        Vector2(580, y), gam_color, _choose_gamble); y += step
 	# Recharge option only visible when a limited-use wand is equipped — keeps
 	# the menu un-cluttered when the player isn't holding a chargeable wand.
 	var equipped_wand: Item = InventoryManager.equipped.get("wand") as Item
 	if equipped_wand != null and equipped_wand.is_limited_use():
 		var rc_label := "Recharge Wand (%dg)" % RECHARGE_COST
 		var rc_color := Color(1.0, 0.85, 0.3) if GameState.gold >= RECHARGE_COST else Color(0.4, 0.35, 0.2)
-		_make_choice_btn(rc_label, Vector2(580, 476), rc_color, _choose_recharge)
-		var ck_label := "Checkpoint (%dg)" % CHECKPOINT_COST
-		var ck_color := Color(0.85, 0.55, 1.0) if GameState.gold >= CHECKPOINT_COST else Color(0.4, 0.3, 0.5)
-		_make_choice_btn(ck_label, Vector2(580, 528), ck_color, _choose_checkpoint)
-		_make_choice_btn("Walk Away",        Vector2(580, 580), Color(0.6, 0.6, 0.7), _choose_skip)
-	else:
-		var ck_label := "Checkpoint (%dg)" % CHECKPOINT_COST
-		var ck_color := Color(0.85, 0.55, 1.0) if GameState.gold >= CHECKPOINT_COST else Color(0.4, 0.3, 0.5)
-		_make_choice_btn(ck_label, Vector2(580, 520), ck_color, _choose_checkpoint)
-		_make_choice_btn("Walk Away",        Vector2(580, 580), Color(0.6, 0.6, 0.7), _choose_skip)
+		_make_choice_btn(rc_label,                   Vector2(580, y), rc_color, _choose_recharge); y += step
+	var ck_label := "Checkpoint (%dg)" % CHECKPOINT_COST
+	var ck_color := Color(0.85, 0.55, 1.0) if GameState.gold >= CHECKPOINT_COST else Color(0.4, 0.3, 0.5)
+	_make_choice_btn(ck_label,                       Vector2(580, y), ck_color, _choose_checkpoint); y += step
+	_make_choice_btn("Walk Away",                    Vector2(580, y), Color(0.6, 0.6, 0.7), _choose_skip)
 
 func _make_choice_btn(txt: String, pos: Vector2, col: Color, cb: Callable) -> void:
 	var lbl := Label.new()
@@ -214,6 +229,53 @@ func _choose_recharge() -> void:
 	InventoryManager.inventory_changed.emit()
 	FloatingText.spawn_str(global_position, "RECHARGED!",
 		Color(1.0, 0.85, 0.3), get_tree().current_scene)
+	_consume()
+
+func _choose_sacrifice() -> void:
+	# Burns 25% of current HP (floor at 1 so it can't kill the player) for
+	# a +5 random stat. Net win when HP is full and you'd take less than 5
+	# scaled effective HP (most stats), risk when HP is already low.
+	if not is_instance_valid(_player):
+		_consume()
+		return
+	var cur_hp: int = int(_player.get("health"))
+	var burn: int = max(1, int(round(float(cur_hp) * SACRIFICE_HP_PCT)))
+	# Cap so the player keeps at least 1 HP — floor-safe even at 4 HP.
+	var new_hp: int = max(1, cur_hp - burn)
+	_player.set("health", new_hp)
+	if _player.has_method("_update_health_bar"):
+		_player._update_health_bar()
+	var stat_name: String = GameState.STAT_NAMES[randi() % GameState.STAT_NAMES.size()]
+	var current: int = int(GameState.run_stat_bonuses.get(stat_name, 0))
+	GameState.run_stat_bonuses[stat_name] = current + SACRIFICE_STAT_BONUS
+	if _player.has_method("update_equip_stats"):
+		_player.update_equip_stats()
+	FloatingText.spawn_str(global_position,
+		"-%d HP / +%d %s" % [burn, SACRIFICE_STAT_BONUS, stat_name],
+		Color(1.0, 0.55, 0.55), get_tree().current_scene)
+	if SoundManager:
+		SoundManager.play("player_hurt", randf_range(0.85, 1.05))
+	_consume()
+
+func _choose_gamble() -> void:
+	if GameState.gold < GAMBLE_COST:
+		FloatingText.spawn_str(global_position, "Need %dg" % GAMBLE_COST,
+			Color(1.0, 0.4, 0.4), get_tree().current_scene)
+		return
+	GameState.gold -= GAMBLE_COST
+	# 50/50 — win returns 2× (net +GAMBLE_COST), lose keeps nothing.
+	if randf() < 0.5:
+		var winnings := GAMBLE_COST * 2
+		GameState.gold += winnings
+		FloatingText.spawn_str(global_position, "WON +%dg!" % GAMBLE_COST,
+			Color(1.0, 0.95, 0.4), get_tree().current_scene)
+		if SoundManager:
+			SoundManager.play("gold", randf_range(0.95, 1.10))
+	else:
+		FloatingText.spawn_str(global_position, "LOST -%dg" % GAMBLE_COST,
+			Color(0.95, 0.30, 0.30), get_tree().current_scene)
+		if SoundManager:
+			SoundManager.play("thud", randf_range(0.85, 1.00))
 	_consume()
 
 func _choose_skip() -> void:

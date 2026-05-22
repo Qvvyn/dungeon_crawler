@@ -7,7 +7,7 @@ const FIRE_PATCH_SCRIPT = preload("res://scripts/FirePatch.gd")
 @export var move_speed: float         = 80.0
 @export var shoot_interval: float     = 2.0
 @export var preferred_distance: float = 350.0
-@export var max_health: int           = 5
+@export var max_health: int           = 10   # doubled from 5
 @export var projectile_scene: PackedScene
 
 # ASCII art frames — spider
@@ -451,22 +451,23 @@ func take_damage(amount: int) -> void:
 	if health <= 0:
 		GameState.kills += 1
 		GameState.add_xp(5)
+		# One-bag-per-enemy invariant — see EnemyArcher for the full note.
+		_drop_gold_pickup()
 		if is_champion:
 			_drop_champion_loot()
 		else:
 			if elite_modifier == 2 and _split_scene != null:
 				_do_split()
-			_drop_gold()
+			_maybe_drop_bag()
 		EffectFx.spawn_death_pop(global_position, get_tree().current_scene)
 		queue_free()
 
 func _drop_champion_loot() -> void:
-	_drop_gold()
-	for _i in 2:
-		var bag := LOOT_BAG_SCENE.instantiate()
-		bag.global_position = global_position + Vector2(randf_range(-32, 32), randf_range(-32, 32))
-		bag.items = [ItemDB.random_drop()]
-		get_tree().current_scene.call_deferred("add_child", bag)
+	# Single fatter bag with two guaranteed items (was: two separate bags).
+	var bag := LOOT_BAG_SCENE.instantiate()
+	bag.global_position = global_position + Vector2(randf_range(-24, 24), randf_range(-24, 24))
+	bag.items = [ItemDB.random_drop(), ItemDB.random_drop()]
+	get_tree().current_scene.call_deferred("add_child", bag)
 
 func _do_split() -> void:
 	FloatingText.spawn_str(global_position, "SPLIT!", Color(0.9, 0.4, 1.0), get_tree().current_scene)
@@ -482,7 +483,7 @@ func _do_split() -> void:
 			clone.elite_modifier = 0
 		enemies_node.call_deferred("add_child", clone)
 
-func _drop_gold() -> void:
+func _drop_gold_pickup() -> void:
 	if GameState.test_mode:
 		GameState.gold += int(randi_range(1, 5) * (3 if is_elite else 1) * GameState.loot_multiplier)
 		return
@@ -490,6 +491,10 @@ func _drop_gold() -> void:
 	gold.global_position = global_position
 	gold.value = int(randi_range(1, 5) * (3 if is_elite else 1) * GameState.loot_multiplier)
 	get_tree().current_scene.call_deferred("add_child", gold)
+
+func _maybe_drop_bag() -> void:
+	if GameState.test_mode:
+		return
 	if (is_elite and randi() % 100 < 50) or randi() % 100 < 8:
 		var bag := LOOT_BAG_SCENE.instantiate()
 		bag.global_position = global_position + Vector2(randf_range(-20, 20), randf_range(-20, 20))

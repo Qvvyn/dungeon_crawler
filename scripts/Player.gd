@@ -81,6 +81,12 @@ var _debuff_label: Label = null
 # Persistent panel showing the equipped wand's name and combat stats so the
 # player can see at-a-glance what they're shooting without opening inventory.
 var _wand_info_label: Label = null
+# Floor-modifier chip — small persistent label in the top-right corner of
+# the HUD that lists the floor's active modifiers (e.g. "BLOODLUST · HASTE").
+# Hidden when no modifiers are active. Refreshed from GameState.floor_modifiers
+# inside _update_mana_bar (already-running per-frame UI tick).
+var _floor_mod_label: Label = null
+var _last_floor_mod_str: String = ""
 # Difficulty readout — a horizontal slider-style bar that fills as
 # GameState.difficulty climbs across portals. Visible in both regular and
 # test modes so the current threat tier is always at-a-glance.
@@ -112,20 +118,28 @@ var _is_invincible:    bool = false
 const DASH_SPEED           := 900.0
 const DASH_DURATION        := 0.18
 const BASE_SHOT_MANA_COST  := 2.0   # mana cost when firing without a wand equipped
-# Fire rate is DEX-driven: every wand starts from this base cooldown and DEX
-# scales it down. Wand flaws (clunky / sloppy) modify on top. The wand's
-# own wand_fire_rate is no longer used as the primary rate — DEX is the
-# main lever now.
+# Fire rate baseline used when no wand is equipped (basic shot). Each wand
+# brings its own wand_fire_rate which DEX then trims down — every 5 DEX
+# shaves 0.01 s off the cooldown.
 const BASE_FIRE_RATE_DEX   := 0.30
-const BASE_FIRE_DEX_SCALE  := 0.06   # each DEX point = 6 % faster
+const DEX_FIRE_STEP        := 0.01   # seconds removed per DEX_FIRE_PER_STEP DEX
+const DEX_FIRE_PER_STEP    := 5      # every 5 DEX = one DEX_FIRE_STEP cut
+
+func _dex_fire_reduction() -> float:
+	var dex: int = int(GameState.get_stat_bonus("DEX"))
+	if dex <= 0:
+		return 0.0
+	@warning_ignore("integer_division")
+	var steps: int = dex / DEX_FIRE_PER_STEP
+	return float(steps) * DEX_FIRE_STEP
 
 # Computes the effective per-shot cooldown the player will actually fire at
 # given a wand (or null for the basic free shot). Mirrors the math inside
 # _handle_shooting so HUD / debug snapshots can display the real number
 # instead of the stale wand_fire_rate value the wand itself carries.
 func _effective_fire_rate(wand: Item) -> float:
-	var dex := float(GameState.get_stat_bonus("DEX"))
-	var rate: float = BASE_FIRE_RATE_DEX / (1.0 + maxf(0.0, dex) * BASE_FIRE_DEX_SCALE)
+	var rate: float = wand.wand_fire_rate if wand != null else BASE_FIRE_RATE_DEX
+	rate -= _dex_fire_reduction()
 	if wand != null:
 		if "clunky" in wand.wand_flaws:
 			rate *= 2.0
@@ -298,6 +312,11 @@ func _ready() -> void:
 
 	_update_health_bar()
 
+	# Restore the levitate toggle across portal scene reloads. SPACE
+	# state lives in GameState.levitate_toggled (cleared by reset_run_stats
+	# on death so a new life starts grounded).
+	_is_levitating = GameState.levitate_toggled
+
 	if projectile_scene == null:
 		projectile_scene = load("res://scenes/Projectile.tscn")
 
@@ -392,13 +411,17 @@ func _ready() -> void:
 			elif roll < 40:
 				pick_rarity = Item.RARITY_RARE
 			var fresh_wand := ItemDB.generate_wand(pick_rarity)
-			InventoryManager.equipped["wand"] = fresh_wand
-			InventoryManager.inventory_changed.emit()
+			# Slot the fresh wand into the active slot via the helper so
+			# the wand-row invariant holds (grid[active] = equipped wand).
+			InventoryManager.set_active_wand(fresh_wand)
 			update_equip_stats()
 	# Reset per-floor autoplay counters — detour budget and age timer both
 	# scoped to a single floor so the budget renews when the player ports.
 	_autoplay_floor_loot_detours = 0
 	_autoplay_floor_age = 0.0
+	# Per-floor visited-interactable set — fresh interactables on the new
+	# floor should be valid auto-divert targets again.
+	_autoplay_visited_interactables.clear()
 	# Restore autoplay across portal transitions. Keep the carried-over health
 	# (with the +10 portal heal already applied) — don't reset to full.
 	if GameState.autoplay_active:
@@ -507,15 +530,19 @@ func _setup_hud_additions() -> void:
 	# Stats panel — top-right, two columns of five stats. Sits BELOW the
 	# minimap labels and the difficulty bar. Height tightened to fit just
 	# the 5 stat lines so the wand-info panel below can move up.
+	# Backing height bumped (84 → 102) when MIND was added — the panel
+	# rendered 4 rows pre-MIND, now 5 rows, and LCK clipped past the
+	# backing edge. Label gets the same +18px so all five lines stay
+	# inside the dark bg.
 	var stats_bg := ColorRect.new()
 	stats_bg.name = "StatsBG"
 	stats_bg.color = Color(0.05, 0.04, 0.10, 0.55)
 	hud.add_child(stats_bg)
-	_anchor_top_right(stats_bg, 1290, 204, 180, 84)
+	_anchor_top_right(stats_bg, 1290, 204, 180, 102)
 	_stats_label = Label.new()
 	_stats_label.name = "StatsLabel"
 	hud.add_child(_stats_label)
-	_anchor_top_right(_stats_label, 1296, 208, 170, 80)
+	_anchor_top_right(_stats_label, 1296, 208, 170, 98)
 	_stats_label.add_theme_font_size_override("font_size", 12)
 	_stats_label.add_theme_color_override("font_color", Color(0.85, 0.9, 1.0))
 	_stats_label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0))
@@ -664,6 +691,27 @@ func _setup_hud_additions() -> void:
 	_debuff_label.visible = false
 	hud.add_child(_debuff_label)
 
+	# Floor modifier chip — top-right anchored so it doesn't fight the
+	# left-column health/mana/stamina/wand stack. Hidden until at least
+	# one modifier rolls on the active floor.
+	_floor_mod_label = Label.new()
+	_floor_mod_label.name = "FloorModLabel"
+	_floor_mod_label.anchor_left  = 1.0
+	_floor_mod_label.anchor_right = 1.0
+	_floor_mod_label.anchor_top    = 0.0
+	_floor_mod_label.anchor_bottom = 0.0
+	_floor_mod_label.offset_left   = -260.0
+	_floor_mod_label.offset_right  = -10.0
+	_floor_mod_label.offset_top    = 10.0
+	_floor_mod_label.offset_bottom = 36.0
+	_floor_mod_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_floor_mod_label.add_theme_font_size_override("font_size", 12)
+	_floor_mod_label.add_theme_color_override("font_color", Color(1.0, 0.7, 0.1))
+	_floor_mod_label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0))
+	_floor_mod_label.add_theme_constant_override("outline_size", 3)
+	_floor_mod_label.visible = false
+	hud.add_child(_floor_mod_label)
+
 	# Stamina bar background
 	var stam_bg := ColorRect.new()
 	stam_bg.name = "StamBarBG"
@@ -784,7 +832,7 @@ func _setup_pause_menu() -> void:
 	stats_title.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
 	_pause_menu.add_child(stats_title)
 	var stats_help := Label.new()
-	stats_help.text = "INT  +1 damage / point, scales elements\nDEX  faster firing per point\nAGI  +4 move speed per point\nVIT  +5 max HP per point\nEND  +4 max stamina per point\nWIS  +2 mana/sec, +5 max mana / point\nSPR  +0.05 HP/sec per point\nDEF  +1% block per point\nLCK  +0.5% crit per point"
+	stats_help.text = "INT  +1 damage / point, scales elements\nDEX  -0.01 s shot cooldown per 5 points\nAGI  +4 move speed per point\nVIT  +5 max HP per point\nEND  +4 max stamina per point\nWIS  +2 mana regen per second per point\nMIND  +5 max mana per point\nSPR  +0.05 HP/sec per point\nDEF  +1% block per point\nLCK  +0.5% crit per point"
 	stats_help.position = Vector2(1048, 282)
 	stats_help.size     = Vector2(260, 280)
 	stats_help.add_theme_font_size_override("font_size", 13)
@@ -867,6 +915,14 @@ func _setup_pause_menu() -> void:
 	_pause_run_stats_label.visible = GameState.is_mobile
 	_pause_menu.add_child(_pause_run_stats_label)
 	_pause_main_buttons.append(_pause_run_stats_label)
+	# Test-mode-only playtest tools — wide difficulty range, a direct
+	# level setter, and an enemy-spawn override dropdown so balance
+	# tuning doesn't require quitting + restarting.
+	if GameState.test_mode:
+		_add_test_difficulty_slider(660, _pause_menu)
+		_add_test_level_input(692, _pause_menu)
+		_add_test_spawn_dropdown(724, _pause_menu)
+		_add_test_drops_toggle(756, _pause_menu)
 	for ci in range(_pre_count, _pause_menu.get_child_count()):
 		_pause_main_buttons.append(_pause_menu.get_child(ci))
 	_build_settings_panel()
@@ -977,6 +1033,7 @@ func _build_settings_panel() -> void:
 	_settings_root.add_child(title)
 
 	_add_crt_toggle(Vector2(640, 360), _settings_root)
+	_add_flash_toggle(Vector2(640, 562), _settings_root)
 	_add_volume_slider(420, _settings_root)
 	_add_difficulty_slider(496, _settings_root)
 
@@ -1016,6 +1073,34 @@ func _close_settings() -> void:
 	for n in _pause_main_buttons:
 		if is_instance_valid(n):
 			(n as CanvasItem).visible = true
+
+func _add_flash_toggle(pos: Vector2, parent: Node = null) -> void:
+	if parent == null:
+		parent = _pause_menu
+	var col_on  := Color(0.55, 1.0, 0.55)
+	var col_off := Color(0.45, 0.45, 0.55)
+	var lbl := Label.new()
+	lbl.text = "[ REDUCE FLASHING: %s ]" % ("ON" if GameState.disable_flashing else "OFF")
+	lbl.position = pos
+	lbl.size = Vector2(320, 32)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.add_theme_font_size_override("font_size", 17)
+	lbl.add_theme_color_override("font_color", col_on if GameState.disable_flashing else col_off)
+	parent.add_child(lbl)
+	var btn := Button.new()
+	btn.flat = true
+	btn.position = pos - Vector2(4, 2)
+	btn.size = Vector2(328, 36)
+	btn.mouse_entered.connect(func() -> void:
+		lbl.add_theme_color_override("font_color", lbl.get_theme_color("font_color").lightened(0.3)))
+	btn.mouse_exited.connect(func() -> void:
+		lbl.add_theme_color_override("font_color", col_on if GameState.disable_flashing else col_off))
+	btn.pressed.connect(func() -> void:
+		GameState.disable_flashing = not GameState.disable_flashing
+		GameState.save_settings()
+		lbl.text = "[ REDUCE FLASHING: %s ]" % ("ON" if GameState.disable_flashing else "OFF")
+		lbl.add_theme_color_override("font_color", col_on if GameState.disable_flashing else col_off))
+	parent.add_child(btn)
 
 func _add_crt_toggle(pos: Vector2, parent: Node = null) -> void:
 	if parent == null:
@@ -1105,6 +1190,213 @@ func _add_difficulty_slider(y: float, parent: Node = null) -> void:
 		else:
 			GameState.difficulty = v
 		lbl.text = "DIFFICULTY: %.1fx" % v)
+
+# Test-arena difficulty input. Replaces the previous slider — typing
+# is faster than dragging when probing specific values, and the field
+# accepts decimals up to 100 for stress-testing.
+func _add_test_difficulty_slider(y: float, parent: Node) -> void:
+	var col := Color(1.0, 0.45, 0.55)
+	var lbl := Label.new()
+	lbl.position = Vector2(586, y)
+	lbl.size = Vector2(150, 30)
+	lbl.add_theme_font_size_override("font_size", 12)
+	lbl.add_theme_color_override("font_color", col)
+	lbl.text = "TEST DIFF:"
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	parent.add_child(lbl)
+	_pause_main_buttons.append(lbl)
+
+	var input := LineEdit.new()
+	input.text = "%.2f" % GameState.test_difficulty
+	input.placeholder_text = "1.0"
+	input.position = Vector2(700, y)
+	input.size = Vector2(140, 30)
+	input.max_length = 7
+	input.process_mode = Node.PROCESS_MODE_ALWAYS
+	input.add_theme_font_size_override("font_size", 14)
+	parent.add_child(input)
+	_pause_main_buttons.append(input)
+
+	var apply := Button.new()
+	apply.text = "Set"
+	apply.position = Vector2(848, y)
+	apply.size = Vector2(80, 30)
+	apply.process_mode = Node.PROCESS_MODE_ALWAYS
+	apply.add_theme_font_size_override("font_size", 13)
+	parent.add_child(apply)
+	_pause_main_buttons.append(apply)
+
+	var commit: Callable = func() -> void:
+		var v := input.text.to_float()
+		if v < 0.0:
+			return
+		# Clamp to a sane range — 0 is fine (zero-difficulty stress test),
+		# 100 is the upper bound consistent with the old slider's max.
+		v = clampf(v, 0.0, 100.0)
+		GameState.test_difficulty = v
+		input.text = "%.2f" % v
+		FloatingText.spawn_str(global_position,
+			"DIFF %.2fx" % v, col, get_tree().current_scene)
+	apply.pressed.connect(commit)
+	input.text_submitted.connect(func(_t: String) -> void: commit.call())
+
+# Directly sets GameState.level for stat-balance playtesting. Refreshes
+# equip-derived caches and tops up vitals so the new level's max HP /
+# mana / stamina take effect immediately.
+func _add_test_level_input(y: float, parent: Node) -> void:
+	var col := Color(1.0, 0.85, 0.40)
+	var lbl := Label.new()
+	lbl.position = Vector2(586, y)
+	lbl.size = Vector2(150, 30)
+	lbl.add_theme_font_size_override("font_size", 12)
+	lbl.add_theme_color_override("font_color", col)
+	lbl.text = "TEST LEVEL:"
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	parent.add_child(lbl)
+	_pause_main_buttons.append(lbl)
+
+	var input := LineEdit.new()
+	input.text = str(GameState.level)
+	input.placeholder_text = str(GameState.level)
+	input.position = Vector2(700, y)
+	input.size = Vector2(140, 30)
+	input.max_length = 5
+	input.process_mode = Node.PROCESS_MODE_ALWAYS
+	input.add_theme_font_size_override("font_size", 14)
+	parent.add_child(input)
+	_pause_main_buttons.append(input)
+
+	var apply := Button.new()
+	apply.text = "Set"
+	apply.position = Vector2(848, y)
+	apply.size = Vector2(80, 30)
+	apply.process_mode = Node.PROCESS_MODE_ALWAYS
+	apply.add_theme_font_size_override("font_size", 13)
+	parent.add_child(apply)
+	_pause_main_buttons.append(apply)
+
+	var commit: Callable = func() -> void:
+		var lv := input.text.to_int()
+		if lv < 0:
+			return   # negatives only — 0 is allowed (clears level bonus)
+		GameState.level = lv
+		GameState.xp = 0
+		update_equip_stats()
+		# Top up vitals so the new caps take effect right away — without
+		# this the player's HP stays at the pre-level value and the
+		# slider feels dead until they take damage.
+		health  = _max_hp()
+		mana    = max_mana
+		stamina = max_stamina
+		_update_health_bar()
+		FloatingText.spawn_str(global_position,
+			"LEVEL %d" % lv, col, get_tree().current_scene)
+	apply.pressed.connect(commit)
+	input.text_submitted.connect(func(_t: String) -> void: commit.call())
+
+# Dropdown that overrides the testing-arena spawn pool. First entry is
+# "Regular spawn" (clears the override → mixed default pool); subsequent
+# entries are individual enemy keys read from World.test_spawn_keys().
+# On selection: updates GameState.test_spawn_override and wipes the
+# arena so the new enemy type populates immediately.
+func _add_test_spawn_dropdown(y: float, parent: Node) -> void:
+	var col := Color(0.55, 0.95, 0.85)
+	var lbl := Label.new()
+	lbl.position = Vector2(586, y)
+	lbl.size = Vector2(150, 30)
+	lbl.add_theme_font_size_override("font_size", 12)
+	lbl.add_theme_color_override("font_color", col)
+	lbl.text = "SPAWN:"
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	parent.add_child(lbl)
+	_pause_main_buttons.append(lbl)
+
+	var dropdown := OptionButton.new()
+	dropdown.position = Vector2(700, y)
+	dropdown.size = Vector2(228, 30)
+	dropdown.process_mode = Node.PROCESS_MODE_ALWAYS
+	dropdown.add_theme_font_size_override("font_size", 13)
+	dropdown.add_item("Regular spawn (mixed)", 0)
+	# Pull the master key list from World so we don't have to maintain
+	# the same array in two places. Walks up the scene tree to find it.
+	var world := get_tree().current_scene
+	if world != null and world.has_method("test_spawn_keys"):
+		var keys: Array = world.call("test_spawn_keys")
+		var idx: int = 1
+		for k: String in keys:
+			dropdown.add_item(_humanize_test_key(k), idx)
+			dropdown.set_item_metadata(idx, k)
+			idx += 1
+	# Restore previous selection so the dropdown remembers across opens.
+	if GameState.test_spawn_override != "":
+		for i in dropdown.item_count:
+			if dropdown.get_item_metadata(i) == GameState.test_spawn_override:
+				dropdown.select(i)
+				break
+	parent.add_child(dropdown)
+	_pause_main_buttons.append(dropdown)
+
+	dropdown.item_selected.connect(func(idx: int) -> void:
+		var key := ""
+		if idx > 0:   # 0 == "Regular spawn"
+			var meta = dropdown.get_item_metadata(idx)
+			if meta != null:
+				key = String(meta)
+		GameState.test_spawn_override = key
+		# Force the test arena to wipe + respawn with the new pool.
+		var w := get_tree().current_scene
+		if w != null and w.has_method("clear_test_arena_enemies"):
+			w.call("clear_test_arena_enemies")
+		FloatingText.spawn_str(global_position,
+			"SPAWN: %s" % ("MIXED" if key == "" else key.to_upper()),
+			col, get_tree().current_scene))
+
+# Pause-menu toggle for test-mode loot drops. When OFF, enemies skip
+# their drop block in EnemyBase. When ON, drops scale to test_difficulty
+# (handled in ItemDB.generate_gear / generate_wand). Useful for combat
+# tuning where the test arena would otherwise be carpeted in pickups.
+func _add_test_drops_toggle(y: float, parent: Node) -> void:
+	var lbl := Label.new()
+	lbl.position = Vector2(640, y)
+	lbl.size = Vector2(320, 30)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.add_theme_font_size_override("font_size", 14)
+	parent.add_child(lbl)
+	_pause_main_buttons.append(lbl)
+
+	var btn := Button.new()
+	btn.flat = true
+	btn.text = ""
+	btn.position = Vector2(640, y)
+	btn.size = Vector2(320, 30)
+	parent.add_child(btn)
+	_pause_main_buttons.append(btn)
+
+	var refresh: Callable = func() -> void:
+		var on: bool = GameState.test_drops_enabled
+		lbl.text = "[ DROPS: %s ]" % ("ON" if on else "OFF")
+		lbl.add_theme_color_override("font_color",
+			Color(0.55, 0.95, 0.55) if on else Color(0.65, 0.65, 0.7))
+	btn.pressed.connect(func() -> void:
+		GameState.test_drops_enabled = not GameState.test_drops_enabled
+		refresh.call())
+	refresh.call()
+
+# Title-cases an enemy key for the dropdown UI ("frostsentinel" →
+# "Frost Sentinel"). Splits on a small set of multi-word boundaries
+# baked into the keys; falls back to plain capitalize for the rest.
+func _humanize_test_key(key: String) -> String:
+	var pretty: Dictionary = {
+		"missileturret":  "Missile Turret",
+		"spiralmage":     "Spiral Mage",
+		"bonedrake":      "Bone Drake",
+		"frostsentinel":  "Frost Sentinel",
+		"magmaslug":      "Magma Slug",
+	}
+	if pretty.has(key):
+		return pretty[key]
+	return key.capitalize()
 
 func _toggle_pause() -> void:
 	_is_paused = not _is_paused
@@ -1269,6 +1561,14 @@ func _try_load_save() -> void:
 				InventoryManager.equipped[slot] = Item.from_dict(slot_data as Dictionary)
 			else:
 				InventoryManager.equipped[slot] = null
+	# Old saves wrote wands to equipped["wand"] separately and possibly
+	# scattered across the grid. The new model holds wands in grid[0..4]
+	# only, with equipped["wand"] = grid[active]. Run sort_grid to
+	# herd any stray wands into the wand row, then sync the active
+	# pointer so equipped["wand"] is valid. Net effect on a fresh save
+	# is a no-op since add_item already enforces the layout.
+	InventoryManager.sort_grid()
+	InventoryManager._sync_active_wand()
 	InventoryManager.inventory_changed.emit()
 	GameState.has_saved_state = true
 
@@ -1485,8 +1785,7 @@ func _debug_random_wand() -> void:
 	if pool.is_empty():
 		return
 	var wand: Item = pool[randi() % pool.size()]
-	InventoryManager.equipped["wand"] = wand
-	InventoryManager.inventory_changed.emit()
+	InventoryManager.set_active_wand(wand)
 	update_equip_stats()
 	FloatingText.spawn_str(global_position, wand.display_name, Color(1.0, 0.85, 0.15), get_tree().current_scene)
 
@@ -1495,7 +1794,7 @@ func _debug_best_gear() -> void:
 	all_pool.append_array(ItemDB.all_items())
 	all_pool.append_array(ItemDB.legendary_items())
 
-	for slot in ["hat", "robes", "feet", "ring", "necklace", "offhand"]:
+	for slot in ["hat", "robes", "feet", "ring", "necklace"]:
 		var best: Item = null
 		var best_score := -999.0
 		for candidate: Item in all_pool:
@@ -1528,7 +1827,7 @@ func _debug_best_gear() -> void:
 	beam.wand_flaws.clear()
 	beam.display_name    = "Annihilation Ray"
 	beam.color           = Color(0.3, 1.0, 0.8)
-	InventoryManager.equipped["wand"] = beam
+	InventoryManager.set_active_wand(beam)
 
 	InventoryManager.inventory_changed.emit()
 	update_equip_stats()
@@ -1574,8 +1873,7 @@ func _cycle_test_wand(dir: int) -> void:
 			w.wand_mana_cost = 6.0
 		"freeze", "fire":  w.wand_status_stacks   = 3
 	w.display_name = t.capitalize() + " [%d/%d]" % [_test_wand_index + 1, types.size()]
-	InventoryManager.equipped["wand"] = w
-	InventoryManager.inventory_changed.emit()
+	InventoryManager.set_active_wand(w)
 	update_equip_stats()
 	FloatingText.spawn_str(global_position, w.display_name, Color(0.3, 1.0, 0.8), get_tree().current_scene)
 
@@ -1604,6 +1902,17 @@ func _update_mana_bar() -> void:
 		else:
 			_debuff_label.text = " · ".join(dtags)
 			_debuff_label.visible = true
+	# Floor modifier chip — cheap text-compare cache so we only touch the
+	# Label when the modifier list actually changes (per-floor, basically).
+	if _floor_mod_label:
+		var mods: String = " · ".join(GameState.floor_modifiers).to_upper()
+		if mods != _last_floor_mod_str:
+			_last_floor_mod_str = mods
+			if mods == "":
+				_floor_mod_label.visible = false
+			else:
+				_floor_mod_label.text = "MODS: " + mods
+				_floor_mod_label.visible = true
 	# Equipped-wand readouts (charge counter + info panel). Both are driven
 	# from the same wand reference so they stay in sync.
 	var w: Item = null
@@ -1627,7 +1936,11 @@ func _update_mana_bar() -> void:
 			match w.rarity:
 				Item.RARITY_LEGENDARY: prefix = "★★ "
 				Item.RARITY_RARE:      prefix = "★ "
-			lines.append(prefix + w.display_name)
+			# Append tier badge to the name line so the player can see
+			# their wand's tier at a glance from the in-game HUD without
+			# opening the inventory.
+			var tier_suffix := ("  T%d" % w.tier) if w.tier > 0 else ""
+			lines.append(prefix + w.display_name + tier_suffix)
 			lines.append(w.wand_shoot_type.to_upper())
 			lines.append("DMG %d   FR %.2fs" % [w.wand_damage, _effective_fire_rate(w)])
 			lines.append("MP %.1f / shot" % w.wand_mana_cost)
@@ -1690,11 +2003,11 @@ func _update_stam_bar() -> void:
 	_stam_bar_fg.size.x = _stam_bar_inner_width * ratio
 
 func _cast_nova_spell() -> void:
-	if mana < NOVA_MANA_COST:
-		FloatingText.spawn_str(global_position, "Need %dMP" % int(NOVA_MANA_COST),
-			Color(0.8, 0.3, 0.8), get_tree().current_scene)
+	# Blood-magic rule applies to nova too — over-cast eats HP for the
+	# difference rather than blocking the cast.
+	_spend_mana_or_hp(float(NOVA_MANA_COST))
+	if not is_instance_valid(self):
 		return
-	mana -= NOVA_MANA_COST
 	var orb := Node2D.new()
 	orb.set_script(SPELL_ORB_SCRIPT)
 	orb.global_position = global_position
@@ -1714,6 +2027,12 @@ func _setup_damage_flash() -> void:
 
 func _trigger_damage_flash(amount: int) -> void:
 	if _damage_flash == null: return
+	# Reduce-flashing accessibility setting suppresses the full-screen
+	# red flash entirely. Health-bar damage and camera shake still
+	# communicate the hit.
+	if GameState.disable_flashing:
+		_damage_flash.color.a = 0.0
+		return
 	if is_instance_valid(_damage_flash_tween) and _damage_flash_tween.is_running():
 		_damage_flash_tween.kill()
 	var alpha := clampf(0.10 + float(amount) * 0.06, 0.18, 0.55)
@@ -1930,13 +2249,18 @@ func _process(_delta: float) -> void:
 	if _level_label:
 		_level_label.text = "LVL " + str(GameState.level)
 	if _stats_label:
-		# STR was removed; INT moved into the top-left slot it used to fill.
-		_stats_label.text = "INT %d  DEX %d\nWIS %d  AGI %d\nSPR %d  VIT %d\nDEF %d  END %d\nLCK %d" % [
+		# 10 stats in 5 rows — pairs grouped by archetype:
+		#   INT/DEX  → damage / fire-rate
+		#   WIS/MIND → mana regen / mana pool
+		#   AGI/VIT  → mobility / health
+		#   SPR/END  → spirit / stamina
+		#   DEF/LCK  → armor / luck
+		_stats_label.text = "INT %d  DEX %d\nWIS %d  MIND %d\nAGI %d  VIT %d\nSPR %d  END %d\nDEF %d  LCK %d" % [
 			GameState.get_stat("INT"), GameState.get_stat("DEX"),
-			GameState.get_stat("WIS"), GameState.get_stat("AGI"),
-			GameState.get_stat("SPR"), GameState.get_stat("VIT"),
-			GameState.get_stat("DEF"), GameState.get_stat("END"),
-			GameState.get_stat("LCK"),
+			GameState.get_stat("WIS"), GameState.get_stat("MIND"),
+			GameState.get_stat("AGI"), GameState.get_stat("VIT"),
+			GameState.get_stat("SPR"), GameState.get_stat("END"),
+			GameState.get_stat("DEF"), GameState.get_stat("LCK"),
 		]
 	_update_xp_bar()
 	_update_mana_bar()
@@ -1978,6 +2302,26 @@ func _process(_delta: float) -> void:
 	_update_stam_bar()
 
 func _input(event: InputEvent) -> void:
+	# Mouse-wheel cycles through the 5 wand slots when neither the
+	# inventory popup nor a loot bag popup are open. Loot bag popups
+	# already consume the event before this fires (set_input_as_handled),
+	# and the inventory grid doesn't currently use wheel input — so we
+	# only need to gate on _is_paused / _is_dead.
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.pressed and not _is_dead and not _is_paused \
+				and not (_inventory_ui and _inventory_ui.visible):
+			match mb.button_index:
+				MOUSE_BUTTON_WHEEL_UP:
+					InventoryManager.cycle_active_wand(-1)
+					update_equip_stats()
+					get_viewport().set_input_as_handled()
+					return
+				MOUSE_BUTTON_WHEEL_DOWN:
+					InventoryManager.cycle_active_wand(1)
+					update_equip_stats()
+					get_viewport().set_input_as_handled()
+					return
 	if not (event is InputEventKey) or not event.pressed or event.echo:
 		return
 	if _is_perk_selecting:
@@ -2005,6 +2349,18 @@ func _input(event: InputEvent) -> void:
 			# so we can pinpoint stuck-but-trying scenarios after the fact.
 			if event.shift_pressed:
 				_debug_log_snapshot()
+				get_viewport().set_input_as_handled()
+		KEY_4:             # $ (Shift+4)  →  debug max gold
+			# Cheat / playtest helper — fills the run gold to a number big
+			# enough to buy out anything in the village without bookkeeping.
+			# Only fires on Shift+4 so accidental "4" presses don't trigger.
+			if event.shift_pressed and not _is_dead:
+				GameState.gold = 999_999
+				FloatingText.spawn_str(global_position + Vector2(0.0, -28.0),
+					"MAX GOLD", Color(1.0, 0.92, 0.30),
+					get_tree().current_scene)
+				if SoundManager:
+					SoundManager.play("gold", 1.20)
 				get_viewport().set_input_as_handled()
 		KEY_1:
 			if not _is_dead and not _is_paused and GameState.test_mode:
@@ -2047,8 +2403,15 @@ func _physics_process(delta: float) -> void:
 	if GameState.has_floor_modifier("arcane"):
 		mana_mult = 2.0 + 0.20 * maxf(0.0, GameState.difficulty - 1.0)
 	mana = minf(mana + wisdom * delta * mana_mult, max_mana)
-	# Stamina regen
-	stamina = minf(stamina + (STAMINA_REGEN + _stam_regen_bonus) * delta, max_stamina)
+	# Stamina regen — halved in the Ice Cavern when the player hasn't
+	# killed anything in the last 4 s (hypothermia biome mechanic).
+	# Encourages aggressive play instead of camping safe spots.
+	var stam_mult: float = 1.0
+	if GameState.biome == 2:
+		var since_kill_ms: int = Time.get_ticks_msec() - GameState.last_kill_msec
+		if since_kill_ms > 4000:
+			stam_mult = 0.5
+	stamina = minf(stamina + (STAMINA_REGEN + _stam_regen_bonus) * stam_mult * delta, max_stamina)
 	# HP regen via SPR (slow trickle, scales with stat bonus)
 	var spr_bonus := GameState.get_stat_bonus("SPR")
 	if spr_bonus > 0 and health > 0 and health < _max_hp():
@@ -2144,24 +2507,55 @@ func _update_player_visual() -> void:
 		modulate = Color(1.0, 1.0, 1.0, 1.0)
 
 func _handle_levitate(delta: float) -> void:
-	var cost := LEVITATE_MANA_COST * delta
-	# Bot lifts off automatically when about to step on a trap or hazard.
-	# Player input still wins if pressed.
-	var want_lev: bool = Input.is_action_pressed("levitate")
-	if not want_lev and _autoplay:
-		want_lev = _autoplay_should_levitate()
-	if want_lev and mana >= cost:
+	# Toggle: SPACE press flips _is_levitating. State is mirrored into
+	# GameState.levitate_toggled so a portal scene-reload can restore it
+	# (Player._ready reads back from GameState during HUD setup).
+	if Input.is_action_just_pressed("levitate") and not _is_paused and not _is_dead:
+		_is_levitating = not _is_levitating
+		GameState.levitate_toggled = _is_levitating
+		FloatingText.spawn_str(global_position + Vector2(0.0, -28.0),
+			"LEVITATE: " + ("ON" if _is_levitating else "OFF"),
+			Color(0.55, 0.85, 1.0), get_tree().current_scene)
+	# Autoplay: bot lifts off automatically when about to step on a trap
+	# or hazard. Mirrors into GameState too so the toggle reflects what
+	# the bot is doing.
+	if _autoplay and not _is_levitating and _autoplay_should_levitate():
 		_is_levitating = true
-		mana -= cost
-	else:
-		_is_levitating = false
+		GameState.levitate_toggled = true
+	# Mana drain while levitating.
+	#   * Manual toggle: blood-magic rule — once mana runs out HP bleeds
+	#     for the difference. Auto-disable at 1 HP so it can't kill.
+	#   * Autoplay: bot must NOT bleed HP on its own buffs. Drop the
+	#     float the instant mana runs out so the bot eats one trap hit
+	#     instead of bleeding tens of HP across the rest of the floor.
+	if _is_levitating:
+		var cost := LEVITATE_MANA_COST * delta
+		if _autoplay and mana < cost:
+			_is_levitating = false
+			GameState.levitate_toggled = false
+		else:
+			_spend_mana_or_hp(cost)
+			if mana <= 0.0 and health <= 1:
+				_is_levitating = false
+				GameState.levitate_toggled = false
 
 # Returns true if the bot is on / about to step on a trap or hazard tile and
 # has enough mana to sustain a brief levitation. Lookahead uses current
 # velocity so the lift triggers slightly before the actual collision.
 func _autoplay_should_levitate() -> bool:
-	# Reserve ~0.3 s of mana so we don't drop mid-trap and immediately eat it.
-	if mana < LEVITATE_MANA_COST * 0.30:
+	# Mana-stress gate. The bot ONLY lifts off when:
+	#   * It has enough mana for a full second of levitation
+	#     (LEVITATE_MANA_COST = 50 / sec), AND
+	#   * Combat reserve is intact — at least 40 % of max_mana left so a
+	#     boss fight that started moments ago doesn't get its wand cut
+	#     off by a side-trip levitation.
+	# Without these gates, the bot used to drop the moment it saw a trap
+	# even with ~15 mana, immediately broke its lift, and ate the trap
+	# damage anyway. Better to skip the lift, take one tick of trap dmg,
+	# and keep mana available for shooting through the next encounter.
+	var min_for_lift: float = LEVITATE_MANA_COST   # 1 s buffer
+	var combat_floor: float = max_mana * 0.40
+	if mana < maxf(min_for_lift, combat_floor):
 		return false
 	var probe := global_position + velocity * 0.18
 	var radius_sq := 36.0 * 36.0
@@ -2221,10 +2615,20 @@ func _setup_shield() -> void:
 func _handle_shield(delta: float) -> void:
 	var cost := SHIELD_MANA_PER_SEC * delta
 	var bot_wants_shield := _autoplay and _autoplay_wants_shield()
-	var wants := (Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) or bot_wants_shield) and mana >= cost
+	var wants := Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) or bot_wants_shield
+	# Autoplay never bleeds HP into shield drain. _autoplay_wants_shield
+	# already requires mana >= 25, but a frame-edge race could still let
+	# the cost dip into HP — gate it explicitly.
+	if wants and _autoplay and not Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) \
+			and mana < cost:
+		wants = false
 	if wants:
 		_is_shielding = true
-		mana -= cost
+		# Blood-magic rule — shield holds even past empty for manual
+		# play, eating HP. Autoplay path was already gated above.
+		_spend_mana_or_hp(cost)
+		if not is_instance_valid(self):
+			return
 		var aim_pos: Vector2
 		if bot_wants_shield:
 			aim_pos = _autoplay_shield_aim_pos()
@@ -2344,7 +2748,24 @@ func _get_aim_pos() -> Vector2:
 		# like the Architect that are constantly drifting).
 		if w != null and w.wand_shoot_type in ["fire", "beam"]:
 			flight_time = 0.0
-		var aim_target: Vector2 = enemy_pos + enemy_vel * flight_time
+		# Slow-drift bosses (Lich at 80 px/s, Magma at 60 px/s, Architect at
+		# similar) reverse direction every few seconds, so lead-prediction
+		# consistently lands the shot on the wrong side of the enemy. Below
+		# 100 px/s velocity the body is effectively stationary for the
+		# projectile's flight window — aim dead-center instead and hit the
+		# collision circle reliably.
+		var lead := enemy_vel * flight_time
+		if enemy_vel.length() < 100.0:
+			lead = Vector2.ZERO
+		else:
+			# For genuinely fast enemies (chargers, fleeing wizards), still
+			# cap the absolute lead so a sudden course change doesn't push
+			# the aim past the body. 60 px ≈ 4× a typical enemy collision
+			# radius — far enough to lead a sprint, short enough that even
+			# a hard turn keeps the shot on or near the enemy.
+			if lead.length() > 60.0:
+				lead = lead.normalized() * 60.0
+		var aim_target: Vector2 = enemy_pos + lead
 		# `_fire` already skips the backwards-flaw flip for autoplay, so the
 		# returned aim point should be the *real* enemy position. The old
 		# pre-mirror (aim' = 2P - aim) ran on top of that skip and double-
@@ -2390,6 +2811,28 @@ func _wants_shoot() -> bool:
 # any wall on the centreline means the projectile would smack into it —
 # regardless of clearance to either side. The previous "any of 3 parallel
 # rays clears" version was too lenient: when the centre hit a wall but
+# Spends `cost` mana, paying any shortfall in HP at 1:1 ("blood magic").
+# Always returns true — the spell ALWAYS goes off; the player just bleeds
+# for the difference. Non-lethal: an overspend can drop you to 1 HP but
+# never zero — death from overcast was a feel-bad surprise that punished
+# the wrong thing (missing the wisdom check, not the playstyle).
+func _spend_mana_or_hp(cost: float) -> bool:
+	if cost <= 0.0:
+		return true
+	if mana >= cost:
+		mana -= cost
+		return true
+	var shortfall: float = cost - mana
+	mana = 0.0
+	var hp_cost: int = int(ceil(shortfall))
+	health = max(1, health - hp_cost)
+	_update_health_bar()
+	FloatingText.spawn_str(global_position,
+		"-%d HP (mana)" % hp_cost,
+		Color(1.0, 0.40, 0.40),
+		get_tree().current_scene)
+	return true
+
 # Mobile-only auto-engage toggle. Driven by the AUTO button in MobileHUD.
 # Selects + aims + fires at visible enemies; movement remains under the
 # joystick's control. Resets the cached enemy when turning off so the
@@ -2589,6 +3032,44 @@ func _autoplay_bag_has_upgrade(bag: Node) -> bool:
 # Picks the bag worth going to. Filters to bags with actual upgrades, then
 # prefers higher-rarity contents, tie-broken by distance. Skipped bags are
 # excluded so the bot doesn't loop on something it can't fully loot.
+# Interactables the autoplay should route to: shrine, enchant table, sell
+# chest. Each one's body_entered handler runs the auto behavior (Shrine
+# auto-picks a blessing, EnchantTable auto-upgrades the wand, SellChest
+# auto-buys upgrades + sells junk). The bot just needs to walk into range.
+# Per-instance "visited" set so we don't keep pathing back to the same
+# table after the auto-action fired.
+var _autoplay_visited_interactables: Dictionary = {}
+
+func _autoplay_find_nearest_interactable() -> Node2D:
+	var best: Node2D = null
+	var best_d := INF
+	# All in-dungeon interactables join the "interactable" group on _ready
+	# (Shrine, EnchantTable, SellChest). Their body_entered handlers run
+	# the auto behavior — bot just needs to walk into range.
+	for n in get_tree().get_nodes_in_group("interactable"):
+		if not is_instance_valid(n) or not (n is Node2D):
+			continue
+		# Portals (exit + descend) share the interactable tag for bullet
+		# pass-through but aren't valid auto-route targets.
+		if n.is_in_group("portal") or n.is_in_group("exit_portal"):
+			continue
+		# Consumed shrines have _used = true.
+		if "_used" in n and bool(n.get("_used")):
+			continue
+		var nid: int = n.get_instance_id()
+		if _autoplay_visited_interactables.has(nid):
+			continue
+		var n2: Node2D = n as Node2D
+		var d: float = global_position.distance_to(n2.global_position)
+		# Hard range cap — interactables aren't worth crossing the whole
+		# floor for. 600 px ≈ 19 tiles. If the bot's nearby anyway, divert.
+		if d > 600.0:
+			continue
+		if d < best_d:
+			best_d = d
+			best = n2
+	return best
+
 func _autoplay_find_nearest_loot() -> Node2D:
 	var best: Node2D = null
 	var best_score := INF
@@ -2596,6 +3077,11 @@ func _autoplay_find_nearest_loot() -> Node2D:
 		if not is_instance_valid(b):
 			continue
 		if _autoplay_skipped_bags.has(b.get_instance_id()):
+			continue
+		# Player-dropped bags (shift+click in inventory) are off-limits to
+		# autoplay — the human deliberately discarded that item, the bot
+		# shouldn't undo the decision by walking back over it.
+		if b.is_in_group("player_dropped"):
 			continue
 		if not _autoplay_bag_has_upgrade(b):
 			continue
@@ -2618,6 +3104,10 @@ func _autoplay_try_loot() -> void:
 	var resolved_any := false
 	for b in get_tree().get_nodes_in_group("loot_bag"):
 		if not is_instance_valid(b):
+			continue
+		# Skip player-dropped bags so the bot doesn't auto-pick up items
+		# the human just deliberately discarded.
+		if b.is_in_group("player_dropped"):
 			continue
 		if global_position.distance_to((b as Node2D).global_position) > 36.0:
 			continue
@@ -2986,16 +3476,41 @@ func _autoplay_refresh_targets() -> void:
 				goal = loot
 	if goal == null and is_instance_valid(loot):
 		goal = loot
-	# Standard-mode aggro clearance — if the bot was about to head for the
-	# portal but there are still enemies actively chasing/firing at it, pivot
-	# to clear them out first. Skipped during sprint/force-sprint (point of
-	# those modes is to bee-line) and on boss floors (boss already dominates).
-	# Loot detour still wins so the bot can pick up bags on the way to a fight.
+	# Non-sprint full-clear: hunt down every reachable enemy on the floor
+	# before approaching the portal. The bot pivots from portal/loot to
+	# the nearest living regular enemy (bosses go through their own
+	# branch). Aggro clearance is folded into this since the living-enemy
+	# scan already covers the "enemy chasing me" case. Sprint and force-
+	# sprint stick to bee-lining; their shoot loop still fires at visible
+	# enemies along the way (handled separately by _autoplay_enemy).
 	if goal == portal and boss == null \
 			and not _autoplay_sprint and not force_sprint:
-		var aggro_target: Node2D = _autoplay_nearest_aggro_enemy()
-		if aggro_target != null:
-			goal = aggro_target
+		var hunt_target: Node2D = _autoplay_nearest_living_enemy()
+		if hunt_target == null:
+			hunt_target = _autoplay_nearest_aggro_enemy()
+		if hunt_target != null and _autoplay_path_reachable(hunt_target.global_position):
+			goal = hunt_target
+	# Interactable detour — when the bot has nothing more urgent to do
+	# (no boss, no loot, no aggro), divert to the nearest unvisited
+	# shrine / enchant table / sell chest. Their body_entered handlers
+	# auto-trigger the upgrade (free heal, forge/refine, sell-junk +
+	# buy-upgrade), so the bot only needs to walk into range. Sprint
+	# mode and critical-HP sprints skip this so the survival behavior
+	# isn't blocked by a side trip.
+	if goal == portal and boss == null \
+			and not _autoplay_sprint and not force_sprint:
+		# Step 1: mark anything within 50 px as visited. body_entered will
+		# have fired during the previous frames so the auto-action is done.
+		# This prevents the bot from oscillating around an enchant table
+		# triggering forge → out → forge → out and bleeding gold.
+		for n in get_tree().get_nodes_in_group("interactable"):
+			if not is_instance_valid(n) or not (n is Node2D):
+				continue
+			if (n as Node2D).global_position.distance_to(global_position) < 50.0:
+				_autoplay_visited_interactables[(n as Node).get_instance_id()] = true
+		var inter: Node2D = _autoplay_find_nearest_interactable()
+		if is_instance_valid(inter):
+			goal = inter
 	# Wand-aware close-quarters override — for melee, shotgun, or wands whose
 	# projectiles drift / spray erratically, the bot can't reliably hit at
 	# range. When such a wand is equipped and a visible enemy is too far,
@@ -3082,14 +3597,20 @@ func _autoplay_wand_close_range() -> float:
 func _autoplay_nearest_boss() -> Node2D:
 	var best: Node2D = null
 	var best_d: float = INF
-	for b in get_tree().get_nodes_in_group("boss"):
-		if not is_instance_valid(b):
-			continue
-		var nb := b as Node2D
-		var d: float = global_position.distance_to(nb.global_position)
-		if d < best_d:
-			best_d = d
-			best = nb
+	# Treat the portal-sentinel wizard as a boss-priority target. It
+	# locks the portal until killed (Portal._portal_wizard_alive), so
+	# walking past it to the portal just leaves the bot loitering at a
+	# locked exit. Folding the portal_wizard group into the boss scan
+	# makes the bot engage and clear it before pathing to the portal.
+	for grp in ["boss", "portal_wizard"]:
+		for b in get_tree().get_nodes_in_group(grp):
+			if not is_instance_valid(b):
+				continue
+			var nb := b as Node2D
+			var d: float = global_position.distance_to(nb.global_position)
+			if d < best_d:
+				best_d = d
+				best = nb
 	return best
 
 # Nearest enemy that has spotted / been damaged by us (EnemyBase._has_aggro).
@@ -3109,6 +3630,29 @@ func _autoplay_nearest_aggro_enemy() -> Node2D:
 			continue
 		if not bool(e.get("_has_aggro")):
 			continue
+		var ne := e as Node2D
+		var d: float = global_position.distance_to(ne.global_position)
+		if d < best_d:
+			best_d = d
+			best = ne
+	return best
+
+# Nearest enemy on the floor regardless of aggro state — bosses, portal
+# wizards, and previously-blacklisted (wall-clipped) enemies are skipped
+# so the caller doesn't double up on boss handling or chase ghosts. Used
+# by the non-sprint full-clear behaviour: until every regular enemy on the
+# floor is dead, the bot keeps closing on the next one before bee-lining
+# for the portal.
+func _autoplay_nearest_living_enemy() -> Node2D:
+	var best: Node2D = null
+	var best_d: float = INF
+	for e in get_tree().get_nodes_in_group("enemy"):
+		if not is_instance_valid(e):
+			continue
+		if _autoplay_skipped_enemies.has(e.get_instance_id()):
+			continue
+		if (e as Node).is_in_group("boss") or (e as Node).is_in_group("portal_wizard"):
+			continue   # handled by _autoplay_nearest_boss
 		var ne := e as Node2D
 		var d: float = global_position.distance_to(ne.global_position)
 		if d < best_d:
@@ -3229,6 +3773,16 @@ func _autoplay_build_astar() -> void:
 				_astar.set_point_weight_scale(Vector2i(x, y),
 					1.0 + float(wall_neighbors) * 0.65)
 	_astar_world_id = world.get_instance_id()
+
+# External nudge — call when the world geometry changes (secret door opens,
+# breakable wall destroyed) so the bot drops cached pathing and rebuilds
+# against the new state on its next physics tick.
+func _autoplay_invalidate_path() -> void:
+	_astar = null
+	_astar_world_id = 0
+	_autoplay_path = PackedVector2Array()
+	_autoplay_path_idx = 0
+	_autoplay_repath_t = 0.0
 
 # Called by Teleporter.gd when the bot steps on a teleporter pad. Records the
 # world position so the next A* rebuild marks that tile solid, forcing future
@@ -3425,13 +3979,16 @@ func _autoplay_tick(delta: float) -> void:
 			_autoplay_enemy_dmg_t = 0.0
 		else:
 			_autoplay_enemy_dmg_t += delta
-			# Bosses are exempt from the unkillable-watchdog. Their HP pools
-			# are large enough (and their invuln windows long enough) that
-			# a 6 s no-damage stretch is normal mid-fight; blacklisting them
-			# would permanently disengage from the room's main objective and
-			# the bot would never attack them again on the floor.
-			var is_boss_target: bool = (_autoplay_enemy as Node).is_in_group("boss")
-			if _autoplay_enemy_dmg_t > 6.0 and not is_boss_target:
+			# Watchdog-exempt: bosses (long fights are normal) AND the
+			# portal-sentinel wizard (gates the portal — blacklisting
+			# would mean the bot dances around the wizard's shots
+			# forever without ever firing back, which is exactly what
+			# was happening before this exemption).
+			var enemy_node: Node = _autoplay_enemy as Node
+			var is_boss_target: bool = enemy_node.is_in_group("boss")
+			var is_portal_wiz: bool  = enemy_node.is_in_group("portal_wizard")
+			if _autoplay_enemy_dmg_t > 6.0 and not is_boss_target \
+					and not is_portal_wiz:
 				_autoplay_skipped_enemies[_autoplay_enemy.get_instance_id()] = true
 				_autoplay_enemy = null
 				_autoplay_enemy_last_hp = -1
@@ -3439,6 +3996,24 @@ func _autoplay_tick(delta: float) -> void:
 	else:
 		_autoplay_enemy_last_hp = -1
 		_autoplay_enemy_dmg_t = 0.0
+
+	# Force-trigger any secret door we're hovering near. The door's
+	# DetectArea normally fires on body_entered, but we've seen cases
+	# where the bot's collider grazes the StaticBody2D body before the
+	# Area2D registers, leaving the bot pushing against an unopened
+	# door. Polling every tick is cheap (one distance check per door)
+	# and guarantees the bot never sits next to a closed secret door.
+	for door in get_tree().get_nodes_in_group("secret_door"):
+		if not is_instance_valid(door):
+			continue
+		var door_n := door as Node2D
+		if door_n == null:
+			continue
+		if global_position.distance_to(door_n.global_position) <= 56.0:
+			if door.has_method("_trigger_open"):
+				door._trigger_open()
+				_autoplay_invalidate_path()
+				break
 
 	# Update overlays
 	_autoplay_update_overlays()
@@ -3514,53 +4089,24 @@ func _autoplay_update_overlays() -> void:
 func _autoplay_auto_equip() -> void:
 	if InventoryManager == null:
 		return
-	# For each equipment slot, equip the strongest grid item that beats what's
-	# currently slotted. When equipping, the displaced item gets swapped INTO
-	# the grid slot the new one came from — without this, the same wand ends
-	# up referenced by both equipped[] and grid[i], which made debug-randomize
-	# / shrine effects appear to "revert" (the next auto-equip tick re-picked
-	# the still-present grid copy).
+	# Non-wand equipment (hat / robes / feet / ring / necklace) follows the
+	# old "highest-rarity per slot" rule. Wands get a dedicated organizer
+	# (see below) since the bot maintains a 5-wide wand row with a layout
+	# preference: strongest permanent in slot 0, limited-use charge staves
+	# parked in slots 1–4 and burned through preferentially.
 	var dirty := false
 	for i in InventoryManager.grid.size():
 		var item: Item = InventoryManager.grid[i] as Item
 		if item == null:
 			continue
 		var slot := item.get_equip_slot_name()
-		if slot == "":
+		if slot == "" or slot == "wand":
 			continue
 		var current: Item = InventoryManager.equipped.get(slot) as Item
-		var should_equip := false
-		if slot == "wand":
-			# Burn through limited-use wands first — strict preference over
-			# permanent wands regardless of score, since the consumables are
-			# meant to be used and discarded. Among multiple limited wands,
-			# pick the one with the highest score; among permanents, same.
-			var item_limited: bool = item.wand_max_charges > 0
-			var current_limited: bool = current != null and current.wand_max_charges > 0
-			# Hard skip "backwards"-flaw wands. With autoplay's LOS / fire
-			# loop, a backwards wand passes the can-shoot gate and then
-			# fires projectiles 180° away from the target, draining mana
-			# while doing zero damage. Better to keep the current wand
-			# (or even no wand) than to equip this.
-			var item_backwards: bool = "backwards" in item.wand_flaws
-			if item_backwards and current != null:
-				continue
-			if item_limited and not current_limited:
-				should_equip = true
-			elif item_limited and current_limited:
-				should_equip = _wand_score(item) > _wand_score(current)
-			elif not item_limited and not current_limited:
-				should_equip = current == null or _wand_score(item) > _wand_score(current)
-			# else: candidate is permanent and current is limited — keep
-			# using the limited one until it shatters.
-		else:
-			should_equip = current == null or item.rarity > current.rarity
-		if should_equip:
+		if current == null or item.rarity > current.rarity:
 			InventoryManager.equipped[slot] = item
 			InventoryManager.grid[i] = current   # swap (current may be null)
 			dirty = true
-			# Fanfare — announce the bot's pick so the player can see what
-			# it just decided to wield. Color cues rarity (white→gold→purple).
 			var rarity_col: Color = Color(0.85, 0.85, 0.85)
 			if item.rarity == Item.RARITY_RARE:
 				rarity_col = Color(1.0, 0.85, 0.20)
@@ -3568,9 +4114,103 @@ func _autoplay_auto_equip() -> void:
 				rarity_col = Color(0.85, 0.30, 1.00)
 			FloatingText.spawn_str(global_position + Vector2(0.0, -56.0),
 				"★ EQUIP: " + item.display_name, rarity_col, get_tree().current_scene)
+	if _autoplay_organize_wands():
+		dirty = true
 	if dirty:
 		InventoryManager.inventory_changed.emit()
 		update_equip_stats()
+
+# Organises the 5-cell wand row to the bot's preferred layout:
+#   slot 0       → strongest non-limited-use wand the bot is holding
+#   slots 1..4   → limited-use ("charge") wands, sorted by descending score
+# Active wand defaults to the first non-empty charge slot so the bot burns
+# through consumables before reaching for its main hand. Falls back to slot 0
+# (the permanent main wand) when no charges remain.
+# Wands rejected by the "backwards" flaw filter are dropped to the bag (out
+# of the wand row) so they don't clog the limited-priority pipe.
+func _autoplay_organize_wands() -> bool:
+	if InventoryManager == null:
+		return false
+	var slots: int = InventoryManager.WAND_SLOTS
+	# Gather every wand currently in row 0
+	var wands: Array = []
+	for i in slots:
+		var w: Item = InventoryManager.grid[i] as Item
+		if w != null and w.type == Item.Type.WAND \
+				and not ("backwards" in w.wand_flaws):
+			wands.append(w)
+	# Partition by limited-use flag, score-sorted within each bucket
+	var permanents: Array = []
+	var charges: Array = []
+	for w_any in wands:
+		var w_item: Item = w_any
+		if w_item.is_limited_use():
+			charges.append(w_item)
+		else:
+			permanents.append(w_item)
+	permanents.sort_custom(func(a: Item, b: Item) -> bool:
+		return _wand_score(a) > _wand_score(b))
+	charges.sort_custom(func(a: Item, b: Item) -> bool:
+		return _wand_score(a) > _wand_score(b))
+	# Build the desired layout. Permanents get exactly one seat (slot 0);
+	# the rest spill back to the bag. Charges fill slots 1..4 and any
+	# overflow likewise spills to the bag.
+	var desired: Array = []
+	desired.resize(slots)
+	for i in slots:
+		desired[i] = null
+	if not permanents.is_empty():
+		desired[0] = permanents[0]
+	var charge_idx: int = 0
+	for i in range(1, slots):
+		if charge_idx < charges.size():
+			desired[i] = charges[charge_idx]
+			charge_idx += 1
+	# Anything that didn't make the row goes back into the bag.
+	var leftovers: Array = []
+	if permanents.size() > 1:
+		for i in range(1, permanents.size()):
+			leftovers.append(permanents[i])
+	if charge_idx < charges.size():
+		for i in range(charge_idx, charges.size()):
+			leftovers.append(charges[i])
+	# Snapshot current row so we can detect changes without thrashing the
+	# inventory_changed signal on every tick.
+	var changed := false
+	for i in slots:
+		if InventoryManager.grid[i] != desired[i]:
+			InventoryManager.grid[i] = desired[i]
+			changed = true
+	# Push leftovers into the first available bag slots (5..GRID_SIZE-1).
+	# If the bag is full the wand is dropped on the floor — same behaviour
+	# the bot already uses when it can't fit a pickup.
+	for w_left in leftovers:
+		var placed := false
+		for i in range(slots, InventoryManager.grid.size()):
+			if InventoryManager.grid[i] == null:
+				InventoryManager.grid[i] = w_left
+				placed = true
+				changed = true
+				break
+		if not placed:
+			# Bag full — let the wand evaporate rather than clogging the
+			# row. Rare since the bot keeps clearing junk.
+			pass
+	# Active slot — prefer the first non-empty charge slot so charges burn
+	# down before the bot dips into its main wand. This also means firing
+	# logic (which reads equipped["wand"]) gets the charge automatically.
+	var picked_slot: int = 0
+	for i in range(1, slots):
+		if InventoryManager.grid[i] != null \
+				and (InventoryManager.grid[i] as Item).is_limited_use():
+			picked_slot = i
+			break
+	if InventoryManager._active_wand_slot != picked_slot:
+		InventoryManager._active_wand_slot = picked_slot
+		changed = true
+	if changed:
+		InventoryManager._sync_active_wand()
+	return changed
 
 # Heuristic damage-per-second score for a wand. Folds rarity, raw DPS, pierce
 # / ricochet / status-stack bonuses, and flaw penalties so the auto-equipper
@@ -3953,19 +4593,27 @@ func _handle_movement() -> void:
 			direction.x -= 1
 		if Input.is_action_pressed("move_right"):
 			direction.x += 1
-	if direction != Vector2.ZERO:
-		direction = direction.normalized()
+	# Input released → explicit zero. Without this, a chain of multiplications
+	# (direction * speed * mults) still resolves to ZERO, but skipping the
+	# math makes the intent crystal-clear and rules out any float-precision
+	# residue at the cap boundary that could read as "sticky velocity."
+	if direction == Vector2.ZERO:
+		velocity = Vector2.ZERO
+		move_and_slide()
+		return
+	direction = direction.normalized()
 	# Disorient: WASD is mapped to the rotated view, so "up" is up on the spinning screen
 	# (Skip for autoplay — it already produces a world-space direction toward the target)
-	if _disorient_angle != 0.0 and direction != Vector2.ZERO and not _autoplay:
+	if _disorient_angle != 0.0 and not _autoplay:
 		direction = direction.rotated(_disorient_angle)
 	var slow_mult := 0.5 if _slow_timer > 0.0 else 1.0
-	# HASTE floor scales with difficulty — base 30 % bump, +5 % per diff step,
-	# capped so high-tier haste floors don't spiral into 2.5×+ multipliers
-	# that combined with mana-surge buffs put the player at 1800 px/s.
-	var haste_mult: float = 1.0
-	if GameState.has_floor_modifier("haste"):
-		haste_mult = clampf(1.3 + 0.05 * maxf(0.0, GameState.difficulty - 1.0), 1.3, 1.8)
+	# HASTE floor — flat 1.25× bump (was 1.3-1.8 difficulty-scaled). Combined
+	# with the Mana Surge buff (2× speed_multiplier) and gear, the old 1.8
+	# value pinned the velocity at the 600 px/s cap every frame, which read
+	# as "sticky / smooth-too-much" because every direction change ran into
+	# the cap and stopping required the cap to release. 1.25 stays under the
+	# cap in normal play and only binds during the buff window.
+	var haste_mult: float = 1.25 if GameState.has_floor_modifier("haste") else 1.0
 	var agi_bonus := float(GameState.get_stat_bonus("AGI")) * 4.0
 	velocity = direction * (speed + _equip_speed_bonus + agi_bonus) * _speed_multiplier * slow_mult * haste_mult
 	# Hard ceiling on player speed. Past ~600 px/s the bot teleports across
@@ -3984,11 +4632,14 @@ func _handle_movement() -> void:
 func _shatter_wand(wand: Item) -> void:
 	if wand == null:
 		return
-	if InventoryManager.equipped.get("wand") == wand:
-		InventoryManager.equipped["wand"] = null
+	# Clear from grid first (the wand row is the canonical home now), then
+	# re-sync the active-wand pointer so it picks the next held wand. The
+	# old direct equipped["wand"] = null write is unnecessary because the
+	# sync rewrites equipped["wand"] from grid[_active_wand_slot].
 	for i in InventoryManager.grid.size():
 		if InventoryManager.grid[i] == wand:
 			InventoryManager.grid[i] = null
+	InventoryManager._sync_active_wand()
 	InventoryManager.inventory_changed.emit()
 	update_equip_stats()
 	if SoundManager:
@@ -4037,12 +4688,11 @@ func _handle_shooting(delta: float) -> void:
 	if _beam_line:
 		_beam_line.visible = false
 
-	# Fire rate is now DEX-driven. Start from the base cooldown, divide by a
-	# DEX-derived factor, then apply per-wand flaw modifiers (clunky slows,
-	# sloppy speeds up). Wand-specific wand_fire_rate is no longer the
-	# primary rate — DEX is.
-	var dex := float(GameState.get_stat_bonus("DEX"))
-	var actual_rate: float = BASE_FIRE_RATE_DEX / (1.0 + maxf(0.0, dex) * BASE_FIRE_DEX_SCALE)
+	# Each wand carries its own wand_fire_rate. DEX trims that down via
+	# _dex_fire_reduction (5 DEX = -10 ms). Flaws and equipment bonuses
+	# stack on top exactly as before.
+	var actual_rate: float = wand.wand_fire_rate if wand != null else BASE_FIRE_RATE_DEX
+	actual_rate -= _dex_fire_reduction()
 	if wand != null:
 		if "clunky" in wand.wand_flaws:
 			actual_rate *= 2.0   # half rate; +50 % damage handled in _fire
@@ -4060,8 +4710,10 @@ func _handle_shooting(delta: float) -> void:
 		else:
 			mana_cost = BASE_SHOT_MANA_COST
 		mana_cost *= _difficulty_mana_multiplier()
-		if mana >= mana_cost:
-			mana -= mana_cost
+		# Blood-magic rule — _spend_mana_or_hp pays any mana shortfall
+		# in HP, so shooting at empty mana now drains the player instead
+		# of failing silently. Always fires (returns true).
+		if _spend_mana_or_hp(mana_cost):
 			_fire(wand)
 			_shoot_cooldown = actual_rate
 			# Limited-use wands burn a charge per shot. When the meter hits
@@ -4083,12 +4735,12 @@ func _handle_beam(delta: float, wand: Item) -> void:
 		drain *= 2.0
 	drain *= _difficulty_mana_multiplier()
 	var drain_this_frame := drain * delta
-	if mana < drain_this_frame:
-		if _beam_line:
-			_beam_line.visible = false
+	# Blood-magic rule — beam keeps firing past empty mana, draining HP
+	# for the difference. The helper handles the floating-text feedback
+	# and lethality. Holding the beam at empty WILL kill you.
+	_spend_mana_or_hp(drain_this_frame)
+	if not is_instance_valid(self):
 		return
-
-	mana -= drain_this_frame
 
 	_beam_hum_t -= delta
 	if _beam_hum_t <= 0.0:
@@ -4183,14 +4835,11 @@ func _fire(wand: Item = null) -> void:
 			SoundManager.play(sfx, randf_range(0.92, 1.08))
 
 	if wand != null:
-		if "backwards" in wand.wand_flaws:
-			# Autoplay (and mobile auto-combat) neutralize the flip — the
-			# bot effectively pre-aims opposite, so the flaw's reversal
-			# lands the projectile back on the actual target. Without
-			# this, auto-fire wastes mana firing 180° from any visible
-			# enemy.
-			if not (_autoplay or _mobile_auto_combat):
-				base_dir = -base_dir
+		# "backwards" flaw is disabled for now — see ItemDB.flaw_pool. Old
+		# saves / banked wands that still have the flaw stored just behave
+		# normally; nothing here flips the direction. To re-enable, restore
+		# the previous branch (negate base_dir for non-autoplay shots).
+		pass
 		if "erratic" in wand.wand_flaws:
 			base_dir = base_dir.rotated(randf_range(-0.7, 0.7))
 		# Sloppy — shots come out off-target by up to ±13° (≈ ±0.227 rad).
@@ -4219,6 +4868,50 @@ func _fire(wand: Item = null) -> void:
 			dmg_mult *= 1.5
 		if "mana_guzzle" in wand.wand_flaws:
 			dmg_mult *= 2.0
+		# Limited-use (charge) wand burst — every charge fires 13 of the wand's
+		# shoot_type forward in a tight cone with deliberate speed and angle
+		# jitter. Reads as "spent magic", not a sniper rifle. Overrides the
+		# default per-type firing path (including shotgun) so a charge staff
+		# always feels distinctively explosive regardless of element.
+		if wand.is_limited_use():
+			const BURST_COUNT     := 13
+			const BURST_SPREAD_DEG := 6.0    # ±6° cone — accurate but messy
+			const BURST_SPEED_JIT  := 0.18   # ±18 % speed variance
+			var st: String = wand.wand_shoot_type
+			# Shotgun limited-use stays single-pellet per ray so the burst
+			# doesn't balloon to 65 simultaneous projectiles. Other types
+			# round-trip through their normal status / pierce / drift wiring.
+			for i in BURST_COUNT:
+				var ang := deg_to_rad(randf_range(-BURST_SPREAD_DEG, BURST_SPREAD_DEG))
+				var bProj := projectile_scene.instantiate()
+				bProj.global_position = global_position
+				bProj.direction = base_dir.rotated(ang)
+				bProj.set("source", "player")
+				bProj.set("damage", int(round(float(wand.wand_damage + _str_bonus) * dmg_mult)))
+				bProj.set("shoot_type", st)
+				bProj.set("apply_freeze", st == "freeze")
+				bProj.set("apply_burn",   st == "fire")
+				bProj.set("apply_shock",  st == "shock")
+				bProj.set("status_stacks", maxi(1, wand.wand_status_stacks))
+				bProj.set("pierce_remaining",   wand.wand_pierce)
+				bProj.set("ricochet_remaining", wand.wand_ricochet)
+				var bSpd: float = wand.wand_proj_speed * (1.0 + randf_range(-BURST_SPEED_JIT, BURST_SPEED_JIT))
+				if "slow_shots" in wand.wand_flaws:
+					bSpd *= 0.5
+				bProj.set("speed", bSpd)
+				bProj.set("drift_speed", 0.0)
+				bProj.set("player_intelligence", _intel)
+				if st == "fire" and _syn_pyromaniac:
+					bProj.set("fire_patch_upgraded", true)
+				if st == "freeze" and _syn_glacial:
+					bProj.set("glacial_bonus", true)
+				if st == "nova" and _syn_void_lens:
+					bProj.set("void_lens_active", true)
+				if st == "homing" and _syn_assassin_mark:
+					bProj.set("assassin_mark", true)
+				get_tree().current_scene.add_child(bProj)
+			return
+
 		if wand.wand_shoot_type == "shotgun":
 			var spread_total := deg_to_rad(48.0)
 			for i in 5:
@@ -4381,8 +5074,10 @@ func take_damage(amount: int) -> void:
 		return
 	# Higher difficulties make enemies more deadly — scale incoming damage
 	# before shield/DEF so both sources of mitigation apply consistently.
+	# Slope was 0.40 (deep floors one-shot); 0.30 keeps enemies dangerous
+	# without making two-bombers an instant death sentence.
 	var diff_for_dmg: float = GameState.test_difficulty if GameState.test_mode else GameState.difficulty
-	var dmg_mult: float = 1.0 + maxf(0.0, diff_for_dmg - 1.0) * 0.40
+	var dmg_mult: float = 1.0 + maxf(0.0, diff_for_dmg - 1.0) * 0.30
 	if dmg_mult > 1.0:
 		amount = max(1, int(round(float(amount) * dmg_mult)))
 	if _is_shielding:
@@ -4394,8 +5089,24 @@ func take_damage(amount: int) -> void:
 			return
 		else:
 			mana = 0.0  # drain remaining mana, still take the hit
+	# DEF rework: flat-armor model with a small baseline floor. DEF reduces
+	# incoming damage up to 80% when DEF >= incoming damage. Even when DEF
+	# is small relative to the hit, it still grants a baseline 5% chip so
+	# stacking DEF feels worthwhile against deep-floor heavy hits.
+	# Formula: reduction = clamp(0.05 + 0.75 * (DEF / damage), 0, 0.80).
+	# Examples (vs a 10-damage hit):
+	#   DEF  0 →  0% reduction (take 10)  — no DEF, no floor
+	#   DEF  1 → 12.5% reduction (take 9) — floor + tiny scaled bit
+	#   DEF  5 → 42.5% reduction (take 6)
+	#   DEF 10 → 80% reduction (take 2)   — full benefit
+	#   DEF 20 → 80% reduction (take 2)   — capped, no further gain
+	# This gives stat-stacking late-game players reliable mitigation against
+	# chip damage and still some help against the heavy boss hits that used
+	# to overwhelm the previous purely-proportional formula.
 	var def_total: int = GameState.get_stat_bonus("DEF") + _set_def_bonus
-	var damage_reduction: float = clampf(float(def_total) * 0.01, 0.0, 0.5)
+	var damage_reduction: float = 0.0
+	if amount > 0 and def_total > 0:
+		damage_reduction = clampf(0.05 + 0.75 * (float(def_total) / float(amount)), 0.0, 0.80)
 	var reduced: int = max(0, int(round(float(amount) * (1.0 - damage_reduction))))
 	if damage_reduction > 0.0 and reduced < amount:
 		FloatingText.spawn_str(global_position, "-%d%%" % int(damage_reduction * 100.0),
@@ -4828,6 +5539,26 @@ func _build_death_weapon_panel(parent: Node, pos: Vector2, size: Vector2) -> voi
 		})
 	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return int(a["damage"]) > int(b["damage"]))
+
+	# MVP banner — top row of `rows` is the highest-damage shoot type. Color
+	# matches the wand-color scheme from ItemDB so the player can connect
+	# "the chartreuse one" with the wand they're remembering.
+	var mvp: Dictionary = rows[0]
+	var mvp_lbl := Label.new()
+	mvp_lbl.text = "★ WAND MVP: %s — %d dmg / %d kills ★" % [
+		String(mvp["type"]).to_upper(), int(mvp["damage"]), int(mvp["kills"])]
+	mvp_lbl.position = pos + Vector2(0.0, 22.0)
+	mvp_lbl.size = Vector2(size.x, 18.0)
+	mvp_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	mvp_lbl.add_theme_font_size_override("font_size", 13)
+	mvp_lbl.add_theme_color_override("font_color", _shoot_type_color(String(mvp["type"])))
+	mvp_lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	mvp_lbl.add_theme_constant_override("outline_size", 2)
+	parent.add_child(mvp_lbl)
+	# Push the table down to make room for the MVP line.
+	body.position = pos + Vector2(8.0, 44.0)
+	body.size     = Vector2(size.x - 16.0, size.y - 46.0)
+
 	var lines: Array = ["%-9s  %4s  %6s  %2s" % ["TYPE", "KILL", "DMG", "FL"]]
 	for r in rows:
 		var t: String = String(r["type"]).to_upper()
@@ -4835,6 +5566,23 @@ func _build_death_weapon_panel(parent: Node, pos: Vector2, size: Vector2) -> voi
 			t = t.substr(0, 9)
 		lines.append("%-9s  %4d  %6d  %2d" % [t, int(r["kills"]), int(r["damage"]), int(r["floors"])])
 	body.text = "\n".join(lines)
+
+# Per-shoot-type color tag for the MVP callout. Mirrors the palette in
+# ItemDB._wand_color so a chartreuse "shock" MVP matches the wand the
+# player remembers carrying.
+func _shoot_type_color(stype: String) -> Color:
+	match stype:
+		"pierce":   return Color(0.95, 0.95, 0.30)
+		"ricochet": return Color(0.35, 1.00, 0.50)
+		"freeze":   return Color(0.30, 0.75, 1.00)
+		"fire":     return Color(1.00, 0.40, 0.10)
+		"shock":    return Color(0.90, 0.95, 0.30)
+		"beam":     return Color(0.30, 1.00, 0.80)
+		"shotgun":  return Color(1.00, 0.65, 0.20)
+		"homing":   return Color(0.55, 0.30, 1.00)
+		"nova":     return Color(0.85, 0.40, 1.00)
+		"melee":    return Color(0.95, 0.85, 0.55)
+	return Color(0.95, 0.90, 0.85)
 
 func _add_lb_column(parent: Node, title: String, entries: Array, pos: Vector2, highlight_rank: int = -1) -> void:
 	var col_w := 320.0
@@ -4889,10 +5637,12 @@ func update_equip_stats() -> void:
 	_equip_wisdom_bonus     += BASE_WISDOM * sb.get("wisdom_pct", 0.0)
 	_set_def_bonus          = int(sb.get("DEF", 0))
 	new_bonus               += int(sb.get("max_health", 0))
-	# +5 max mana per WIS stat point — investing in WIS now expands the pool
-	# directly, on top of its existing mana-regen contribution.
+	# +5 max mana per MIND stat point. WIS now ONLY drives regen so the
+	# two stats split cleanly: MIND = pool size, WIS = refill rate.
+	# Hats and Apprentice/Wizard robes carry the bulk of MIND; the rest
+	# of the gear leaves it for build choice.
 	max_mana = 100.0 + sb.get("max_mana", 0.0) + _perk_mana_bonus \
-		+ float(GameState.get_stat_bonus("WIS")) * 5.0
+		+ float(GameState.get_stat_bonus("MIND")) * 5.0
 	max_stamina = 100.0 + _perk_stam_bonus + float(GameState.get_stat_bonus("END")) * 4.0
 	_stam_regen_bonus = InventoryManager.get_stat("stam_regen") + sb.get("stam_regen", 0.0)
 
