@@ -11,8 +11,12 @@ const TICK_RATE := 0.8
 const TICK_DMG_BASE    := 4
 const TICK_DMG_PER_INT := 1
 
-const FLAME_F0 := " )( )( ,(\n((()(())\n)(())(((\n  ()((\n   ))"
-const FLAME_F1 := " ,) )(  )\n)(()(()\n((((())(\n  (()((\n   ((  "
+# Flames have the thin tip at the TOP and the wide base at the BOTTOM —
+# matches how a real flame is read top-down (you see the licking tip last
+# from inside the patch). The frames are the previous patterns reversed
+# line-by-line.
+const FLAME_F0 := "   ))\n  ()((\n)(())(((\n((()(())\n )( )( ,("
+const FLAME_F1 := "   ((  \n  (()((\n((((())(\n)(()(()\n ,) )(  )"
 
 var _life: float   = DURATION
 var _tick_t: float = 0.0

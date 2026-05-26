@@ -777,13 +777,19 @@ static func generate_wand(rarity: int = Item.RARITY_COMMON) -> Item:
 		"beam":
 			item.wand_damage    = randi_range(2, 3 + rarity)
 			item.wand_mana_cost = randf_range(11.0, 22.0)   # per second
-	# Legendary tier bonus — pierce + ricochet stack onto whatever shoot
-	# type rolled, no extra mana penalty. Makes "this wand is legendary"
-	# always feel different from the rare/common version of the same
-	# shoot type, even if the headline type is the same.
+	# Legendary tier bonus — ricochet stacks onto every shoot type;
+	# pierce is now restricted to the pierce + beam wands themselves
+	# (other types get only ricochet on legendary).
 	if rarity == Item.RARITY_LEGENDARY:
-		item.wand_pierce   += randi_range(2, 3)
+		if item.wand_shoot_type in ["pierce", "beam"]:
+			item.wand_pierce   += randi_range(2, 3)
 		item.wand_ricochet += randi_range(2, 3)
+	# Strip wand_pierce from any non-pierce / non-beam wand — pierce is now
+	# the pierce-wand's signature stat (and beam's, since beam is already
+	# a piercing line). Other shoot types had it bolted on by the random
+	# affix path above; zeroing here ensures only the intended types pierce.
+	if not item.wand_shoot_type in ["pierce", "beam"]:
+		item.wand_pierce = 0
 
 	# Power score → flaw count
 	var power: float = float(item.wand_damage) * (1.0 / maxf(item.wand_fire_rate, 0.01))

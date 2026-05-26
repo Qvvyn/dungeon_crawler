@@ -16,8 +16,9 @@ extends Node2D
 const RADIUS         := 80.0
 const PULSE_DURATION := 0.45
 
-const FLAME_F0 := " )( )( ,(\n((()(())\n)(())(((\n  ()((\n   ))"
-const FLAME_F1 := " ,) )(  )\n)(()(()\n((((())(\n  (()((\n   ((  "
+# Thin tip at the top, wide base at the bottom — matches FirePatch.
+const FLAME_F0 := "   ))\n  ()((\n)(())(((\n((()(())\n )( )( ,("
+const FLAME_F1 := "   ((  \n  (()((\n((((())(\n)(()(()\n ,) )(  )"
 
 var _pulse_t: float  = 0.0
 var _anim_t: float   = 0.0

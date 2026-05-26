@@ -58,6 +58,12 @@ var _lock_label: Label = null
 # so the player can read what's interactable without seeing the 2D world.
 var _interact_label: Label = null
 
+# Enemy HP bar pool — keyed by enemy instance id. Each entry is a Label3D
+# placed above the enemy's head inside the SubViewport, so the ASCII
+# post-shader pixelates the bar text along with everything else (instead
+# of the bar sitting crisp on the CanvasLayer above the ASCII view).
+var _hp_bars: Dictionary = {}     # enemy_id -> Label3D
+
 # Camera shake — added on top of the normal cam_pos each frame and decays
 # linearly. Driven by `shake(duration, intensity)` from gameplay events the
 # same way Player.camera_shake nudges the 2D Camera2D.
@@ -249,6 +255,17 @@ func register_entity(body: Node2D, glyph: String = "X", color: Color = Color(0.9
 	var bp: Vector2 = body.global_position
 	lbl.position = Vector3(bp.x / TILE_PX, 0.5, bp.y / TILE_PX)
 	_entity_root.add_child(lbl)
+	# Optional in-plane rotation — Label3D billboards align local -Z to the
+	# camera, so rotation.z is the in-plane spin of the glyph. Used by the
+	# pierce projectile to rotate ")" so its curve faces the flight
+	# direction. GDScript treats Vector3 as a value type — you can't assign
+	# to `lbl.rotation.z` directly because the property getter returns a
+	# *copy* of the Vector3 and the modified .z is silently discarded.
+	# Read, mutate, write back.
+	if body.has_meta("fp_rotation_z"):
+		var rot: Vector3 = lbl.rotation
+		rot.z = float(body.get_meta("fp_rotation_z"))
+		lbl.rotation = rot
 	_entities[key] = {
 		"body": body,
 		"label": lbl,
@@ -317,6 +334,21 @@ func _process(delta: float) -> void:
 	_camera.position = cam_pos + shake_offset
 	_camera.look_at(cam_pos + Vector3(aim.x, 0.0, aim.y), Vector3.UP)
 	_player_light.position = cam_pos
+
+	# Auto-register any enemy that's in the "enemy" group but missing from
+	# _entities — about half the enemy scripts (Wizard, all 5 bosses, the
+	# Chaser/Shooter/Sniper/Summoner/Tank/Archer family) extend CharacterBody2D
+	# directly instead of EnemyBase, so they never self-register on _ready.
+	# Without this, those enemies are invisible in FP even though HP bars +
+	# damage still work, which is what produced the "healthbars moving toward
+	# me with no sprite" report. The rig's live-glyph sync reads AsciiChar.text
+	# each frame, so any placeholder glyph works at registration time.
+	for e: Node in get_tree().get_nodes_in_group("enemy"):
+		if not is_instance_valid(e) or not (e is Node2D):
+			continue
+		if _entities.has(e.get_instance_id()):
+			continue
+		register_entity(e as Node2D, "D", Color(0.95, 0.28, 0.22))
 
 	# Entity sync — pull live glyph + status modulate from each body's
 	# AsciiChar each frame so 2-frame animations + status tints carry into FP.
@@ -389,19 +421,43 @@ func _process(delta: float) -> void:
 		var has_status := false
 		var frozen_child := body.get_node_or_null("FrozenBlock") as Label
 		if frozen_child != null and frozen_child.text != "":
-			# Wrap the enemy's current glyph inside an ice frame so the
-			# player can still see *what* they froze, not just an opaque
-			# block. Take the first line only of the live glyph and pad
-			# to a fixed width so the side walls of the ice line up.
-			var inner: String = live_text.split("\n")[0]
-			if inner == "":
-				inner = stored_glyph
-			var pad_target := 4
-			var pad_each: int = (pad_target - inner.length()) / 2
-			var left_pad: String = " ".repeat(maxi(0, pad_each))
-			var right_pad: String = " ".repeat(maxi(0, pad_target - inner.length() - pad_each))
-			var middle: String = left_pad + inner + right_pad
-			live_text = ".====.\n|" + middle + "|\n'===='"
+			# Wrap the enemy's FULL multi-line glyph inside an ice frame
+			# so the player can still read what they froze. The ice frame
+			# now has 5 inner rows so even the tallest enemy silhouettes
+			# (5-row wizard, 3-row shooter, etc) fit cleanly. Each inner
+			# line of the enemy glyph is centered + padded to the frame
+			# width (8 chars between the | side walls).
+			var enemy_lines: PackedStringArray = live_text.split("\n")
+			# Drop trailing empty lines so padding lands consistently.
+			while enemy_lines.size() > 0 and enemy_lines[enemy_lines.size() - 1].strip_edges() == "":
+				enemy_lines.remove_at(enemy_lines.size() - 1)
+			if enemy_lines.size() == 0:
+				enemy_lines = PackedStringArray([stored_glyph])
+			const ICE_INNER_WIDTH: int = 8
+			const ICE_INNER_HEIGHT: int = 5
+			var padded: Array[String] = []
+			for raw_line in enemy_lines:
+				var l: String = String(raw_line)
+				if l.length() > ICE_INNER_WIDTH:
+					l = l.substr(0, ICE_INNER_WIDTH)
+				var pad_each: int = (ICE_INNER_WIDTH - l.length()) / 2
+				var left_pad: String = " ".repeat(maxi(0, pad_each))
+				var right_pad: String = " ".repeat(maxi(0, ICE_INNER_WIDTH - l.length() - pad_each))
+				padded.append("|" + left_pad + l + right_pad + "|")
+			# Top-pad with empty rows so the enemy is vertically centered
+			# inside the 5-row inner space.
+			while padded.size() < ICE_INNER_HEIGHT:
+				var blank: String = "|" + " ".repeat(ICE_INNER_WIDTH) + "|"
+				if padded.size() % 2 == 0:
+					padded.append(blank)
+				else:
+					padded.insert(0, blank)
+			# Trim if the enemy glyph was taller than the inner space.
+			while padded.size() > ICE_INNER_HEIGHT:
+				padded.remove_at(padded.size() - 1)
+			var top_border: String = "." + "=".repeat(ICE_INNER_WIDTH) + "."
+			var bot_border: String = "'" + "=".repeat(ICE_INNER_WIDTH) + "'"
+			live_text = top_border + "\n" + "\n".join(padded) + "\n" + bot_border
 			status_modulate = frozen_child.modulate
 			has_status = true
 		else:
@@ -467,6 +523,10 @@ func _process(delta: float) -> void:
 	# Label (text starts with "[" or matches portal "DEFEAT BOSS" / "DEFEAT
 	# WIZARD" gates). Surface that text on a centered FP CanvasLayer label.
 	_update_interact_hint(pp)
+	# Enemy health bars — project enemy positions to screen and draw a
+	# small bar above each one. Floor is occupied by hazards so bars sit
+	# above the head.
+	_update_enemy_hp_bars()
 
 # Beam wand — draws a chain of "=" billboards from the player position to
 # end_pos2d. Called every frame the beam is firing; clear_beam() hides
@@ -708,37 +768,33 @@ func spawn_chain_arc_2d(from_2d: Vector2, to_2d: Vector2, color: Color,
 	if dist <= 0.01:
 		return
 
-	# v6 — sharp Z-bolt with vertical amplitude that BREAKS THE WALL HEIGHT.
-	# Previous box versions kept midpoints inside 0..1 y, so per-segment
-	# slants only resolved to ~1 ASCII cell of vertical shift and the post-
-	# shader rounded them flat. Cranking VERT_AMP to 2.0 wu means midpoints
-	# can sit well above the ceiling or below the floor; visually it's
-	# fine that the bolt passes through them, and the slants are now steep
-	# enough (~30-45°) to read clearly as diagonal strokes regardless of
-	# from→to distance.
-	const SEGMENTS: int = 3
-	const VERT_AMP: float = 2.0           # ± wu, EXCEEDS playable bounds on purpose
-	const PERP_JITTER: float = 0.30
-	const THICKNESS: float = 0.025
+	# v8 — Line2D inside the SubViewport so the ASCII post-shader pixelates
+	# it along with everything else (the v7 overlay on the CanvasLayer
+	# rendered crisp + clashed with the rest of the FP view's pixelated
+	# aesthetic). Project jagged 3D waypoints to SubViewport-space pixels
+	# via _camera.unproject_position(), then add the Line2D as a child of
+	# the SubViewport — 2D children render after the 3D pass but BEFORE
+	# the SubViewportContainer's shader stage, so the whole image gets
+	# pixelated together.
+	# Each bolt = 2 segments (one midpoint). When the chain hops between
+	# many enemies, N bolts × 4 midpoints used to spray vertical noise
+	# everywhere. One midpoint per bolt is enough to read as "lightning"
+	# without the cluttered zigzag stack.
+	const SEGMENTS: int = 2
+	const VERT_AMP: float = 1.0
+	const PERP_JITTER: float = 0.2
 
-	# Shared material — one tween fades the whole bolt.
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.emission_enabled = true
-	mat.emission = color
-	mat.emission_energy_multiplier = 2.0
+	if _camera == null or not is_instance_valid(_camera):
+		return
+	if _viewport == null or not is_instance_valid(_viewport):
+		return
 
-	# Horizontal perpendicular in the xz plane.
 	var perp := Vector3(-delta.z, 0.0, delta.x)
 	if perp.length() > 0.0:
 		perp = perp.normalized()
 	else:
 		perp = Vector3(1.0, 0.0, 0.0)
 
-	# Waypoints: from, 2 strictly alternating midpoints, to. First sign
-	# randomized per call so consecutive bolts vary orientation.
 	var waypoints: Array[Vector3] = [from_3d]
 	var first_sign: float = 1.0 if randi() % 2 == 0 else -1.0
 	for i in (SEGMENTS - 1):
@@ -747,37 +803,35 @@ func spawn_chain_arc_2d(from_2d: Vector2, to_2d: Vector2, color: Color,
 		var t: float = clampf(base_t + t_nudge, 0.10, 0.90)
 		var pt: Vector3 = from_3d.lerp(to_3d, t)
 		var vert_sign: float = first_sign if i % 2 == 0 else -first_sign
-		var vert_mag: float = VERT_AMP * randf_range(0.80, 1.0)
+		var vert_mag: float = VERT_AMP * randf_range(0.65, 1.0)
 		pt += perp * randf_range(-PERP_JITTER, PERP_JITTER)
 		pt += Vector3.UP * (vert_sign * vert_mag)
 		waypoints.append(pt)
 	waypoints.append(to_3d)
 
-	# Build the 3 segments.
-	var parent := Node3D.new()
-	_world3d.add_child(parent)
-	for i in SEGMENTS:
-		var a: Vector3 = waypoints[i]
-		var b: Vector3 = waypoints[i + 1]
-		var seg_delta := b - a
-		var seg_len := seg_delta.length()
-		if seg_len <= 0.001:
+	var line := Line2D.new()
+	# Thicker line (in SubViewport-pixel space) so the shader's 8-px cells
+	# pick up the bolt as dense bright chars (~1 cell wide).
+	line.width = 2.0
+	line.default_color = color
+	line.antialiased = false
+	line.joint_mode = Line2D.LINE_JOINT_SHARP
+	line.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	line.end_cap_mode = Line2D.LINE_CAP_ROUND
+	for wp in waypoints:
+		if _camera.is_position_behind(wp):
 			continue
-		var mesh_inst := MeshInstance3D.new()
-		var box := BoxMesh.new()
-		box.size = Vector3(THICKNESS, THICKNESS, seg_len)
-		mesh_inst.mesh = box
-		mesh_inst.material_override = mat
-		mesh_inst.position = (a + b) * 0.5
-		var seg_dir := seg_delta / seg_len
-		var look_up := Vector3.UP
-		if absf(seg_dir.dot(Vector3.UP)) > 0.99:
-			look_up = Vector3.RIGHT
-		mesh_inst.look_at(b, look_up)
-		parent.add_child(mesh_inst)
-	var tw := parent.create_tween()
-	tw.tween_property(mat, "albedo_color:a", 0.0, lifetime)
-	tw.tween_callback(parent.queue_free)
+		line.add_point(_camera.unproject_position(wp))
+	if line.get_point_count() < 2:
+		line.queue_free()
+		return
+	# Sibling to _world3d under the SubViewport — the SubViewport renders
+	# all its children, and the post-shader is applied to the final
+	# composited image, so the Line2D gets pixelated alongside the 3D.
+	_viewport.add_child(line)
+	var tw := line.create_tween()
+	tw.tween_property(line, "modulate:a", 0.0, lifetime)
+	tw.tween_callback(line.queue_free)
 
 # ── Per-emitter persistent warning ring ──────────────────────────────────────
 # Mirrors the grenadier's 2D Polygon2D + Line2D danger zone. Each emitter
@@ -876,6 +930,73 @@ func _refresh_lock_label() -> void:
 		add_child(_lock_label)
 	_lock_label.visible = true
 
+# Place a Label3D above each damaged enemy's head with a 10-cell bar made of
+# = (filled) and - (empty) chars. Lives inside _world3d so the ASCII post-
+# shader pixelates it along with everything else, giving the bar the same
+# look as the rest of the FP view.
+const _HP_BAR_CELLS: int = 10
+func _update_enemy_hp_bars() -> void:
+	if _world3d == null or not is_instance_valid(_world3d):
+		return
+	var alive_keys: Dictionary = {}
+	var tree := get_tree()
+	if tree == null:
+		return
+	for e: Node in tree.get_nodes_in_group("enemy"):
+		if not is_instance_valid(e) or not (e is Node2D):
+			continue
+		var enemy_2d: Node2D = e as Node2D
+		var max_hp_v: Variant = enemy_2d.get("max_health")
+		var hp_v: Variant = enemy_2d.get("health")
+		if not (max_hp_v is int) or not (hp_v is int) or int(max_hp_v) <= 0:
+			continue
+		var ratio: float = clampf(float(hp_v) / float(max_hp_v), 0.0, 1.0)
+		# Hide full-HP bars — only show once the player has dealt damage.
+		if ratio >= 0.999:
+			continue
+		var filled: int = clampi(int(round(float(_HP_BAR_CELLS) * ratio)), 0, _HP_BAR_CELLS)
+		var bar_text: String = "=".repeat(filled) + "-".repeat(_HP_BAR_CELLS - filled)
+		var key := enemy_2d.get_instance_id()
+		alive_keys[key] = true
+		var lbl: Label3D = _hp_bars.get(key) as Label3D
+		if lbl == null or not is_instance_valid(lbl):
+			lbl = Label3D.new()
+			lbl.font = MonoFont.get_font()
+			lbl.font_size = 64
+			lbl.outline_size = 8
+			lbl.pixel_size = 0.005
+			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			lbl.no_depth_test = false
+			lbl.shaded = false
+			lbl.double_sided = true
+			lbl.outline_modulate = Color(0, 0, 0, 1)
+			lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
+			_world3d.add_child(lbl)
+			_hp_bars[key] = lbl
+		lbl.text = bar_text
+		# Sit above the enemy's head — entities default to y=0.55 chest
+		# height, so 1.05 puts the bar clearly above the silhouette without
+		# clipping the ceiling at y=1.0.
+		lbl.position = Vector3(
+			enemy_2d.global_position.x / TILE_PX,
+			1.05,
+			enemy_2d.global_position.y / TILE_PX
+		)
+		# Green → yellow → red as HP drops.
+		if ratio > 0.6:
+			lbl.modulate = Color(0.30, 1.0, 0.30)
+		elif ratio > 0.3:
+			lbl.modulate = Color(1.0, 0.85, 0.20)
+		else:
+			lbl.modulate = Color(1.0, 0.30, 0.20)
+	# Reap stale (dead) bars.
+	for key in _hp_bars.keys():
+		if not alive_keys.has(key):
+			var stale_lbl: Label3D = _hp_bars[key] as Label3D
+			if is_instance_valid(stale_lbl):
+				stale_lbl.queue_free()
+			_hp_bars.erase(key)
+
 # Pulls the best "[E] …" hint off any nearby registered interactable and
 # floats it on the FP CanvasLayer. Most interactables already toggle their
 # own 2D Label.visible on body_entered/exited; we just mirror it here.
@@ -943,16 +1064,40 @@ func _scan_hint_text(body: Node) -> String:
 			return t
 	return ""
 
-# Floating damage / status text — drifts up over `lifetime` and fades. Used
-# by FloatingText.spawn / spawn_str to surface damage numbers, CRIT/SHATTER
-# callouts, gold pickups, etc. in FP.
+# Floating damage / status text — rendered as a 2D Label on the FP CanvasLayer
+# directly (bypassing the ASCII post-shader) so the text stays sharp +
+# legible at any distance. Position projects from the 3D world point each
+# frame the camera might move, but for short-lived text we just project
+# once at spawn and tween upward in screen space.
 func spawn_floating_text(pos_2d: Vector2, text: String, color: Color,
 		lifetime: float = 0.85, y: float = 0.65) -> void:
-	if not visible or _world3d == null or not is_instance_valid(_world3d):
+	if not visible or _camera == null or not is_instance_valid(_camera):
 		return
-	var start := Vector3(pos_2d.x / TILE_PX, y, pos_2d.y / TILE_PX)
-	var end := start + Vector3(0.0, 0.55, 0.0)
-	_spawn_fx_label(start, text, color, 0.009, end, lifetime)
+	var world_pos := Vector3(pos_2d.x / TILE_PX, y, pos_2d.y / TILE_PX)
+	if _camera.is_position_behind(world_pos):
+		return
+	var screen_pos: Vector2 = _camera.unproject_position(world_pos)
+	# Scale font size by distance so close hits read prominent but far
+	# hits don't overlap each other into illegible mush.
+	var d := _camera.global_position.distance_to(world_pos)
+	var font_size: int = clampi(int(round(28.0 - d * 1.8)), 14, 28)
+	var lbl := Label.new()
+	lbl.text = text
+	lbl.add_theme_font_override("font", MonoFont.get_font())
+	lbl.add_theme_font_size_override("font_size", font_size)
+	lbl.add_theme_color_override("font_color", color)
+	lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1))
+	lbl.add_theme_constant_override("outline_size", 3)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.size = Vector2(160, 28)
+	lbl.position = screen_pos - Vector2(80, 14)
+	lbl.z_index = 7
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(lbl)
+	var tw := lbl.create_tween()
+	tw.tween_property(lbl, "position", lbl.position + Vector2(0, -60), lifetime)
+	tw.parallel().tween_property(lbl, "modulate:a", 0.0, lifetime)
+	tw.tween_callback(lbl.queue_free)
 
 # Trigger a camera shake — `intensity` is in world units (one tile = 1.0).
 # Caller passes the same duration the 2D camera_shake uses; the rig converts

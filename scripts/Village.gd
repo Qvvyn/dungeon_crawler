@@ -24,6 +24,15 @@ func _ready() -> void:
 	# doesn't try to fight nothing or save state on idle frames.
 	GameState.test_mode = false
 	GameState.in_hub = true
+	# Village is a 2D-only hub — no grid, no enemies, no FP rig setup. If
+	# the player entered while in a first-person mode (descended to village
+	# from a dungeon they were exploring in FP), force back to top-down so
+	# Player input + FP-only render code doesn't get applied to a scene
+	# that has no FP rig. The rig pointer also gets cleared since the
+	# previous World rig was freed with the dungeon scene.
+	GameState.active_rig = null
+	if GameState.render_mode != GameState.RenderMode.TOPDOWN:
+		GameState.set_render_mode(GameState.RenderMode.TOPDOWN)
 	_build_floor()
 	_build_walls()
 	_build_title()

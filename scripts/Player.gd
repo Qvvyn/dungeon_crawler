@@ -2423,7 +2423,14 @@ func _input(event: InputEvent) -> void:
 			# Cycle render mode: TOP-DOWN → FP shader → FP raycaster → TOP-DOWN.
 			# Persists across sessions via GameState.save_settings; World/Player/
 			# EnemyBase/Projectile all listen for render_mode_changed to swap
-			# their visuals.
+			# their visuals. Blocked while in the village hub since the hub
+			# scene doesn't construct FP rigs.
+			if GameState.in_hub:
+				FloatingText.spawn_str(global_position + Vector2(0.0, -32.0),
+					"VIEW LOCKED IN VILLAGE",
+					Color(0.85, 0.7, 0.4), get_tree().current_scene)
+				get_viewport().set_input_as_handled()
+				return
 			GameState.cycle_render_mode()
 			GameState.save_settings()
 			FloatingText.spawn_str(global_position + Vector2(0.0, -32.0),
@@ -5122,11 +5129,50 @@ func _fire(wand: Item = null) -> void:
 				projectile.direction = base_dir
 			get_tree().current_scene.add_child(projectile)
 
+# FP melee auto-aim — pick the closest enemy within ~160 px (5 tiles) along
+# the player's current aim direction. Falls back to a fixed point in front
+# of the player when no enemy is in range so the player still gets a swing
+# animation + mana cost feedback even on a whiff.
+func _melee_auto_aim_pos() -> Vector2:
+	var aim := get_aim_direction() if has_method("get_aim_direction") else Vector2.RIGHT
+	if aim.length() == 0.0:
+		aim = Vector2.RIGHT
+	var best: Node2D = null
+	var best_score := 1e9
+	const MAX_RANGE: float = 160.0
+	for e: Node in get_tree().get_nodes_in_group("enemy"):
+		if not is_instance_valid(e) or not (e is Node2D):
+			continue
+		var to_e: Vector2 = (e as Node2D).global_position - global_position
+		var dist := to_e.length()
+		if dist > MAX_RANGE:
+			continue
+		# Score = distance + angle penalty so enemies in front of the
+		# crosshair win over enemies behind/perpendicular.
+		var dot: float = aim.dot(to_e.normalized())
+		if dot < 0.20:   # ~78° from aim direction — outside the swing cone
+			continue
+		var score := dist * (2.0 - dot)
+		if score < best_score:
+			best_score = score
+			best = e as Node2D
+	if best != null:
+		return best.global_position
+	return global_position + aim * 32.0
+
 func _fire_melee(wand: Item, _base_dir: Vector2) -> void:
 	# Strike lands wherever the cursor is — the fist wand reaches as far as
 	# the player aims, no MAX_REACH cap. Mana cost still gates spam.
 	var radius  := 48.0
-	var hit_pos := _get_aim_pos()
+	var hit_pos: Vector2
+	# In FP there's no mouse cursor in the world — auto-target the closest
+	# enemy along the player's facing direction within ~5 tiles (no MAX
+	# cap, but a soft auto-aim window so the swing lands where the camera
+	# is pointing). 2D play keeps the cursor-driven hit_pos.
+	if GameState.render_mode != GameState.RenderMode.TOPDOWN:
+		hit_pos = _melee_auto_aim_pos()
+	else:
+		hit_pos = _get_aim_pos()
 
 	@warning_ignore("integer_division")
 	var intel  := clampi(1 + (GameState.level - 1) / 2, 1, 8)
@@ -5271,9 +5317,8 @@ func take_damage(amount: int) -> void:
 	if amount > 0 and def_total > 0:
 		damage_reduction = clampf(0.05 + 0.75 * (float(def_total) / float(amount)), 0.0, 0.80)
 	var reduced: int = max(0, int(round(float(amount) * (1.0 - damage_reduction))))
-	if damage_reduction > 0.0 and reduced < amount:
-		FloatingText.spawn_str(global_position, "-%d%%" % int(damage_reduction * 100.0),
-			Color(0.3, 0.8, 1.0), get_tree().current_scene)
+	# Block percent callout removed — the actual damage number is enough
+	# feedback, the "-80%" floater was visual noise.
 	amount = reduced
 	if amount <= 0:
 		return

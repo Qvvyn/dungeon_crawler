@@ -9,7 +9,9 @@ extends Label
 # Designed as a single Label attached directly to the enemy's CharacterBody2D
 # so positioning rides along with movement (e.g. boss kited while frozen).
 
-const ICE_GLYPH := ".======.\n|      |\n|      |\n'======'"
+# Bigger frame so even multi-line enemy silhouettes (wizard, magma slug,
+# shooter) sit comfortably inside the ice block instead of popping out.
+const ICE_GLYPH := ".========.\n|        |\n|        |\n|        |\n|        |\n|        |\n'========'"
 
 static var _shared_font: Font = null
 
@@ -38,13 +40,12 @@ func _ready() -> void:
 	add_theme_constant_override("outline_size", 2)
 	horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
-	# Box generous enough to contain even multi-line glyphs (shooter, spider).
-	# Centered alignment keeps the ice frame lined up around the entity's
-	# origin regardless of which sprite size the host enemy uses.
-	offset_left   = -42.0
-	offset_top    = -34.0
-	offset_right  =  42.0
-	offset_bottom =  34.0
+	# Box generous enough to contain even multi-line glyphs (shooter, spider,
+	# wizard). Expanded vertically since the ice frame is now 7 rows tall.
+	offset_left   = -56.0
+	offset_top    = -52.0
+	offset_right  =  56.0
+	offset_bottom =  52.0
 	text = ICE_GLYPH
 	modulate.a = 0.92
 	# z_index 1 sits behind the enemy's AsciiChar (z_index 2) so the entity

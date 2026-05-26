@@ -131,13 +131,19 @@ func _ready() -> void:
 						glyph = "*"
 						color = Color(0.55, 0.92, 1.0)
 					"shock":
-						# Round bolt-head matches the other projectile shapes
-						# (homing, ricochet, etc) — pale blue distinguishes it.
-						glyph = "o"
+						# Zigzag glyph reads as crackling lightning even
+						# in motion — pale blue body color matches the 2D
+						# ShockZap Line2D.
+						glyph = "\\/\\"
 						color = Color(0.55, 0.85, 1.0)
 					"pierce":
-						glyph = "-"
+						# "/-\" reads as a horizontal arch shape natively —
+						# no rotation needed. BILLBOARD_ENABLED overwrites
+						# any local rotation anyway, so we pre-bake the
+						# orientation into the glyph instead.
+						glyph = "/-\\"
 						color = Color(0.25, 0.60, 1.0)
+						set_meta("fp_pixel_size", 0.014)
 					"ricochet":
 						glyph = "o"
 						color = Color(0.20, 1.0, 0.35)
@@ -201,8 +207,24 @@ func _apply_visual() -> void:
 			lbl.text = "*"
 			lbl.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
 		"pierce":
-			lbl.text = "-"
+			# Wide forward arc — ")" naturally has convex on the right side,
+			# so under the Area2D's direction-aligned rotation the curve
+			# always points along the flight direction (right→forward,
+			# up→up, etc) for any 360° heading. No extra local rotation
+			# needed; "(" with rotation only put the curve on top/bottom,
+			# not forward.
+			lbl.text = ")"
+			lbl.add_theme_font_size_override("font_size", 36)
+			lbl.offset_left   = -18.0
+			lbl.offset_top    = -18.0
+			lbl.offset_right  =  18.0
+			lbl.offset_bottom =  18.0
 			lbl.add_theme_color_override("font_color", Color(0.25, 0.60, 1.0))
+			# Bigger collision rect — the visual width should match the hit
+			# area so the arc feels like it actually sweeps a wide arc.
+			var cshape := get_node_or_null("CollisionShape2D") as CollisionShape2D
+			if cshape != null and cshape.shape is RectangleShape2D:
+				(cshape.shape as RectangleShape2D).size = Vector2(24, 24)
 		"ricochet":
 			lbl.text = "o"
 			lbl.add_theme_color_override("font_color", Color(0.15, 1.0, 0.28))
@@ -500,14 +522,14 @@ func _on_body_entered(body: Node2D) -> void:
 			return
 		if ricochet_remaining > 0:
 			ricochet_remaining -= 1
-			# No bounce cooldown needed here — _hit_entities is cleared
-			# below so the projectile can re-strike, and the enemy is a
-			# CharacterBody2D not a wall (the wall dedup tracker is
-			# unrelated). Removing the old _bounce_cd entirely so fast
-			# elemental wands bounce off walls reliably.
+			# Bounce direction = away from enemy center; push the projectile
+			# clear of the enemy so the area shapes don't re-trigger this
+			# tick. Position offset scales with enemy size (~20 px collision
+			# radius for most foes) plus per-frame travel.
 			var bnormal := (global_position - body.global_position).normalized()
 			if bnormal == Vector2.ZERO:
 				bnormal = direction.rotated(PI)
+			global_position = body.global_position + bnormal * 26.0
 			direction = direction.bounce(bnormal)
 			rotation = direction.angle()
 			# Allow this projectile to re-hit the same enemy after the bounce.
@@ -762,9 +784,12 @@ func _on_area_entered(area: Area2D) -> void:
 # the impact / burst code below from re-checking the rig pointer at every
 # call site.
 func _fp_burst(pos: Vector2, glyph: String, color: Color, count: int,
-		spread: float = 0.55, lifetime: float = 0.20,
+		spread: float = 0.30, lifetime: float = 0.18,
 		direction: Vector2 = Vector2.ZERO, cone: float = TAU,
-		pixel_size: float = 0.010, y: float = 0.50) -> void:
+		pixel_size: float = 0.004, y: float = 0.12) -> void:
+	# Defaults are deliberately small + ground-level so impact bursts read
+	# at the enemy's feet, NOT as central screen-filling flashes. Spread
+	# tight (0.30 wu radius) so sparks stay grouped near the hit point.
 	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
 			and GameState.active_rig.has_method("spawn_burst_2d"):
 		GameState.active_rig.spawn_burst_2d(pos, glyph, color, count, spread,
