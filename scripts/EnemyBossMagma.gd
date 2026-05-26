@@ -81,6 +81,7 @@ func _ready() -> void:
 	add_child(cshape)
 
 	_lbl = Label.new()
+	_lbl.name = "AsciiChar"   # so the FP rig's live-glyph sync finds it
 	var mono := MonoFont.get_font()
 	_lbl.add_theme_font_override("font", mono)
 	_lbl.add_theme_font_size_override("font_size", 22)

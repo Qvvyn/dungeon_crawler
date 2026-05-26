@@ -40,6 +40,11 @@ var _hit_entities: Array     = []   # instance IDs already struck (pierce/chain 
 # re-hits in the same arc, and a different collider always allows a
 # bounce regardless of how recent the last one was.
 var _last_bounce_collider_id: int = 0
+# Physics frame the last bounce happened on. Used to distinguish the
+# legitimate same-frame body_entered fire that follows a CCD bounce (silent
+# skip — same wall, same physics tick) from a later-frame collision that's
+# genuinely a new hit (consume ricochet or die).
+var _last_bounce_phys_frame: int = -1
 # Tracks distance traveled since the last wall bounce. Once we've cleared a
 # small margin (~12 px) the dedup ID is wiped, so a projectile that ricochets
 # off the same long horizontal wall twice in a row — e.g. bouncing off the
@@ -131,19 +136,18 @@ func _ready() -> void:
 						glyph = "*"
 						color = Color(0.55, 0.92, 1.0)
 					"shock":
-						# Zigzag glyph reads as crackling lightning even
-						# in motion — pale blue body color matches the 2D
-						# ShockZap Line2D.
-						glyph = "\\/\\"
+						# "z" head + the set_shock_zap crackle trail. Same
+						# split as the 2D version (hidden AsciiChar + Line2D
+						# ShockZap), just rendered in FP.
+						glyph = "z"
 						color = Color(0.55, 0.85, 1.0)
 					"pierce":
-						# "/-\" reads as a horizontal arch shape natively —
-						# no rotation needed. BILLBOARD_ENABLED overwrites
-						# any local rotation anyway, so we pre-bake the
-						# orientation into the glyph instead.
-						glyph = "/-\\"
+						# Use unicode arc directly — JetBrainsMono supports
+						# it. No rotation needed; the glyph already reads as
+						# a forward-facing arch.
+						glyph = "⌒"
 						color = Color(0.25, 0.60, 1.0)
-						set_meta("fp_pixel_size", 0.014)
+						set_meta("fp_pixel_size", 0.018)
 					"ricochet":
 						glyph = "o"
 						color = Color(0.20, 1.0, 0.35)
@@ -292,6 +296,16 @@ func _physics_process(delta: float) -> void:
 					var px := -12.0 + 24.0 * t
 					var py := 0.0 if i == 0 or i == 6 else randf_range(-5.5, 5.5)
 					zap.add_point(Vector2(px, py))
+			# FP zap — same every-other-tick cadence, but rendered as a
+			# Line2D inside the rig's SubViewport so the ASCII post-shader
+			# pixelates the crackle alongside the rest of the world. Fire-
+			# and-forget: each tick spawns a fresh ~0.12s Line2D that
+			# auto-fades, no pool to leak.
+			if GameState.render_mode != GameState.RenderMode.TOPDOWN \
+					and GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+					and GameState.active_rig.has_method("spawn_shock_zap"):
+				GameState.active_rig.spawn_shock_zap(global_position, direction,
+					Color(0.55, 0.85, 1.0))
 
 	if shoot_type == "homing":
 		if not is_instance_valid(_homing_target):
@@ -355,26 +369,24 @@ func _physics_process(delta: float) -> void:
 				wall_c.take_damage(damage)
 			queue_free()
 			return
-		# Per-collider dedup, but only short-term — _dist_since_bounce wipes
-		# it once the projectile has moved clear (see end of _physics_process)
-		# so a long horizontal wall that the bullet glances off twice in the
-		# same flight still produces two bounces, not just one.
+		# CCD runs once per physics frame, so a same-wall hit here is always
+		# a new tick (we already bounced off this wall on a previous frame
+		# and didn't escape, OR we're hitting it for the first time). Treat
+		# both as a normal collision: bounce if ricochet remains, else die.
+		# The "stuck against the wall" case dies naturally when ricochet
+		# runs out instead of looping silently in place.
 		var wall_id: int = wall_c.get_instance_id()
-		if ricochet_remaining > 0 and wall_id != _last_bounce_collider_id:
+		if ricochet_remaining > 0:
 			ricochet_remaining -= 1
 			_last_bounce_collider_id = wall_id
+			_last_bounce_phys_frame = Engine.get_physics_frames()
 			_dist_since_bounce = 0.0
 			var hit_pos: Vector2 = hit.get("position") as Vector2
 			var normal: Vector2  = hit.get("normal")  as Vector2
-			# Push out along the wall normal by a distance scaled to per-
-			# frame travel so fast shots (shock at 1.7× speed) don't land
-			# back inside the wall next frame.
-			var push: float = maxf(8.0, speed * delta * 0.5)
+			var push: float = maxf(16.0, speed * delta * 0.75)
 			global_position = hit_pos + normal * push
 			direction = direction.bounce(normal)
 			rotation = direction.angle()
-			# Wall bounces also clear the per-hit tracker so a ricochet
-			# can re-damage an enemy it pierced earlier in the same shot.
 			_hit_entities.clear()
 		else:
 			queue_free()
@@ -415,20 +427,23 @@ func _on_body_entered(body: Node2D) -> void:
 				body.take_damage(damage)
 			queue_free()
 			return
-		# Per-collider dedup matches the CCD path. Slow-projectile fallback
-		# — body_entered doesn't ship a normal, so reconstruct one from the
-		# projectile's position relative to the wall's collision rect. The
-		# old "flip the dominant motion axis" heuristic was wrong at shallow
-		# angles against parallel walls (e.g. a near-horizontal shot grazing
-		# a horizontal wall flipped X instead of Y, sending the bullet back
-		# along its incoming path).
+		# body_entered fires AFTER physics integration. The most common case
+		# is: CCD bounced this wall this frame, physics integration noticed
+		# the new overlap, body_entered fires for the *same* wall in the
+		# *same* physics frame. That should silently skip (the bounce
+		# already happened). Different-frame same-wall hits are real
+		# collisions — fall through to bounce-or-die.
 		var wall_id: int = body.get_instance_id()
-		if ricochet_remaining > 0 and wall_id != _last_bounce_collider_id:
+		if wall_id == _last_bounce_collider_id \
+				and Engine.get_physics_frames() == _last_bounce_phys_frame:
+			return
+		if ricochet_remaining > 0:
 			ricochet_remaining -= 1
 			_last_bounce_collider_id = wall_id
+			_last_bounce_phys_frame = Engine.get_physics_frames()
 			_dist_since_bounce = 0.0
 			var wall_normal := _normal_for_wall(body)
-			global_position += wall_normal * 8.0
+			global_position += wall_normal * 16.0
 			direction = direction.bounce(wall_normal)
 			rotation = direction.angle()
 			_hit_entities.clear()
@@ -784,12 +799,12 @@ func _on_area_entered(area: Area2D) -> void:
 # the impact / burst code below from re-checking the rig pointer at every
 # call site.
 func _fp_burst(pos: Vector2, glyph: String, color: Color, count: int,
-		spread: float = 0.30, lifetime: float = 0.18,
+		spread: float = 0.25, lifetime: float = 0.18,
 		direction: Vector2 = Vector2.ZERO, cone: float = TAU,
-		pixel_size: float = 0.004, y: float = 0.12) -> void:
-	# Defaults are deliberately small + ground-level so impact bursts read
-	# at the enemy's feet, NOT as central screen-filling flashes. Spread
-	# tight (0.30 wu radius) so sparks stay grouped near the hit point.
+		pixel_size: float = 0.003, y: float = 0.05) -> void:
+	# Defaults are deliberately small + floor-level so impact bursts read
+	# AT the enemy's feet on the 3D floor, NOT as central screen-filling
+	# flashes. Spread tight so sparks stay grouped near the hit point.
 	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
 			and GameState.active_rig.has_method("spawn_burst_2d"):
 		GameState.active_rig.spawn_burst_2d(pos, glyph, color, count, spread,
@@ -1072,9 +1087,10 @@ func _spawn_death_pop(pos: Vector2) -> void:
 		tw.tween_property(c, "position", target, 0.30)
 		tw.parallel().tween_property(c, "modulate:a", 0.0, 0.30)
 		tw.tween_callback(c.queue_free)
-	# FP mirror — radial 4-way burst at chest height. Drift radius matches
-	# the 2D version (~0.6 wu = 20 px) so the visual scale reads the same.
+	# FP mirror — single "x" at chest height to replace the enemy character
+	# on death. No * burst (EffectFx.spawn_death_pop also drops a slower x
+	# fade so the two layer cleanly).
 	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
 			and GameState.active_rig.has_method("spawn_burst_2d"):
-		GameState.active_rig.spawn_burst_2d(pos, "*", col, 4, 0.7, 0.30,
-			Vector2.ZERO, TAU, 0.011, 0.50)
+		GameState.active_rig.spawn_burst_2d(pos, "x", col, 1, 0.0, 0.30,
+			Vector2.ZERO, TAU, 0.011, 0.55)

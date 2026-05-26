@@ -72,6 +72,7 @@ func _ready() -> void:
 	add_child(cshape)
 
 	_lbl = Label.new()
+	_lbl.name = "AsciiChar"   # so the FP rig's live-glyph sync finds it
 	_lbl.add_theme_font_override("font", MonoFont.get_font())
 	_lbl.add_theme_font_size_override("font_size", 24)
 	_lbl.add_theme_constant_override("line_separation", -3)

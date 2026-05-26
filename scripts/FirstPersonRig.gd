@@ -45,6 +45,17 @@ const MELEE_LIFE: float = 0.18
 # beam-sweeping enemies can fire concurrently without trampling each other's
 # dots. Each entry is an Array[Label3D] of pooled glyphs along the path.
 var _enemy_beam_pools: Dictionary = {}
+
+# (Shock zap is now fire-and-forget — each tick spawns a brief Line2D that
+# fades + queue_frees itself, no per-emitter pool. The old pooled approach
+# left orphaned lines when projection failed at projectile-near-camera
+# spawn frames.)
+
+# Floating combat text tracks its source world position each frame so the
+# text stays anchored to the enemy as the camera moves — was tweening the
+# screen-space position once at spawn, which made the text drift off the
+# enemy if the camera turned. Each entry: {label, world_pos, age, lifetime, drift_y}.
+var _floating_texts: Array = []
 # Per-emitter persistent warning ring (grenadier danger zone).
 var _enemy_warning_pools: Dictionary = {}
 # Lock-on warning — multiple turrets can lock the player at once; we just
@@ -255,14 +266,14 @@ func register_entity(body: Node2D, glyph: String = "X", color: Color = Color(0.9
 	var bp: Vector2 = body.global_position
 	lbl.position = Vector3(bp.x / TILE_PX, 0.5, bp.y / TILE_PX)
 	_entity_root.add_child(lbl)
-	# Optional in-plane rotation — Label3D billboards align local -Z to the
-	# camera, so rotation.z is the in-plane spin of the glyph. Used by the
-	# pierce projectile to rotate ")" so its curve faces the flight
-	# direction. GDScript treats Vector3 as a value type — you can't assign
-	# to `lbl.rotation.z` directly because the property getter returns a
-	# *copy* of the Vector3 and the modified .z is silently discarded.
-	# Read, mutate, write back.
+	# Optional in-plane rotation. BILLBOARD_ENABLED is a FULL billboard that
+	# rebuilds the basis each frame, wiping any local rotation. BILLBOARD_FIXED_Y
+	# only billboards around Y, leaving rotation.z (in-plane spin) intact —
+	# which is what we need for the pierce projectile's rotated ")".
+	# GDScript Vector3 is value-type: read, mutate, write back, don't assign
+	# to lbl.rotation.z directly.
 	if body.has_meta("fp_rotation_z"):
+		lbl.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
 		var rot: Vector3 = lbl.rotation
 		rot.z = float(body.get_meta("fp_rotation_z"))
 		lbl.rotation = rot
@@ -395,22 +406,22 @@ func _process(delta: float) -> void:
 			ascii_child = body.get_node_or_null("AsciiArt")
 		if ascii_child != null and ascii_child is Label:
 			var al: Label = ascii_child as Label
-			if al.text != "":
-				# Multi-line allowed by default for bodies (enemies have rich
-				# silhouettes — wizard hat + face + robes etc — that should
-				# read in FP, not be stripped to their first line). The
-				# pixel_size auto-scale below shrinks tall glyphs to fit
-				# within wall height. Projectiles still strip to first line
-				# unless they opt in via fp_multiline.
-				var kind: String = entry.get("kind", "body")
-				var allow_multiline: bool = bool(body.get_meta("fp_multiline", false)) \
-						or kind == "body"
-				if allow_multiline:
-					live_text = al.text
-				else:
-					var first_line: String = al.text.split("\n")[0]
-					if first_line.strip_edges() != "":
-						live_text = first_line
+			# Live text sync — only for body-kind entities. Projectiles set
+			# their AsciiChar.text once in _apply_visual (e.g. pierce writes
+			# ")" for 2D); reading that here would clobber the FP-specific
+			# stored_glyph (e.g. "/-\" for pierce). Modulate is still synced
+			# for all kinds so status tints + projectile alpha still work.
+			var kind: String = entry.get("kind", "body")
+			if kind == "body":
+				if al.text != "":
+					var allow_multiline: bool = bool(body.get_meta("fp_multiline", false)) \
+							or kind == "body"
+					if allow_multiline:
+						live_text = al.text
+					else:
+						var first_line: String = al.text.split("\n")[0]
+						if first_line.strip_edges() != "":
+							live_text = first_line
 			live_modulate = al.modulate
 		# Status overlay sync — read FrozenBlock / EnflameOverlay / ElectricBolt
 		# siblings off the body so debuffs read in FP the same way they do in
@@ -527,6 +538,10 @@ func _process(delta: float) -> void:
 	# small bar above each one. Floor is occupied by hazards so bars sit
 	# above the head.
 	_update_enemy_hp_bars()
+	# Floating damage text — re-projects each active text from its source
+	# world position so the labels stay glued to the enemy when the
+	# camera turns (was tweening screen-space, drifted off).
+	_update_floating_texts(delta)
 
 # Beam wand — draws a chain of "=" billboards from the player position to
 # end_pos2d. Called every frame the beam is firing; clear_beam() hides
@@ -660,6 +675,58 @@ func clear_enemy_beam(emitter: Node) -> void:
 		if is_instance_valid(lbl):
 			(lbl as Node).queue_free()
 	_enemy_beam_pools.erase(key)
+
+# ── Shock zap line (per-projectile crackling line) ────────────────────────────
+# Fire-and-forget: each tick the projectile calls this, we spawn a short
+# Line2D inside _viewport that fades + queue_frees itself. No pool, no per-
+# emitter storage to leak when projection fails or the projectile dies
+# before its line cleans up. Caller throttles with _zap_skip.
+func spawn_shock_zap(pos_2d: Vector2, dir_2d: Vector2, color: Color, lifetime: float = 0.12) -> void:
+	if not visible or _viewport == null or not is_instance_valid(_viewport):
+		return
+	if _camera == null or not is_instance_valid(_camera):
+		return
+	var world_pos := Vector3(pos_2d.x / TILE_PX, 0.22, pos_2d.y / TILE_PX)
+	if _camera.is_position_behind(world_pos):
+		return
+	# Guard against degenerate projection when the projectile is at (or
+	# essentially at) the camera position — unproject_position blows up
+	# because the camera-space z is near zero and the projection divides
+	# by it, snapping the result to screen-center. That's what produced
+	# "lightning artifacts stuck at screen middle going horizontally."
+	var dist_to_cam: float = _camera.global_position.distance_to(world_pos)
+	if dist_to_cam < 0.6:
+		return
+	var center: Vector2 = _camera.unproject_position(world_pos)
+	# Project a forward point to get screen-space direction so the zag
+	# orients along the projectile's flight.
+	var fwd_world := world_pos + Vector3(dir_2d.x, 0.0, dir_2d.y) * 0.4
+	var fwd_screen: Vector2 = center
+	if not _camera.is_position_behind(fwd_world):
+		fwd_screen = _camera.unproject_position(fwd_world)
+	var screen_dir: Vector2 = (fwd_screen - center)
+	if screen_dir.length() < 1.0:
+		screen_dir = Vector2.RIGHT
+	screen_dir = screen_dir.normalized()
+	var perp: Vector2 = Vector2(-screen_dir.y, screen_dir.x)
+	var line := Line2D.new()
+	line.width = 1.5
+	line.default_color = color
+	line.antialiased = false
+	line.joint_mode = Line2D.LINE_JOINT_SHARP
+	line.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	line.end_cap_mode = Line2D.LINE_CAP_ROUND
+	for i in 7:
+		var t: float = float(i) / 6.0
+		var px: float = -12.0 + 24.0 * t
+		var pt: Vector2 = center + screen_dir * px
+		if i > 0 and i < 6:
+			pt += perp * randf_range(-3.0, 3.0)
+		line.add_point(pt)
+	_viewport.add_child(line)
+	var tw := line.create_tween()
+	tw.tween_property(line, "modulate:a", 0.0, lifetime)
+	tw.tween_callback(line.queue_free)
 
 # ── Transient effect spawners ────────────────────────────────────────────────
 # Generic Label3D helper. Each spawned label tweens its modulate alpha to
@@ -795,6 +862,8 @@ func spawn_chain_arc_2d(from_2d: Vector2, to_2d: Vector2, color: Color,
 	else:
 		perp = Vector3(1.0, 0.0, 0.0)
 
+	const Y_CEILING: float = 1.4   # cap so the bolt doesn't visibly go to the sky
+	const Y_FLOOR: float = -0.2    # bottom soft-cap; below this is below the floor
 	var waypoints: Array[Vector3] = [from_3d]
 	var first_sign: float = 1.0 if randi() % 2 == 0 else -1.0
 	for i in (SEGMENTS - 1):
@@ -806,6 +875,10 @@ func spawn_chain_arc_2d(from_2d: Vector2, to_2d: Vector2, color: Color,
 		var vert_mag: float = VERT_AMP * randf_range(0.65, 1.0)
 		pt += perp * randf_range(-PERP_JITTER, PERP_JITTER)
 		pt += Vector3.UP * (vert_sign * vert_mag)
+		# Clamp y so the bolt's arc stays inside a believable height range —
+		# midpoints used to leap to y > 2.0 (well above ceiling) which read
+		# as the lightning teleporting into space.
+		pt.y = clampf(pt.y, Y_FLOOR, Y_CEILING)
 		waypoints.append(pt)
 	waypoints.append(to_3d)
 
@@ -1065,39 +1138,79 @@ func _scan_hint_text(body: Node) -> String:
 	return ""
 
 # Floating damage / status text — rendered as a 2D Label on the FP CanvasLayer
-# directly (bypassing the ASCII post-shader) so the text stays sharp +
-# legible at any distance. Position projects from the 3D world point each
-# frame the camera might move, but for short-lived text we just project
-# once at spawn and tween upward in screen space.
+# (bypassing the ASCII post-shader) so the text stays sharp + legible at
+# any distance. Anchored to the source WORLD position each frame (not
+# tweened in screen space) so the text stays glued to the enemy when the
+# player turns the camera.
 func spawn_floating_text(pos_2d: Vector2, text: String, color: Color,
 		lifetime: float = 0.85, y: float = 0.65) -> void:
 	if not visible or _camera == null or not is_instance_valid(_camera):
 		return
 	var world_pos := Vector3(pos_2d.x / TILE_PX, y, pos_2d.y / TILE_PX)
-	if _camera.is_position_behind(world_pos):
-		return
-	var screen_pos: Vector2 = _camera.unproject_position(world_pos)
-	# Scale font size by distance so close hits read prominent but far
-	# hits don't overlap each other into illegible mush.
-	var d := _camera.global_position.distance_to(world_pos)
-	var font_size: int = clampi(int(round(28.0 - d * 1.8)), 14, 28)
 	var lbl := Label.new()
 	lbl.text = text
 	lbl.add_theme_font_override("font", MonoFont.get_font())
-	lbl.add_theme_font_size_override("font_size", font_size)
 	lbl.add_theme_color_override("font_color", color)
 	lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1))
 	lbl.add_theme_constant_override("outline_size", 3)
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lbl.size = Vector2(160, 28)
-	lbl.position = screen_pos - Vector2(80, 14)
 	lbl.z_index = 7
 	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(lbl)
-	var tw := lbl.create_tween()
-	tw.tween_property(lbl, "position", lbl.position + Vector2(0, -60), lifetime)
-	tw.parallel().tween_property(lbl, "modulate:a", 0.0, lifetime)
-	tw.tween_callback(lbl.queue_free)
+	# Random horizontal nudge so stacked hits don't overlap exactly.
+	var x_jitter: float = randf_range(-12.0, 12.0)
+	_floating_texts.append({
+		"label": lbl,
+		"world_pos": world_pos,
+		"age": 0.0,
+		"lifetime": lifetime,
+		"x_offset": x_jitter,
+		"color": color,
+	})
+
+# Per-frame updater for floating combat text — re-projects each label's
+# anchor world position to screen space, applies the screen-space upward
+# drift + alpha fade, removes when expired. Called from _process.
+func _update_floating_texts(delta: float) -> void:
+	if _camera == null or not is_instance_valid(_camera):
+		return
+	var i := _floating_texts.size() - 1
+	while i >= 0:
+		var entry: Dictionary = _floating_texts[i]
+		var lbl: Label = entry["label"] as Label
+		if not is_instance_valid(lbl):
+			_floating_texts.remove_at(i)
+			i -= 1
+			continue
+		var age: float = float(entry["age"]) + delta
+		var lifetime: float = float(entry["lifetime"])
+		if age >= lifetime:
+			lbl.queue_free()
+			_floating_texts.remove_at(i)
+			i -= 1
+			continue
+		entry["age"] = age
+		var world_pos: Vector3 = entry["world_pos"] as Vector3
+		if _camera.is_position_behind(world_pos):
+			lbl.visible = false
+			i -= 1
+			continue
+		# Scale font size by distance so close hits read prominent and
+		# far hits don't crowd. Done each frame so it tracks zoom changes.
+		var d: float = _camera.global_position.distance_to(world_pos)
+		var font_size: int = clampi(int(round(28.0 - d * 1.8)), 14, 28)
+		lbl.add_theme_font_size_override("font_size", font_size)
+		var screen_pos: Vector2 = _camera.unproject_position(world_pos)
+		# Drift upward in SCREEN space (60 px over the lifetime) so the
+		# text floats off the head regardless of camera angle.
+		var drift_y: float = -60.0 * (age / lifetime)
+		lbl.position = screen_pos + Vector2(float(entry["x_offset"]) - 80.0, drift_y - 14.0)
+		var fade: float = 1.0 - (age / lifetime)
+		var c: Color = entry["color"] as Color
+		lbl.modulate = Color(c.r, c.g, c.b, fade)
+		lbl.visible = true
+		i -= 1
 
 # Trigger a camera shake — `intensity` is in world units (one tile = 1.0).
 # Caller passes the same duration the 2D camera_shake uses; the rig converts
