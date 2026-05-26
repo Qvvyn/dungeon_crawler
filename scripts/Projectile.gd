@@ -65,7 +65,15 @@ var _homing_target: Node2D   = null  # cached lock-on target
 var _did_freeze_aoe: bool    = false
 
 func _ready() -> void:
-	rotation = direction.angle()
+	# Homing's "^" glyph natively points up (-Y), so the body needs an
+	# extra +PI/2 on top of direction.angle() to put the tip on the
+	# heading vector. Other shoot types (pierce ")", missile ">", arc ")"
+	# etc.) align with direction.angle() directly because their shape
+	# reads as forward-facing at rotation 0.
+	if shoot_type == "homing":
+		rotation = direction.angle() + PI * 0.5
+	else:
+		rotation = direction.angle()
 	_base_direction = direction
 	# Detect both walls (layer 1) and enemies (layer 2 — enemies were moved
 	# off layer 1 so they no longer push each other / the player around)
@@ -343,7 +351,9 @@ func _physics_process(delta: float) -> void:
 			var to_target := (_homing_target.global_position - global_position).normalized()
 			var turn_rate := 5.5 + player_intelligence * 0.8   # 6.3 at int=1, 11.9 at int=8
 			direction = direction.lerp(to_target, turn_rate * delta).normalized()
-			rotation = direction.angle()
+			# +PI/2 so "^"'s native upward tip rotates to face along
+			# direction. See _ready comment.
+			rotation = direction.angle() + PI * 0.5
 
 	if (shoot_type == "arc" or shoot_type == "grenade") and arc_target != Vector2.ZERO:
 		var to_tgt := (arc_target - global_position).normalized()
@@ -361,7 +371,10 @@ func _physics_process(delta: float) -> void:
 	if drift_speed != 0.0:
 		var perp := direction.rotated(PI * 0.5)
 		direction = (direction + perp * drift_speed * delta).normalized()
-		rotation = direction.angle()
+		if shoot_type == "homing":
+			rotation = direction.angle() + PI * 0.5
+		else:
+			rotation = direction.angle()
 
 	var move := direction * speed * delta
 
