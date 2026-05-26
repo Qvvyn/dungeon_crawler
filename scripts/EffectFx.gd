@@ -40,6 +40,14 @@ static func spawn_death_pop(pos: Vector2, scene_root: Node, color: Color = Color
 	tw.parallel().tween_property(lbl, "rotation", randf_range(-0.6, 0.6), 0.35)
 	tw.parallel().tween_property(lbl, "modulate:a", 0.0, 0.35)
 	tw.tween_callback(lbl.queue_free)
+	# FP mirror — single "X" billboard that fades in place, plus a small
+	# radial burst so the kill feedback reads from any angle.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_burst_2d"):
+		GameState.active_rig.spawn_burst_2d(pos, "X", color, 1, 0.0, 0.35,
+			Vector2.ZERO, TAU, 0.014, 0.50)
+		GameState.active_rig.spawn_burst_2d(pos, "*", color, 5, 0.6, 0.32,
+			Vector2.ZERO, TAU, 0.008, 0.50)
 
 # ── Muzzle flash ─────────────────────────────────────────────────────────
 # Brief glyph at the wand tip in the wand's color/icon. Reads as "this

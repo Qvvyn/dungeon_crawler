@@ -51,6 +51,17 @@ func _process(delta: float) -> void:
 		_anim_t = 0.0
 		_frame = 1 - _frame
 		_label.text = FLAME_F0 if _frame == 0 else FLAME_F1
+		# FP flicker — every frame swap, spawn a small flame burst at the
+		# host's feet so the AoE radius reads in first-person too. Bigger
+		# than the impact bursts so it visibly marks the enemy as "on fire,
+		# touch them and you'll get clipped".
+		var host: Node2D = get_parent() as Node2D
+		if host != null and is_instance_valid(host) \
+				and GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+				and GameState.active_rig.has_method("spawn_burst_2d"):
+			GameState.active_rig.spawn_burst_2d(host.global_position,
+				"(" if _frame == 0 else ")", Color(1.0, 0.50, 0.05),
+				4, 0.85, 0.32, Vector2.ZERO, TAU, 0.008, 0.10)
 	# Pulse brighten + scale on flare trigger.
 	if _pulse_t > 0.0:
 		_pulse_t = maxf(0.0, _pulse_t - delta)
@@ -63,3 +74,11 @@ func _process(delta: float) -> void:
 
 func pulse() -> void:
 	_pulse_t = PULSE_DURATION
+	# FP flare — a big expanding ring at the host's feet so the AoE
+	# moment reads as a punctuation, not just a periodic flame flicker.
+	var host: Node2D = get_parent() as Node2D
+	if host != null and is_instance_valid(host) \
+			and GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_ring_2d"):
+		GameState.active_rig.spawn_ring_2d(host.global_position, "*",
+			Color(1.0, 0.65, 0.10), 0.25, 2.4, 18, 0.42, 0.011, 0.15)

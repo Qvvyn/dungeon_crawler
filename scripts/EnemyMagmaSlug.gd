@@ -52,6 +52,10 @@ func _drop_lava() -> void:
 	var lava: Node = LAVA_TILE_SCRIPT.new()
 	if lava is Node2D:
 		(lava as Node2D).global_position = global_position
+	# Cap the trail so it doesn't permanently coat the arena floor — the
+	# slug can lay several tiles per fight and they used to persist for the
+	# whole run, cluttering the room (especially loud in FP).
+	lava.set("lifetime", 8.0)
 	tree.current_scene.add_child(lava)
 
 func _enemy_anim_update(delta: float) -> void:

@@ -33,13 +33,19 @@ static func spawn_str(world_pos: Vector2, text: String, col: Color, parent: Node
 	tween.parallel().tween_property(label, "modulate:a", 0.0, 0.85)
 	tween.tween_callback(_decrement)
 	tween.tween_callback(label.queue_free)
+	# FP mirror — float a Label3D billboard up from the same world point so
+	# the player sees CRIT/SHATTER/FLARE/BURN callouts in first-person too.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_floating_text"):
+		GameState.active_rig.spawn_floating_text(world_pos, text, col, 0.85)
 
 static func spawn(world_pos: Vector2, value: int, is_heal: bool, parent: Node, custom_color: Color = Color.TRANSPARENT) -> void:
 	if _active_count >= MAX_ACTIVE:
 		return
 	_active_count += 1
 	var label := Label.new()
-	label.text = ("+" if is_heal else "") + str(value)
+	var text_str := ("+" if is_heal else "") + str(value)
+	label.text = text_str
 	var col: Color
 	if custom_color.a > 0.0:
 		col = custom_color
@@ -54,3 +60,6 @@ static func spawn(world_pos: Vector2, value: int, is_heal: bool, parent: Node, c
 	tween.parallel().tween_property(label, "modulate:a", 0.0, 0.85)
 	tween.tween_callback(_decrement)
 	tween.tween_callback(label.queue_free)
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_floating_text"):
+		GameState.active_rig.spawn_floating_text(world_pos, text_str, col, 0.85)

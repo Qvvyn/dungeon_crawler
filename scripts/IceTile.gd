@@ -9,10 +9,19 @@ var _player_inside: bool = false
 var _refresh_t: float    = 0.0
 var _pulse_t: float      = 0.0
 var _label: Label        = null
+# Optional expiry — 0 means "permanent" (biome generator placement); the
+# frost sentinel sets this so its ice waves don't accumulate forever and
+# the arena floor stays readable.
+var lifetime: float = 0.0
+var _life_t: float  = 0.0
 
 func _ready() -> void:
 	add_to_group("hazard")
-	GameState.attach_fp_visual(self, "#", Color(0.55, 0.92, 1.0), 0.05)
+	# FP mirrors the 2D label's single "*" (was a 3-line patch which read
+	# too big and chest-high). Small pixel_size + floor-level fp_height
+	# makes it look like ice crystals dusting the ground.
+	set_meta("fp_pixel_size", 0.006)
+	GameState.attach_fp_visual(self, "*", Color(0.55, 0.92, 1.0), 0.03)
 	var cshape := CollisionShape2D.new()
 	var shape  := CircleShape2D.new()
 	shape.radius = 14.0
@@ -39,6 +48,15 @@ func _on_body_exited(body: Node2D) -> void:
 		_player_inside = false
 
 func _process(delta: float) -> void:
+	if lifetime > 0.0:
+		_life_t += delta
+		if _life_t >= lifetime:
+			queue_free()
+			return
+		var remain := lifetime - _life_t
+		if _label and remain < 1.0:
+			_label.modulate.a = clampf(remain, 0.0, 1.0)
+
 	_pulse_t += delta * 1.4
 	var pulse := 0.5 + 0.5 * sin(_pulse_t)
 	if _label:

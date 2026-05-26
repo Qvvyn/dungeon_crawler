@@ -86,7 +86,13 @@ func _update_telegraph_line() -> void:
 	_telegraph_line.clear_points()
 	_telegraph_line.add_point(global_position)
 	var d := Vector2(cos(_start_angle), sin(_start_angle))
-	_telegraph_line.add_point(global_position + d * BEAM_RANGE)
+	var end_pt := global_position + d * BEAM_RANGE
+	_telegraph_line.add_point(end_pt)
+	# Mirror into FP — the 2D Line2D doesn't render in the 3D SubViewport.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("set_enemy_beam"):
+		GameState.active_rig.set_enemy_beam(self, global_position, end_pt,
+			Color(1.0, 0.45, 0.10), true)
 
 func _enter_sweep() -> void:
 	_bstate = BState.SWEEP
@@ -95,6 +101,12 @@ func _enter_sweep() -> void:
 	if _telegraph_line:
 		_telegraph_line.queue_free()
 		_telegraph_line = null
+	# Drop the FP telegraph dots so the rig swaps cleanly to the brighter
+	# sweep glyphs — without this the dim "·" stayed visible for a frame
+	# under the new beam, reading as visual noise.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("clear_enemy_beam"):
+		GameState.active_rig.clear_enemy_beam(self)
 	if _beam_line == null:
 		_beam_line = Line2D.new()
 		_beam_line.width = 4.5
@@ -109,6 +121,9 @@ func _end_sweep() -> void:
 	if _beam_line:
 		_beam_line.queue_free()
 		_beam_line = null
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("clear_enemy_beam"):
+		GameState.active_rig.clear_enemy_beam(self)
 
 func _update_beam_line() -> void:
 	if _beam_line == null: return
@@ -124,6 +139,12 @@ func _update_beam_line() -> void:
 	_beam_line.clear_points()
 	_beam_line.add_point(global_position)
 	_beam_line.add_point(end_pt)
+	# Mirror the active beam into FP using the orange sweep color, matching
+	# the 2D Line2D's brighter hue (telegraph is the dim version above).
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("set_enemy_beam"):
+		GameState.active_rig.set_enemy_beam(self, global_position, end_pt,
+			Color(1.0, 0.50, 0.15), false)
 
 func _check_beam_hit() -> void:
 	if not is_instance_valid(_player): return
@@ -155,6 +176,9 @@ func _cleanup_visuals() -> void:
 	if is_instance_valid(_telegraph_line): _telegraph_line.queue_free()
 	_beam_line = null
 	_telegraph_line = null
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("clear_enemy_beam"):
+		GameState.active_rig.clear_enemy_beam(self)
 
 func _enemy_anim_update(delta: float) -> void:
 	_anim_t += delta

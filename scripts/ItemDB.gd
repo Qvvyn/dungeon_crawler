@@ -873,15 +873,21 @@ static func _wand_desc(wand: Item) -> String:
 	return ". ".join(parts)
 
 static func _wand_color(wand: Item) -> Color:
+	# Wand inventory tint mirrors the projectile palette in Projectile.gd —
+	# yellow is reserved for shotgun so the wand glyph the player carries
+	# matches the bullets it spits out.
 	match wand.wand_shoot_type:
-		"regular":   return Color(0.75, 0.60, 0.35)
-		"pierce":    return Color(0.95, 0.95, 0.30)
-		"ricochet":  return Color(0.35, 1.00, 0.50)
-		"freeze":    return Color(0.30, 0.75, 1.00)
+		"regular":   return Color(0.95, 0.95, 0.95)
+		"pierce":    return Color(0.25, 0.60, 1.00)
+		"ricochet":  return Color(0.20, 1.00, 0.35)
+		"freeze":    return Color(0.55, 0.92, 1.00)
 		"fire":      return Color(1.00, 0.40, 0.10)
-		"shock":     return Color(0.90, 0.95, 0.30)
+		"shock":     return Color(0.70, 0.40, 1.00)
 		"beam":      return Color(0.30, 1.00, 0.80)
-	return Color(0.70, 0.50, 0.20)
+		"shotgun":   return Color(1.00, 0.85, 0.10)
+		"homing":    return Color(1.00, 0.40, 0.80)
+		"nova":      return Color(0.85, 0.40, 1.00)
+	return Color(0.95, 0.95, 0.95)
 
 # ── Boss signature wands ─────────────────────────────────────────────────────
 # Each boss type guarantees a hand-tuned legendary wand on death so floor-5

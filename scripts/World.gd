@@ -1511,6 +1511,17 @@ func _spawn_eruption_near_player() -> void:
 	tw.tween_property(warn, "modulate:a", 1.0, 1.4)
 	tw.tween_interval(1.6)
 	tw.tween_callback(warn.queue_free)
+	# FP eruption warning — float "(!)" rising from the spawn point and
+	# spawn a small persistent ring at floor level so the player can see
+	# the impact footprint coming. Both clear themselves with their tween
+	# / lifetime, so we don't need to track the warn ring separately.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig):
+		if GameState.active_rig.has_method("spawn_floating_text"):
+			GameState.active_rig.spawn_floating_text(pos, "(!)",
+				Color(1.0, 0.45, 0.05), 3.0, 0.10)
+		if GameState.active_rig.has_method("spawn_ring_2d"):
+			GameState.active_rig.spawn_ring_2d(pos, "x",
+				Color(1.0, 0.30, 0.05, 0.85), 0.40, 0.40, 16, 3.0, 0.009, 0.05)
 
 	# Spawn the actual lava tile after the telegraph completes. Reuses
 	# the same script-instantiation pattern the static hazard pass uses.
@@ -1518,6 +1529,10 @@ func _spawn_eruption_near_player() -> void:
 	t.timeout.connect(func() -> void:
 		var lava: Node = LAVA_TILE_SCRIPT.new()
 		lava.position = pos
+		# Eruption tiles also time out so the lava rift floor doesn't
+		# permanently fill in. ~10 s gives a few attacks worth of pressure
+		# before clearing.
+		lava.set("lifetime", 10.0)
 		add_child(lava))
 
 # Returns a pixel-center position safely inside a room, with an optional tile offset

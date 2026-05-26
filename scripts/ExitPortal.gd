@@ -24,7 +24,12 @@ func _ready() -> void:
 	collision_mask = 1
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
-	GameState.attach_fp_visual(self, "^", Color(0.65, 1.0, 0.85), 0.50)
+	# Multi-line portal silhouette so FP shows the full archway instead of
+	# a lone ^. Smaller pixel_size keeps the 3-row glyph from towering.
+	set_meta("fp_multiline", true)
+	set_meta("fp_pixel_size", 0.012)
+	GameState.attach_fp_visual(self, _EXIT_GLYPH + _FRAMES[0] + _EXIT_AFTER,
+		Color(1.0, 0.85, 0.30), 0.50)
 
 	var cs := CollisionShape2D.new()
 	var shape := CircleShape2D.new()
@@ -33,6 +38,9 @@ func _ready() -> void:
 	add_child(cs)
 
 	_label = Label.new()
+	# Named so the FP rig picks up the live text (animated frame swap +
+	# pulsing modulate flow into FP without any rig-side wiring).
+	_label.name = "AsciiChar"
 	_label.add_theme_font_override("font", MonoFont.get_font())
 	_label.add_theme_font_size_override("font_size", 14)
 	_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.30))

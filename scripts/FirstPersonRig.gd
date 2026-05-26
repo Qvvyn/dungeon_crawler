@@ -31,6 +31,40 @@ var _grid: Array = []
 var _grid_w: int = 0
 var _grid_h: int = 0
 
+# Beam / melee transient effects — owned by the rig so they can render in
+# the SubViewport's 3D world. The player tells the rig "draw a beam from
+# here to there" or "punch landed at this point" and the rig pools labels
+# accordingly.
+var _beam_dots: Array[Label3D] = []
+var _beam_active: bool = false
+var _melee_lbl: Label3D = null
+var _melee_timer: float = 0.0
+const MELEE_LIFE: float = 0.18
+
+# Enemy beam emitter pools — keyed by the emitter's instance ID so multiple
+# beam-sweeping enemies can fire concurrently without trampling each other's
+# dots. Each entry is an Array[Label3D] of pooled glyphs along the path.
+var _enemy_beam_pools: Dictionary = {}
+# Per-emitter persistent warning ring (grenadier danger zone).
+var _enemy_warning_pools: Dictionary = {}
+# Lock-on warning — multiple turrets can lock the player at once; we just
+# need to know whether ANY of them currently has a lock to flash the
+# screen-space "[ LOCK ]" warning.
+var _lock_emitters: Dictionary = {}
+var _lock_label: Label = null
+
+# Interact hint surfacing — scans registered entities each frame for any
+# visible "[E] ..." style sub-Label and floats it on the FP CanvasLayer
+# so the player can read what's interactable without seeing the 2D world.
+var _interact_label: Label = null
+
+# Camera shake — added on top of the normal cam_pos each frame and decays
+# linearly. Driven by `shake(duration, intensity)` from gameplay events the
+# same way Player.camera_shake nudges the 2D Camera2D.
+var _shake_t: float = 0.0
+var _shake_total: float = 0.0
+var _shake_intensity: float = 0.0
+
 func _ready() -> void:
 	layer = 1
 	visible = false
@@ -159,15 +193,17 @@ func _build_floor_ceiling() -> void:
 		inst.position = Vector3(float(_grid_w) * 0.5, kv["y"], float(_grid_h) * 0.5)
 		_world3d.add_child(inst)
 
-# Pixel size (world units per font pixel) baseline by kind. Bigger pixel
-# size = bigger label in world space. Substantial projectiles get a bump
-# so fire/shock/freeze read as impactful.
+# Pixel size (world units per font pixel) baseline by kind. Projectiles are
+# kept small and uniform so they read as fast-moving sparks rather than
+# screen-filling sprites — the previous "substantial" bump made fire/shock/
+# freeze shots tower across the view. Bodies keep the larger size so enemies
+# remain visible at range.
 func _pixel_size_for(kind: String) -> float:
 	match kind:
 		"projectile_substantial":
-			return 0.012
-		"projectile":
 			return 0.006
+		"projectile":
+			return 0.004
 		_:
 			return 0.014   # bodies (enemies, portals)
 
@@ -191,6 +227,10 @@ func register_entity(body: Node2D, glyph: String = "X", color: Color = Color(0.9
 		return
 	var kind: String = _classify_entity(body, glyph)
 	var pixel_size: float = _pixel_size_for(kind)
+	# Per-body override — multi-line ASCII art (e.g. the freeze ice block)
+	# needs a smaller pixel_size so the billboard fits within the corridor.
+	if body.has_meta("fp_pixel_size"):
+		pixel_size = float(body.get_meta("fp_pixel_size"))
 	var lbl := Label3D.new()
 	lbl.text = glyph
 	lbl.font = MonoFont.get_font()
@@ -217,6 +257,21 @@ func register_entity(body: Node2D, glyph: String = "X", color: Color = Color(0.9
 		"kind": kind,
 	}
 
+# Updates an already-registered entity's stored_glyph and stored_color.
+# Used by entities whose displayed art changes after spawn (e.g. LootBag
+# re-tinting + reshaping when its rarity tier changes). The live AsciiChar
+# read still wins per-frame if the body has an AsciiChar child; this is
+# strictly for bodies that don't have one.
+func update_fp_visual(body: Node2D, glyph: String, color: Color) -> void:
+	if not is_instance_valid(body):
+		return
+	var key := body.get_instance_id()
+	if not _entities.has(key):
+		return
+	var entry: Dictionary = _entities[key]
+	entry["stored_glyph"] = glyph
+	entry["stored_color"] = color
+
 func unregister_entity(body: Node2D) -> void:
 	if not is_instance_valid(body):
 		return
@@ -237,7 +292,7 @@ func clear_entities() -> void:
 			(lbl_v as Node).queue_free()
 	_entities.clear()
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if not visible:
 		return
 	var player: Node = get_tree().get_first_node_in_group("player")
@@ -251,7 +306,15 @@ func _process(_delta: float) -> void:
 	if player.has_method("get_aim_direction"):
 		aim = player.get_aim_direction()
 	var cam_pos := Vector3(pp.x / TILE_PX, 0.5, pp.y / TILE_PX)
-	_camera.position = cam_pos
+	# Camera shake — random per-frame offset that decays linearly over the
+	# shake's duration. Tweens to zero so the rest of the frame uses the
+	# clean cam_pos for look_at and the player light.
+	var shake_offset := Vector3.ZERO
+	if _shake_t > 0.0:
+		_shake_t = maxf(0.0, _shake_t - delta)
+		var amp: float = _shake_intensity * (_shake_t / maxf(_shake_total, 0.001))
+		shake_offset = Vector3(randf_range(-amp, amp), 0.0, randf_range(-amp, amp))
+	_camera.position = cam_pos + shake_offset
 	_camera.look_at(cam_pos + Vector3(aim.x, 0.0, aim.y), Vector3.UP)
 	_player_light.position = cam_pos
 
@@ -294,20 +357,612 @@ func _process(_delta: float) -> void:
 		var live_text: String = stored_glyph
 		var live_modulate := Color(1, 1, 1, 1)
 		var ascii_child: Node = body.get_node_or_null("AsciiChar")
+		# Portal-style entities use "AsciiArt" as their label name; fall back
+		# to that so their animation reaches FP without renaming the .tscn.
+		if ascii_child == null:
+			ascii_child = body.get_node_or_null("AsciiArt")
 		if ascii_child != null and ascii_child is Label:
 			var al: Label = ascii_child as Label
 			if al.text != "":
-				# Use the first line only so multi-row enemy labels (e.g.
-				# "d\n_") don't tower across the screen as a Label3D.
-				var first_line: String = al.text.split("\n")[0]
-				if first_line.strip_edges() != "":
-					live_text = first_line
+				# Multi-line allowed by default for bodies (enemies have rich
+				# silhouettes — wizard hat + face + robes etc — that should
+				# read in FP, not be stripped to their first line). The
+				# pixel_size auto-scale below shrinks tall glyphs to fit
+				# within wall height. Projectiles still strip to first line
+				# unless they opt in via fp_multiline.
+				var kind: String = entry.get("kind", "body")
+				var allow_multiline: bool = bool(body.get_meta("fp_multiline", false)) \
+						or kind == "body"
+				if allow_multiline:
+					live_text = al.text
+				else:
+					var first_line: String = al.text.split("\n")[0]
+					if first_line.strip_edges() != "":
+						live_text = first_line
 			live_modulate = al.modulate
+		# Status overlay sync — read FrozenBlock / EnflameOverlay / ElectricBolt
+		# siblings off the body so debuffs read in FP the same way they do in
+		# top-down. Frozen replaces the entity entirely (ice block covers it);
+		# burn and shock prepend their glyph above the entity so the player
+		# can see "this thing is on fire AND electrified".
+		var status_modulate := Color(1, 1, 1, 1)
+		var has_status := false
+		var frozen_child := body.get_node_or_null("FrozenBlock") as Label
+		if frozen_child != null and frozen_child.text != "":
+			# Wrap the enemy's current glyph inside an ice frame so the
+			# player can still see *what* they froze, not just an opaque
+			# block. Take the first line only of the live glyph and pad
+			# to a fixed width so the side walls of the ice line up.
+			var inner: String = live_text.split("\n")[0]
+			if inner == "":
+				inner = stored_glyph
+			var pad_target := 4
+			var pad_each: int = (pad_target - inner.length()) / 2
+			var left_pad: String = " ".repeat(maxi(0, pad_each))
+			var right_pad: String = " ".repeat(maxi(0, pad_target - inner.length() - pad_each))
+			var middle: String = left_pad + inner + right_pad
+			live_text = ".====.\n|" + middle + "|\n'===='"
+			status_modulate = frozen_child.modulate
+			has_status = true
+		else:
+			var enflame_child := body.get_node_or_null("EnflameOverlay") as Label
+			var electric_child := body.get_node_or_null("ElectricBolt") as Label
+			var poison_child := body.get_node_or_null("PoisonOverlay") as Label
+			var status_lines: Array[String] = []
+			if electric_child != null and electric_child.text != "" and electric_child.modulate.a > 0.0:
+				status_lines.append(electric_child.text)
+			if enflame_child != null and enflame_child.text != "":
+				status_lines.append(enflame_child.text)
+			if poison_child != null and poison_child.text != "":
+				status_lines.append(poison_child.text)
+			if not status_lines.is_empty():
+				status_lines.append(live_text)
+				live_text = "\n".join(status_lines)
+				has_status = true
+				# Priority for the tint when multiple effects stack: burn >
+				# shock > poison. Each picks the overlay's own modulate so
+				# the tint matches the dominant status the player can read.
+				if enflame_child != null:
+					status_modulate = enflame_child.modulate
+				elif electric_child != null:
+					status_modulate = electric_child.modulate
+				elif poison_child != null:
+					status_modulate = poison_child.modulate
 		lbl.text = live_text
-		lbl.modulate = stored_color * live_modulate
+		if has_status:
+			lbl.modulate = status_modulate
+		else:
+			lbl.modulate = stored_color * live_modulate
+		# Auto-scale pixel_size when text is multi-line so a tall ice block
+		# or status stack doesn't tower past the wall height. Single-line
+		# stays at the registered base size.
+		var line_count: int = live_text.count("\n") + 1
+		var base_ps: float
+		if body.has_meta("fp_pixel_size"):
+			base_ps = float(body.get_meta("fp_pixel_size"))
+		else:
+			base_ps = _pixel_size_for(entry.get("kind", "body"))
+		lbl.pixel_size = base_ps if line_count <= 1 else base_ps / float(line_count)
 	for key in stale:
 		var entry2: Dictionary = _entities[key]
 		var lbl_v2: Variant = entry2["label"]
 		if is_instance_valid(lbl_v2):
 			(lbl_v2 as Node).queue_free()
 		_entities.erase(key)
+
+	# Melee swoosh decay — auto-hides the punch label after MELEE_LIFE so
+	# the player doesn't see a stuck fist between strikes.
+	if _melee_lbl != null and is_instance_valid(_melee_lbl):
+		if _melee_timer > 0.0:
+			_melee_timer -= delta
+			if _melee_timer <= 0.0:
+				_melee_lbl.visible = false
+	# Lock pulse — refreshes the red modulate so the warning visibly
+	# breathes while a turret is targeting the player.
+	if _lock_label != null and is_instance_valid(_lock_label) and _lock_label.visible:
+		var p: float = sin(Time.get_ticks_msec() * 0.018) * 0.5 + 0.5
+		_lock_label.modulate = Color(1.0, 0.20 + p * 0.30, 0.20 + p * 0.30, 0.7 + p * 0.30)
+	# Interact hint scan — find the closest registered entity within ~80
+	# px (2.5 tiles) of the player whose children include a visible hint
+	# Label (text starts with "[" or matches portal "DEFEAT BOSS" / "DEFEAT
+	# WIZARD" gates). Surface that text on a centered FP CanvasLayer label.
+	_update_interact_hint(pp)
+
+# Beam wand — draws a chain of "=" billboards from the player position to
+# end_pos2d. Called every frame the beam is firing; clear_beam() hides
+# the dots when the trigger releases. Each dot is a normal Label3D so the
+# post-shader treats it like any other entity (ASCII conversion + occlusion
+# behind walls).
+func set_beam(start_pos2d: Vector2, end_pos2d: Vector2, color: Color) -> void:
+	if not visible or _world3d == null or not is_instance_valid(_world3d):
+		return
+	# 0.22 matches player projectile fp_height so the beam appears to come
+	# from the same waist-level muzzle as everything else (was 0.40, which
+	# read as eye-level / centered).
+	var start_3d := Vector3(start_pos2d.x / TILE_PX, 0.22, start_pos2d.y / TILE_PX)
+	var end_3d   := Vector3(end_pos2d.x / TILE_PX, 0.22, end_pos2d.y / TILE_PX)
+	var dist := start_3d.distance_to(end_3d)
+	var step := 0.30
+	# Hide the first ~0.6 units so the dots don't engulf the camera — the
+	# beam should appear to leave from a position just in front of the
+	# player rather than starting at the player's exact eye.
+	var skip := 0.6
+	var count: int = maxi(0, int((dist - skip) / step))
+	while _beam_dots.size() < count:
+		var lbl := Label3D.new()
+		lbl.text = "="
+		lbl.font = MonoFont.get_font()
+		lbl.font_size = 48
+		lbl.outline_size = 6
+		lbl.pixel_size = 0.010
+		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		lbl.no_depth_test = false
+		lbl.shaded = false
+		lbl.double_sided = true
+		lbl.outline_modulate = Color(0, 0, 0, 1)
+		lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
+		_world3d.add_child(lbl)
+		_beam_dots.append(lbl)
+	var dir3d := Vector3.ZERO if dist <= 0.0 else (end_3d - start_3d) / dist
+	for i in count:
+		var lbl: Label3D = _beam_dots[i]
+		lbl.position = start_3d + dir3d * (skip + float(i) * step)
+		lbl.modulate = color
+		lbl.visible = true
+	for i in range(count, _beam_dots.size()):
+		_beam_dots[i].visible = false
+	_beam_active = count > 0
+
+func clear_beam() -> void:
+	if not _beam_active:
+		return
+	for lbl in _beam_dots:
+		if is_instance_valid(lbl):
+			lbl.visible = false
+	_beam_active = false
+
+# Melee strike — flashes a fist glyph at hit_pos2d for MELEE_LIFE seconds.
+# Re-uses a single pooled Label3D so successive punches don't accrete nodes.
+func flash_melee(hit_pos2d: Vector2, color: Color) -> void:
+	if not visible or _world3d == null or not is_instance_valid(_world3d):
+		return
+	if _melee_lbl == null or not is_instance_valid(_melee_lbl):
+		_melee_lbl = Label3D.new()
+		_melee_lbl.font = MonoFont.get_font()
+		_melee_lbl.font_size = 64
+		_melee_lbl.outline_size = 10
+		_melee_lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		_melee_lbl.no_depth_test = false
+		_melee_lbl.shaded = false
+		_melee_lbl.double_sided = true
+		_melee_lbl.outline_modulate = Color(0, 0, 0, 1)
+		_melee_lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
+		_world3d.add_child(_melee_lbl)
+	_melee_lbl.text = "><"
+	_melee_lbl.pixel_size = 0.018
+	_melee_lbl.position = Vector3(hit_pos2d.x / TILE_PX, 0.35, hit_pos2d.y / TILE_PX)
+	_melee_lbl.modulate = color
+	_melee_lbl.visible = true
+	_melee_timer = MELEE_LIFE
+
+# Enemy beam mirror — places a chain of glyphs from emitter to end_pos in the
+# 3D world. is_telegraph swaps the glyph to a faint "·" so the windup reads
+# distinctly from the actual sweep. Each emitter has its own pooled label
+# array so concurrent beam enemies don't fight over the same dots.
+func set_enemy_beam(emitter: Node, start_pos2d: Vector2, end_pos2d: Vector2, color: Color, is_telegraph: bool = false) -> void:
+	if not visible or _world3d == null or not is_instance_valid(_world3d):
+		return
+	if not is_instance_valid(emitter):
+		return
+	var key := emitter.get_instance_id()
+	var pool: Array = _enemy_beam_pools.get(key, []) as Array
+	var start_3d := Vector3(start_pos2d.x / TILE_PX, 0.45, start_pos2d.y / TILE_PX)
+	var end_3d   := Vector3(end_pos2d.x / TILE_PX, 0.45, end_pos2d.y / TILE_PX)
+	var dist := start_3d.distance_to(end_3d)
+	var step := 0.35
+	var count: int = maxi(0, int(dist / step))
+	var glyph: String = "·" if is_telegraph else "X"
+	while pool.size() < count:
+		var lbl := Label3D.new()
+		lbl.text = glyph
+		lbl.font = MonoFont.get_font()
+		lbl.font_size = 48
+		lbl.outline_size = 6
+		lbl.pixel_size = 0.008 if is_telegraph else 0.012
+		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		lbl.no_depth_test = false
+		lbl.shaded = false
+		lbl.double_sided = true
+		lbl.outline_modulate = Color(0, 0, 0, 1)
+		lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
+		_world3d.add_child(lbl)
+		pool.append(lbl)
+	var dir3d := Vector3.ZERO if dist <= 0.0 else (end_3d - start_3d) / dist
+	for i in count:
+		var lbl: Label3D = pool[i]
+		lbl.text = glyph
+		lbl.pixel_size = 0.008 if is_telegraph else 0.012
+		lbl.position = start_3d + dir3d * (float(i) * step + step * 0.5)
+		lbl.modulate = color
+		lbl.visible = true
+	for i in range(count, pool.size()):
+		(pool[i] as Label3D).visible = false
+	_enemy_beam_pools[key] = pool
+
+func clear_enemy_beam(emitter: Node) -> void:
+	if not is_instance_valid(emitter):
+		return
+	var key := emitter.get_instance_id()
+	if not _enemy_beam_pools.has(key):
+		return
+	var pool: Array = _enemy_beam_pools[key] as Array
+	for lbl in pool:
+		if is_instance_valid(lbl):
+			(lbl as Node).queue_free()
+	_enemy_beam_pools.erase(key)
+
+# ── Transient effect spawners ────────────────────────────────────────────────
+# Generic Label3D helper. Each spawned label tweens its modulate alpha to
+# zero then frees itself, so callers never need to track them. Used as the
+# atomic unit for the burst / ring / chain helpers below.
+func _spawn_fx_label(pos: Vector3, text: String, color: Color, pixel_size: float,
+		end_pos: Vector3, lifetime: float) -> void:
+	if _world3d == null or not is_instance_valid(_world3d):
+		return
+	var lbl := Label3D.new()
+	lbl.text = text
+	lbl.font = MonoFont.get_font()
+	lbl.font_size = 48
+	lbl.outline_size = 6
+	lbl.pixel_size = pixel_size
+	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	lbl.no_depth_test = false
+	lbl.shaded = false
+	lbl.double_sided = true
+	lbl.modulate = color
+	lbl.outline_modulate = Color(0, 0, 0, 1)
+	lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
+	lbl.position = pos
+	_world3d.add_child(lbl)
+	var tw := lbl.create_tween()
+	tw.tween_property(lbl, "position", end_pos, lifetime)
+	tw.parallel().tween_property(lbl, "modulate:a", 0.0, lifetime)
+	tw.tween_callback(lbl.queue_free)
+
+# Scatter burst — N labels at pos_2d, optionally biased into a cone aimed
+# along direction_2d (cone_angle = TAU means full circle). Each label drifts
+# `spread` units outward over `lifetime` and fades.
+func spawn_burst_2d(pos_2d: Vector2, glyph: String, color: Color, count: int,
+		spread: float = 0.55, lifetime: float = 0.22,
+		direction_2d: Vector2 = Vector2.ZERO, cone_angle: float = TAU,
+		pixel_size: float = 0.010, y: float = 0.40) -> void:
+	if not visible:
+		return
+	var start_3d := Vector3(pos_2d.x / TILE_PX, y, pos_2d.y / TILE_PX)
+	var base_angle: float = direction_2d.angle() if direction_2d.length() > 0.0 else 0.0
+	for i in count:
+		var ang: float
+		if cone_angle >= TAU - 0.001:
+			ang = (TAU / float(count)) * float(i) + randf_range(-0.2, 0.2)
+		else:
+			var t := (float(i) + 0.5) / float(count)
+			ang = base_angle + (t - 0.5) * cone_angle + randf_range(-0.1, 0.1)
+		var dist := randf_range(spread * 0.55, spread)
+		var end_3d := start_3d + Vector3(cos(ang), 0.0, sin(ang)) * dist
+		_spawn_fx_label(start_3d, glyph, color, pixel_size, end_3d, lifetime)
+
+# Forward streak — `count` short labels striking out along direction_2d.
+# Used by pierce / shotgun where the spread is collimated rather than radial.
+func spawn_streak_2d(pos_2d: Vector2, direction_2d: Vector2, glyph: String,
+		color: Color, count: int, length: float = 0.7, lifetime: float = 0.18,
+		pixel_size: float = 0.010, y: float = 0.40) -> void:
+	if not visible:
+		return
+	if direction_2d.length() == 0.0:
+		direction_2d = Vector2.RIGHT
+	var dir_n := direction_2d.normalized()
+	var perp := dir_n.rotated(PI * 0.5)
+	var start_3d := Vector3(pos_2d.x / TILE_PX, y, pos_2d.y / TILE_PX)
+	for i in count:
+		var lateral := randf_range(-0.18, 0.18)
+		var origin := start_3d + Vector3(perp.x * lateral, 0.0, perp.y * lateral)
+		var travel := length * randf_range(0.70, 1.0)
+		var end_3d := origin + Vector3(dir_n.x * travel, 0.0, dir_n.y * travel)
+		_spawn_fx_label(origin, glyph, color, pixel_size, end_3d, lifetime)
+
+# Expanding ring — places `segments` labels in a circle and tweens their
+# radius outward + fades them. The labels themselves don't rotate (they're
+# billboards) so the visual reads as a shockwave outline.
+func spawn_ring_2d(pos_2d: Vector2, glyph: String, color: Color,
+		start_radius: float = 0.25, end_radius: float = 1.4,
+		segments: int = 16, lifetime: float = 0.30,
+		pixel_size: float = 0.009, y: float = 0.35) -> void:
+	if not visible:
+		return
+	var center := Vector3(pos_2d.x / TILE_PX, y, pos_2d.y / TILE_PX)
+	for i in segments:
+		var ang := (TAU / float(segments)) * float(i)
+		var dir3d := Vector3(cos(ang), 0.0, sin(ang))
+		var start_pos := center + dir3d * start_radius
+		var end_pos := center + dir3d * end_radius
+		_spawn_fx_label(start_pos, glyph, color, pixel_size, end_pos, lifetime)
+
+# Chain arc — series of `count` glyphs along a jagged path from from_2d to
+# to_2d. Each label fades in place (no drift) so the arc reads as a single
+# lightning strike rather than a stream of particles.
+func spawn_chain_arc_2d(from_2d: Vector2, to_2d: Vector2, color: Color,
+		_count_unused: int = 0, lifetime: float = 0.35, _jitter_unused: float = 0.0,
+		_pixel_unused: float = 0.0, y: float = 0.45, _glyph_unused: String = "") -> void:
+	# Segmented jagged 3D path — 4 short BoxMesh segments connecting the
+	# two endpoints through 3 jittered midpoint waypoints. Both vertical
+	# and horizontal-perpendicular jitter so the bolt snakes through 3D
+	# space instead of living on a single horizontal plane. The ASCII
+	# post-shader pixelates each segment into a stroke of dense chars;
+	# the assembled path reads as a real lightning bolt.
+	if not visible or _world3d == null or not is_instance_valid(_world3d):
+		return
+	var from_3d := Vector3(from_2d.x / TILE_PX, y, from_2d.y / TILE_PX)
+	var to_3d := Vector3(to_2d.x / TILE_PX, y, to_2d.y / TILE_PX)
+	var delta := to_3d - from_3d
+	var dist := delta.length()
+	if dist <= 0.01:
+		return
+
+	# v6 — sharp Z-bolt with vertical amplitude that BREAKS THE WALL HEIGHT.
+	# Previous box versions kept midpoints inside 0..1 y, so per-segment
+	# slants only resolved to ~1 ASCII cell of vertical shift and the post-
+	# shader rounded them flat. Cranking VERT_AMP to 2.0 wu means midpoints
+	# can sit well above the ceiling or below the floor; visually it's
+	# fine that the bolt passes through them, and the slants are now steep
+	# enough (~30-45°) to read clearly as diagonal strokes regardless of
+	# from→to distance.
+	const SEGMENTS: int = 3
+	const VERT_AMP: float = 2.0           # ± wu, EXCEEDS playable bounds on purpose
+	const PERP_JITTER: float = 0.30
+	const THICKNESS: float = 0.025
+
+	# Shared material — one tween fades the whole bolt.
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.emission_enabled = true
+	mat.emission = color
+	mat.emission_energy_multiplier = 2.0
+
+	# Horizontal perpendicular in the xz plane.
+	var perp := Vector3(-delta.z, 0.0, delta.x)
+	if perp.length() > 0.0:
+		perp = perp.normalized()
+	else:
+		perp = Vector3(1.0, 0.0, 0.0)
+
+	# Waypoints: from, 2 strictly alternating midpoints, to. First sign
+	# randomized per call so consecutive bolts vary orientation.
+	var waypoints: Array[Vector3] = [from_3d]
+	var first_sign: float = 1.0 if randi() % 2 == 0 else -1.0
+	for i in (SEGMENTS - 1):
+		var base_t: float = float(i + 1) / float(SEGMENTS)
+		var t_nudge: float = randf_range(-0.06, 0.06)
+		var t: float = clampf(base_t + t_nudge, 0.10, 0.90)
+		var pt: Vector3 = from_3d.lerp(to_3d, t)
+		var vert_sign: float = first_sign if i % 2 == 0 else -first_sign
+		var vert_mag: float = VERT_AMP * randf_range(0.80, 1.0)
+		pt += perp * randf_range(-PERP_JITTER, PERP_JITTER)
+		pt += Vector3.UP * (vert_sign * vert_mag)
+		waypoints.append(pt)
+	waypoints.append(to_3d)
+
+	# Build the 3 segments.
+	var parent := Node3D.new()
+	_world3d.add_child(parent)
+	for i in SEGMENTS:
+		var a: Vector3 = waypoints[i]
+		var b: Vector3 = waypoints[i + 1]
+		var seg_delta := b - a
+		var seg_len := seg_delta.length()
+		if seg_len <= 0.001:
+			continue
+		var mesh_inst := MeshInstance3D.new()
+		var box := BoxMesh.new()
+		box.size = Vector3(THICKNESS, THICKNESS, seg_len)
+		mesh_inst.mesh = box
+		mesh_inst.material_override = mat
+		mesh_inst.position = (a + b) * 0.5
+		var seg_dir := seg_delta / seg_len
+		var look_up := Vector3.UP
+		if absf(seg_dir.dot(Vector3.UP)) > 0.99:
+			look_up = Vector3.RIGHT
+		mesh_inst.look_at(b, look_up)
+		parent.add_child(mesh_inst)
+	var tw := parent.create_tween()
+	tw.tween_property(mat, "albedo_color:a", 0.0, lifetime)
+	tw.tween_callback(parent.queue_free)
+
+# ── Per-emitter persistent warning ring ──────────────────────────────────────
+# Mirrors the grenadier's 2D Polygon2D + Line2D danger zone. Each emitter
+# owns a pooled circle of Label3D "o" glyphs that stays alive until cleared.
+# `intensity` (0..1) ramps the modulate alpha so callers can pulse the ring
+# during their countdown the way the 2D version does.
+func set_warning_ring(emitter: Node, pos_2d: Vector2, radius_world: float,
+		color: Color, intensity: float = 1.0, segments: int = 18,
+		glyph: String = "o", y: float = 0.20) -> void:
+	if not visible or _world3d == null or not is_instance_valid(_world3d):
+		return
+	if not is_instance_valid(emitter):
+		return
+	var key := emitter.get_instance_id()
+	var pool: Array = _enemy_warning_pools.get(key, []) as Array
+	while pool.size() < segments:
+		var lbl := Label3D.new()
+		lbl.text = glyph
+		lbl.font = MonoFont.get_font()
+		lbl.font_size = 48
+		lbl.outline_size = 6
+		lbl.pixel_size = 0.011
+		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		lbl.no_depth_test = false
+		lbl.shaded = false
+		lbl.double_sided = true
+		lbl.outline_modulate = Color(0, 0, 0, 1)
+		lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
+		_world3d.add_child(lbl)
+		pool.append(lbl)
+	var center := Vector3(pos_2d.x / TILE_PX, y, pos_2d.y / TILE_PX)
+	var tint := Color(color.r, color.g, color.b, color.a * clampf(intensity, 0.0, 1.0))
+	for i in segments:
+		var ang := (TAU / float(segments)) * float(i)
+		var lbl: Label3D = pool[i]
+		lbl.text = glyph
+		lbl.position = center + Vector3(cos(ang) * radius_world, 0.0, sin(ang) * radius_world)
+		lbl.modulate = tint
+		lbl.visible = true
+	# Hide any extras from a previous larger ring.
+	for i in range(segments, pool.size()):
+		(pool[i] as Label3D).visible = false
+	_enemy_warning_pools[key] = pool
+
+func clear_warning_ring(emitter: Node) -> void:
+	if not is_instance_valid(emitter):
+		return
+	var key := emitter.get_instance_id()
+	if not _enemy_warning_pools.has(key):
+		return
+	var pool: Array = _enemy_warning_pools[key] as Array
+	for lbl in pool:
+		if is_instance_valid(lbl):
+			(lbl as Node).queue_free()
+	_enemy_warning_pools.erase(key)
+
+# ── Target-lock screen warning ───────────────────────────────────────────────
+# Multiple emitters can lock concurrently — we just need to know if ANY do.
+# Renders a pulsing "[ LOCK ]" label on the FP CanvasLayer (not in the 3D
+# world) so it's always visible regardless of where the turret is. The 2D
+# game shows the lock square ON the player; in FP the player IS the camera
+# so a screen-space warning reads better.
+func set_target_lock(emitter: Node, on: bool) -> void:
+	if not is_instance_valid(emitter):
+		return
+	var key := emitter.get_instance_id()
+	if on:
+		_lock_emitters[key] = true
+	else:
+		_lock_emitters.erase(key)
+	_refresh_lock_label()
+
+func _refresh_lock_label() -> void:
+	if _lock_emitters.is_empty():
+		if _lock_label != null and is_instance_valid(_lock_label):
+			_lock_label.visible = false
+		return
+	if _lock_label == null or not is_instance_valid(_lock_label):
+		_lock_label = Label.new()
+		_lock_label.text = "[ LOCK ]"
+		_lock_label.add_theme_font_override("font", MonoFont.get_font())
+		_lock_label.add_theme_font_size_override("font_size", 22)
+		_lock_label.add_theme_color_override("font_color", Color(1.0, 0.20, 0.20))
+		_lock_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1))
+		_lock_label.add_theme_constant_override("outline_size", 3)
+		_lock_label.anchor_left = 0.5
+		_lock_label.anchor_right = 0.5
+		_lock_label.anchor_top = 0.5
+		_lock_label.anchor_bottom = 0.5
+		_lock_label.offset_left = -60
+		_lock_label.offset_right = 60
+		_lock_label.offset_top = -90
+		_lock_label.offset_bottom = -60
+		_lock_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_lock_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(_lock_label)
+	_lock_label.visible = true
+
+# Pulls the best "[E] …" hint off any nearby registered interactable and
+# floats it on the FP CanvasLayer. Most interactables already toggle their
+# own 2D Label.visible on body_entered/exited; we just mirror it here.
+func _update_interact_hint(player_pos_2d: Vector2) -> void:
+	var best_text: String = ""
+	var best_dist_sq: float = 80.0 * 80.0   # ~2.5 tiles
+	for key in _entities.keys():
+		var entry: Dictionary = _entities[key]
+		var body_v: Variant = entry["body"]
+		if not is_instance_valid(body_v) or not (body_v is Node2D):
+			continue
+		var body: Node2D = body_v as Node2D
+		var d_sq := player_pos_2d.distance_squared_to(body.global_position)
+		if d_sq > best_dist_sq:
+			continue
+		var hint_text := _scan_hint_text(body)
+		if hint_text == "":
+			continue
+		best_dist_sq = d_sq
+		best_text = hint_text
+	if best_text == "":
+		if _interact_label != null and is_instance_valid(_interact_label):
+			_interact_label.visible = false
+		return
+	if _interact_label == null or not is_instance_valid(_interact_label):
+		_interact_label = Label.new()
+		_interact_label.add_theme_font_override("font", MonoFont.get_font())
+		_interact_label.add_theme_font_size_override("font_size", 18)
+		_interact_label.add_theme_color_override("font_color", Color(1.0, 0.92, 0.55))
+		_interact_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1))
+		_interact_label.add_theme_constant_override("outline_size", 3)
+		_interact_label.anchor_left = 0.5
+		_interact_label.anchor_right = 0.5
+		_interact_label.anchor_top = 0.5
+		_interact_label.anchor_bottom = 0.5
+		_interact_label.offset_left = -200
+		_interact_label.offset_right = 200
+		_interact_label.offset_top = 80
+		_interact_label.offset_bottom = 110
+		_interact_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_interact_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(_interact_label)
+	_interact_label.text = best_text
+	_interact_label.visible = true
+
+# Returns the first interact-hint-style text found among `body`'s children.
+# Heuristic: visible Label, name not in {AsciiChar, AsciiArt, Visual} (those
+# are body art), and text starts with "[" or matches the portal-gate
+# strings ("DEFEAT BOSS" / "DEFEAT WIZARD") so portals' lock-state messages
+# show too. Returns "" when nothing qualifies.
+func _scan_hint_text(body: Node) -> String:
+	for c in body.get_children():
+		if not (c is Label):
+			continue
+		var lbl: Label = c as Label
+		if not lbl.visible:
+			continue
+		var nm := lbl.name
+		if nm == "AsciiChar" or nm == "AsciiArt" or nm == "Visual":
+			continue
+		var t: String = lbl.text
+		if t == "":
+			continue
+		if t.begins_with("[") or t.begins_with("DEFEAT"):
+			return t
+	return ""
+
+# Floating damage / status text — drifts up over `lifetime` and fades. Used
+# by FloatingText.spawn / spawn_str to surface damage numbers, CRIT/SHATTER
+# callouts, gold pickups, etc. in FP.
+func spawn_floating_text(pos_2d: Vector2, text: String, color: Color,
+		lifetime: float = 0.85, y: float = 0.65) -> void:
+	if not visible or _world3d == null or not is_instance_valid(_world3d):
+		return
+	var start := Vector3(pos_2d.x / TILE_PX, y, pos_2d.y / TILE_PX)
+	var end := start + Vector3(0.0, 0.55, 0.0)
+	_spawn_fx_label(start, text, color, 0.009, end, lifetime)
+
+# Trigger a camera shake — `intensity` is in world units (one tile = 1.0).
+# Caller passes the same duration the 2D camera_shake uses; the rig converts
+# its 2D-pixel amplitude into world units by dividing by TILE_PX.
+func shake(duration: float, intensity_px: float) -> void:
+	# Most recent shake wins if it's bigger — same "don't compound" rule
+	# Player.camera_shake uses on the 2D Camera2D.
+	var new_amp: float = intensity_px / TILE_PX
+	if _shake_t > 0.0 and _shake_intensity * (_shake_t / maxf(_shake_total, 0.001)) > new_amp:
+		return
+	_shake_t = duration
+	_shake_total = duration
+	_shake_intensity = new_amp

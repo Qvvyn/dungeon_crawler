@@ -28,7 +28,12 @@ var _tick_dmg: int = TICK_DMG_BASE
 static var _shared_font: Font = null
 
 func _ready() -> void:
-	GameState.attach_fp_visual(self, "*", Color(1.0, 0.50, 0.10), 0.10)
+	# FP rig opt-ins must be set BEFORE attach_fp_visual so register_entity
+	# picks up the multi-line allowance + shrinks the billboard so the 5-row
+	# flame patch sits flat on the ground instead of towering up the wall.
+	set_meta("fp_multiline", true)
+	set_meta("fp_pixel_size", 0.018)
+	GameState.attach_fp_visual(self, FLAME_F0, Color(1.0, 0.45, 0.05), 0.05)
 	# Scale radius with player level (mirrors Player._fire intelligence calc).
 	# Tightened — was `28 + INT*5` (33→68 px) which sprayed across most of
 	# a tile cluster; now `18 + INT*3` (21→42 px) so the patch reads as a
@@ -45,7 +50,11 @@ func _ready() -> void:
 	if _shared_font == null:
 		_shared_font = MonoFont.get_font()
 
+	# Named "AsciiChar" so the FP rig's live-glyph sync picks up the patch's
+	# animated text each frame and renders the flame frames on its billboard
+	# (rather than the static "*" we used to ship to FP).
 	_patch = Label.new()
+	_patch.name = "AsciiChar"
 	_patch.text = FLAME_F0
 	_patch.add_theme_font_override("font", _shared_font)
 	_patch.add_theme_color_override("font_color", Color(1.0, 0.45, 0.05))

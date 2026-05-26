@@ -50,6 +50,19 @@ func _detach_fp_visual(body: Node) -> void:
 			and active_rig.has_method("unregister_entity"):
 		active_rig.unregister_entity(body)
 
+# Refresh an already-attached entity's FP glyph/color without re-registering.
+# Used by LootBag when its rarity tier changes mid-floor so the FP bag re-
+# shapes and re-tints to match the 2D view. Also updates the meta fields so
+# a future re-register (mode toggle) replays the latest values.
+func update_fp_visual(body: Node2D, glyph: String, color: Color) -> void:
+	if not is_instance_valid(body):
+		return
+	body.set_meta("fp_glyph", glyph)
+	body.set_meta("fp_color", color)
+	if active_rig != null and is_instance_valid(active_rig) \
+			and active_rig.has_method("update_fp_visual"):
+		active_rig.update_fp_visual(body, glyph, color)
+
 func set_render_mode(mode: int) -> void:
 	mode = clampi(mode, 0, RenderMode.size() - 1)
 	if mode == render_mode:

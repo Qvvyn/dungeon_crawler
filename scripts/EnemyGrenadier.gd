@@ -121,6 +121,15 @@ func _update_warning_visuals() -> void:
 		return
 	var t: float = clampf(1.0 - (_lob_t / TELEGRAPH_TIME), 0.0, 1.0)   # 0 → 1 as we approach lob
 	var pulse: float = (sin(Time.get_ticks_msec() * 0.022) * 0.5 + 0.5)
+	# FP danger zone — persistent pooled ring at the predicted impact
+	# point, ramping intensity with the countdown so the player can read
+	# how close the boom is.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("set_warning_ring"):
+		var ring_alpha: float = 0.50 + 0.45 * t
+		GameState.active_rig.set_warning_ring(self, _predicted, 2.2,
+			Color(1.0, lerpf(0.55, 0.10, t), 0.0, ring_alpha),
+			0.85 + 0.15 * pulse, 18, "o", 0.20)
 	if is_instance_valid(_warning_fill):
 		_warning_fill.color = Color(1.0, lerpf(0.25, 0.05, t), 0.04,
 			lerpf(0.10, 0.35, t) + 0.05 * pulse)
@@ -140,6 +149,9 @@ func _clear_warning() -> void:
 	_warning_ring = null
 	_warning_fill = null
 	_warning_inner = null
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("clear_warning_ring"):
+		GameState.active_rig.clear_warning_ring(self)
 
 func _lob_grenade() -> void:
 	_telegraphing = false

@@ -7,10 +7,18 @@ var _player_inside: bool = false
 var _burn_timer: float   = 0.0
 var _pulse_t: float      = 0.0
 var _label: Label        = null
+# Optional expiry — 0 means "permanent" (biome generator placement); the
+# magma slug / arena eruption set this to a few seconds so dropped tiles
+# don't accumulate forever and clutter the room.
+var lifetime: float = 0.0
+var _life_t: float  = 0.0
 
 func _ready() -> void:
 	add_to_group("hazard")
-	GameState.attach_fp_visual(self, "~", Color(1.0, 0.45, 0.10), 0.05)
+	# FP mirrors the 2D label's single "≈" — small + floor-level so the
+	# lava tile reads as a puddle on the ground, not a chest-high glyph.
+	set_meta("fp_pixel_size", 0.006)
+	GameState.attach_fp_visual(self, "≈", Color(1.0, 0.40, 0.05), 0.03)
 	var cshape := CollisionShape2D.new()
 	var shape  := CircleShape2D.new()
 	shape.radius = 12.0
@@ -37,6 +45,18 @@ func _on_body_exited(body: Node2D) -> void:
 		_player_inside = false
 
 func _process(delta: float) -> void:
+	# Lifetime decay for transient tiles (slug trail, eruptions). When set,
+	# the tile self-destructs once life expires; the last second fades alpha
+	# so it doesn't pop out abruptly.
+	if lifetime > 0.0:
+		_life_t += delta
+		if _life_t >= lifetime:
+			queue_free()
+			return
+		var remain := lifetime - _life_t
+		if _label and remain < 1.0:
+			_label.modulate.a = clampf(remain, 0.0, 1.0)
+
 	_pulse_t += delta * 2.2
 	var pulse := 0.55 + 0.45 * sin(_pulse_t)
 	if _label:

@@ -46,12 +46,20 @@ func _start_lock_on() -> void:
 		_lock_marker.color = Color(1.0, 0.15, 0.15, 0.55)
 		_lock_marker.z_index = 4
 		get_tree().current_scene.add_child(_lock_marker)
+	# FP lock — the 2D square sits on the player, but in FP the player IS
+	# the camera so we surface this as a screen-space "[ LOCK ]" warning.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("set_target_lock"):
+		GameState.active_rig.set_target_lock(self, true)
 
 func _clear_lock() -> void:
 	_telegraphing = false
 	if is_instance_valid(_lock_marker):
 		_lock_marker.queue_free()
 	_lock_marker = null
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("set_target_lock"):
+		GameState.active_rig.set_target_lock(self, false)
 
 func _tick_anim_base(delta: float) -> void:
 	super(delta)

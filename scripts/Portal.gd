@@ -11,7 +11,13 @@ func _ready() -> void:
 	add_to_group("portal")
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
-	GameState.attach_fp_visual(self, "O", Color(0.45, 0.92, 1.0), 0.50)
+	# Portal's animated frame lives on the $AsciiArt label (not AsciiChar).
+	# The FP rig now reads either, but we still need to opt into multi-line
+	# + smaller pixel_size so the 3-line portal silhouette doesn't tower.
+	set_meta("fp_multiline", true)
+	set_meta("fp_pixel_size", 0.012)
+	GameState.attach_fp_visual(self, _BEFORE + _FRAMES[0] + _AFTER,
+		Color(0.45, 0.92, 1.0), 0.50)
 
 func _process(delta: float) -> void:
 	_anim_t += delta

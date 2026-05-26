@@ -55,6 +55,10 @@ func _drop_ice() -> void:
 		var tile: Node = ICE_TILE_SCRIPT.new()
 		if tile is Node2D:
 			(tile as Node2D).global_position = pos
+		# Each wave times out after a few seconds — previously the sentinel
+		# slowly carpeted the arena with permanent ice, which was unreadable
+		# in FP and tedious in top-down.
+		tile.set("lifetime", 10.0)
 		scene_root.add_child(tile)
 	if SoundManager:
 		SoundManager.play("crystal", randf_range(0.85, 1.05))

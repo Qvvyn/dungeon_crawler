@@ -15,7 +15,10 @@ var _label: Label        = null
 
 func _ready() -> void:
 	add_to_group("hazard")
-	GameState.attach_fp_visual(self, "~", Color(0.45, 1.0, 0.30), 0.55)
+	# FP mirrors the 2D label's single "~" — small + low so the cloud reads
+	# as a wisp hugging the floor instead of a billowing waist-high mass.
+	set_meta("fp_pixel_size", 0.007)
+	GameState.attach_fp_visual(self, "~", Color(0.45, 1.0, 0.30), 0.10)
 	var cshape := CollisionShape2D.new()
 	var shape  := CircleShape2D.new()
 	shape.radius = 14.0

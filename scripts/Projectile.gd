@@ -40,6 +40,13 @@ var _hit_entities: Array     = []   # instance IDs already struck (pierce/chain 
 # re-hits in the same arc, and a different collider always allows a
 # bounce regardless of how recent the last one was.
 var _last_bounce_collider_id: int = 0
+# Tracks distance traveled since the last wall bounce. Once we've cleared a
+# small margin (~12 px) the dedup ID is wiped, so a projectile that ricochets
+# off the same long horizontal wall twice in a row — e.g. bouncing off the
+# top then re-hitting the underside after looping back — can re-trigger
+# instead of dying. Previously the dedup held until a DIFFERENT body was
+# hit, which manifested as "ricochet only works at very specific angles".
+var _dist_since_bounce: float = 0.0
 var _trail_timer: float      = 0.0
 var _base_direction: Vector2 = Vector2.ZERO
 var _zigzag_t: float         = 0.0
@@ -96,6 +103,12 @@ func _ready() -> void:
 		var zap := get_node_or_null("ShockZap")
 		if zap != null:
 			zap.visible = false
+		# Player shots leave from below the crosshair — was rendering at
+		# chest height (same y as the camera) so every shot appeared dead
+		# centered. Lowering further (was 0.30, now 0.22) so the muzzle
+		# unmistakably comes from below the screen.
+		if source == "player":
+			set_meta("fp_height", 0.22)
 		# Register with the FP rig so the shot is actually visible in the
 		# new viewport. Glyph + color differ by shoot_type so fire / shock /
 		# freeze read as distinctly-flavored attacks rather than identical
@@ -106,6 +119,10 @@ func _ready() -> void:
 			var glyph: String
 			var color: Color
 			if source == "player":
+				# Mirror the top-down palette so only shotgun is yellow —
+				# regular = white, pierce = steel blue, shock = violet, homing
+				# = hot pink. Each type now reads as a distinct color at a
+				# glance instead of "another yellow blob" in FP.
 				match shoot_type:
 					"fire":
 						glyph = "@"
@@ -114,26 +131,40 @@ func _ready() -> void:
 						glyph = "*"
 						color = Color(0.55, 0.92, 1.0)
 					"shock":
-						glyph = "Z"
-						color = Color(1.0, 1.0, 0.40)
+						# Round bolt-head matches the other projectile shapes
+						# (homing, ricochet, etc) — pale blue distinguishes it.
+						glyph = "o"
+						color = Color(0.55, 0.85, 1.0)
 					"pierce":
 						glyph = "-"
-						color = Color(0.95, 0.95, 0.20)
+						color = Color(0.25, 0.60, 1.0)
 					"ricochet":
 						glyph = "o"
 						color = Color(0.20, 1.0, 0.35)
+					"shotgun":
+						glyph = "#"
+						color = Color(1.0, 0.85, 0.10)
 					"nova_shard":
 						glyph = "+"
 						color = Color(0.85, 0.30, 1.0)
+					"nova":
+						glyph = "*"
+						color = Color(0.70, 0.0, 1.0)
 					"homing":
 						glyph = ">"
-						color = Color(0.95, 0.40, 1.0)
+						color = Color(1.0, 0.40, 0.80)
 					"grenade":
 						glyph = "O"
-						color = Color(1.0, 0.60, 0.15)
+						color = Color(1.0, 0.45, 0.15)
+					"arc":
+						glyph = ")"
+						color = Color(1.0, 0.55, 0.15)
+					"missile":
+						glyph = ">"
+						color = Color(1.0, 0.20, 0.10)
 					_:
 						glyph = "*"
-						color = Color(1.0, 0.85, 0.25)
+						color = Color(0.95, 0.95, 0.95)
 			else:
 				glyph = "o"
 				color = Color(1.0, 0.35, 0.35)
@@ -162,13 +193,16 @@ func _apply_visual() -> void:
 	var lbl := get_node_or_null("AsciiChar")
 	if lbl == null:
 		return
+	# Palette is split so only shotgun reads yellow. Regular = white,
+	# pierce = steel blue, shock = violet (was all yellow and indistinguishable),
+	# homing = hot pink (was purple, conflicted with nova).
 	match shoot_type:
 		"regular":
 			lbl.text = "*"
-			lbl.add_theme_color_override("font_color", Color(1.0, 0.72, 0.08))
+			lbl.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
 		"pierce":
 			lbl.text = "-"
-			lbl.add_theme_color_override("font_color", Color(0.95, 0.95, 0.12))
+			lbl.add_theme_color_override("font_color", Color(0.25, 0.60, 1.0))
 		"ricochet":
 			lbl.text = "o"
 			lbl.add_theme_color_override("font_color", Color(0.15, 1.0, 0.28))
@@ -180,13 +214,13 @@ func _apply_visual() -> void:
 			lbl.add_theme_color_override("font_color", Color(1.0, 0.28, 0.04))
 		"shock":
 			lbl.text = "~"
-			lbl.add_theme_color_override("font_color", Color(1.0, 0.98, 0.06))
+			lbl.add_theme_color_override("font_color", Color(0.70, 0.40, 1.0))
 		"shotgun":
 			lbl.text = "#"
 			lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.1))
 		"homing":
 			lbl.text = "o"
-			lbl.add_theme_color_override("font_color", Color(0.6, 0.2, 1.0))
+			lbl.add_theme_color_override("font_color", Color(1.0, 0.40, 0.80))
 		"nova":
 			lbl.text = "*"
 			lbl.add_theme_color_override("font_color", Color(0.7, 0.0, 1.0))
@@ -299,28 +333,22 @@ func _physics_process(delta: float) -> void:
 				wall_c.take_damage(damage)
 			queue_free()
 			return
-		# Per-collider dedup. Same-wall re-hit is geometrically prevented
-		# by the position adjustment + reflected direction below, so the
-		# only thing this guards against is a freak re-detection of the
-		# exact same StaticBody2D in consecutive frames (shouldn't happen
-		# in practice but cheap to assert).
+		# Per-collider dedup, but only short-term — _dist_since_bounce wipes
+		# it once the projectile has moved clear (see end of _physics_process)
+		# so a long horizontal wall that the bullet glances off twice in the
+		# same flight still produces two bounces, not just one.
 		var wall_id: int = wall_c.get_instance_id()
 		if ricochet_remaining > 0 and wall_id != _last_bounce_collider_id:
 			ricochet_remaining -= 1
 			_last_bounce_collider_id = wall_id
+			_dist_since_bounce = 0.0
 			var hit_pos: Vector2 = hit.get("position") as Vector2
 			var normal: Vector2  = hit.get("normal")  as Vector2
-			# Roll the projectile back ALONG THE WALL NORMAL, not along
-			# inbound direction. Inbound rollback is geometrically wrong
-			# at shallow angles: 2 px along a near-parallel inbound vector
-			# only nudges sideways, leaving the projectile still inside
-			# the wall's collision shape. The next CCD ray then starts
-			# from inside the body, returns empty, the projectile tunnels
-			# in via global_position += move, and the body_entered slow
-			# path queue-frees it under the same-collider dedup. Pushing
-			# along normal * 4 puts the projectile clearly outside the
-			# wall regardless of incidence angle.
-			global_position = hit_pos + normal * 4.0
+			# Push out along the wall normal by a distance scaled to per-
+			# frame travel so fast shots (shock at 1.7× speed) don't land
+			# back inside the wall next frame.
+			var push: float = maxf(8.0, speed * delta * 0.5)
+			global_position = hit_pos + normal * push
 			direction = direction.bounce(normal)
 			rotation = direction.angle()
 			# Wall bounces also clear the per-hit tracker so a ricochet
@@ -331,6 +359,16 @@ func _physics_process(delta: float) -> void:
 		return
 
 	global_position += move
+
+	# Travel-based dedup clearing — after 12 px the bullet has moved clear
+	# enough that a future hit on the same wall body must be a NEW genuine
+	# collision (e.g. ricocheting off two perpendicular walls and clipping
+	# the first wall on the way back). Without this, long horizontal walls
+	# allowed only the first bounce; subsequent same-wall grazes died.
+	if _last_bounce_collider_id != 0:
+		_dist_since_bounce += move.length()
+		if _dist_since_bounce > 12.0:
+			_last_bounce_collider_id = 0
 
 	_trail_timer -= delta
 	if _trail_timer <= 0.0:
@@ -356,18 +394,20 @@ func _on_body_entered(body: Node2D) -> void:
 			queue_free()
 			return
 		# Per-collider dedup matches the CCD path. Slow-projectile fallback
-		# uses an axis flip instead of a true normal reflection (the
-		# Area2D body_entered signal doesn't carry a normal), but the
-		# same dedup rule applies: skip if it's the very wall we just
-		# bounced off.
+		# — body_entered doesn't ship a normal, so reconstruct one from the
+		# projectile's position relative to the wall's collision rect. The
+		# old "flip the dominant motion axis" heuristic was wrong at shallow
+		# angles against parallel walls (e.g. a near-horizontal shot grazing
+		# a horizontal wall flipped X instead of Y, sending the bullet back
+		# along its incoming path).
 		var wall_id: int = body.get_instance_id()
 		if ricochet_remaining > 0 and wall_id != _last_bounce_collider_id:
 			ricochet_remaining -= 1
 			_last_bounce_collider_id = wall_id
-			if abs(direction.x) >= abs(direction.y):
-				direction.x = -direction.x
-			else:
-				direction.y = -direction.y
+			_dist_since_bounce = 0.0
+			var wall_normal := _normal_for_wall(body)
+			global_position += wall_normal * 8.0
+			direction = direction.bounce(wall_normal)
 			rotation = direction.angle()
 			_hit_entities.clear()
 		else:
@@ -490,6 +530,35 @@ func _on_body_entered(body: Node2D) -> void:
 
 	queue_free()
 
+# Reconstructs a wall normal from the projectile's position relative to the
+# wall's RectangleShape2D — used when body_entered fires (no normal carried
+# by the signal). Compares the projectile's penetration depth along each
+# axis and reflects off the axis with the smaller penetration (the edge
+# the projectile just crossed). Falls back to inbound-axis flip if the
+# wall has no recognizable rect shape.
+func _normal_for_wall(body: Node) -> Vector2:
+	if not (body is Node2D):
+		return Vector2(-direction.x, 0.0).normalized()
+	var body2d := body as Node2D
+	var to_wall := body2d.global_position - global_position
+	var cshape := body2d.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if cshape != null and cshape.shape is RectangleShape2D:
+		var size: Vector2 = (cshape.shape as RectangleShape2D).size
+		# Penetration along each axis: positive means projectile is inside
+		# the wall along that axis. Smaller penetration = the edge that was
+		# just crossed → flip that axis.
+		var x_pen: float = size.x * 0.5 - absf(to_wall.x)
+		var y_pen: float = size.y * 0.5 - absf(to_wall.y)
+		if x_pen < y_pen:
+			return Vector2(-signf(to_wall.x), 0.0)
+		else:
+			return Vector2(0.0, -signf(to_wall.y))
+	# Unknown shape — best effort: reflect off the axis the projectile is
+	# closer to the wall on.
+	if absf(to_wall.x) > absf(to_wall.y):
+		return Vector2(-signf(to_wall.x), 0.0)
+	return Vector2(0.0, -signf(to_wall.y))
+
 func _explode_grenade() -> void:
 	var radius := 70.0
 	var ply := get_tree().get_first_node_in_group("player")
@@ -515,6 +584,15 @@ func _explode_grenade() -> void:
 	tw.tween_property(holder, "scale", Vector2(2.2, 2.2), 0.30)
 	tw.parallel().tween_property(ring, "modulate:a", 0.0, 0.30)
 	tw.tween_callback(holder.queue_free)
+	# FP shockwave — ring of '*' chars expanding to the actual radius
+	# (70 px in 2D = ~2.2 wu). Plus a forward-cone of debris so close-up
+	# detonations feel forceful even when the ring rim has passed the
+	# camera.
+	var col := Color(1.0, 0.50, 0.10)
+	# 32.0 = FirstPersonRig.TILE_PX — the rig's 2D-px-per-world-unit factor.
+	# Hardcoded here because Projectile doesn't share the rig's const block.
+	_fp_ring(global_position, "*", col, 0.30, radius / 32.0, 20, 0.30, 0.011, 0.20)
+	_fp_burst(global_position, "*", col, 6, 0.7, 0.30, Vector2.ZERO, TAU, 0.010, 0.40)
 
 func _chain_hop(from_pos: Vector2, hops_left: int) -> void:
 	if hops_left <= 0:
@@ -558,7 +636,8 @@ func _chain_hop(from_pos: Vector2, hops_left: int) -> void:
 	# Lightning arc visual only
 	var arc := Line2D.new()
 	arc.width = 2.0
-	arc.default_color = Color(0.85, 0.95, 1.0, 0.9)
+	var arc_color := Color(0.85, 0.95, 1.0, 0.9)
+	arc.default_color = arc_color
 	for i in 7:
 		var t := float(i) / 6.0
 		var pt := from_pos.lerp(best.global_position, t)
@@ -570,6 +649,10 @@ func _chain_hop(from_pos: Vector2, hops_left: int) -> void:
 	var arc_tw := arc.create_tween()
 	arc_tw.tween_property(arc, "modulate:a", 0.0, 0.28)
 	arc_tw.tween_callback(arc.queue_free)
+	# FP chain arc — jagged glyphs spanning the hop. Bright cyan so the
+	# arc pops against the dim FP background; the rig's defaults handle
+	# segment count, jitter and lifetime (boosted for visibility).
+	_fp_chain(from_pos, best.global_position, Color(0.70, 1.0, 1.0))
 	# Next hop
 	_chain_hop(best.global_position, hops_left - 1)
 
@@ -616,6 +699,11 @@ func _spawn_nova_burst_flash(pos: Vector2) -> void:
 	tw.parallel().tween_property(ring,  "modulate:a", 0.0, 0.45)
 	tw.parallel().tween_property(inner, "modulate:a", 0.0, 0.32)
 	tw.tween_callback(holder.queue_free)
+	# FP nova flash — twin rings matching the 2D's outer + inner. The
+	# scale-to-7× over 0.45 s expands from 14 px to ~3 wu, so end_radius
+	# 3.1 wu for the outer ring matches the 2D footprint.
+	_fp_ring(pos, "*", Color(0.95, 0.55, 1.0), 0.30, 3.1, 24, 0.45, 0.011, 0.40)
+	_fp_ring(pos, "+", Color(1.0, 0.85, 1.0), 0.20, 2.4, 20, 0.32, 0.009, 0.40)
 
 func _do_shock_chain(from_enemy: Node2D) -> void:
 	# Reuse _chain_hop — shock chains to player_intelligence additional targets
@@ -670,17 +758,58 @@ func _on_area_entered(area: Area2D) -> void:
 
 # ── Visual helpers ────────────────────────────────────────────────────────────
 
+# FP shorthand — no-op when no FP rig is active or rig isn't visible. Keeps
+# the impact / burst code below from re-checking the rig pointer at every
+# call site.
+func _fp_burst(pos: Vector2, glyph: String, color: Color, count: int,
+		spread: float = 0.55, lifetime: float = 0.20,
+		direction: Vector2 = Vector2.ZERO, cone: float = TAU,
+		pixel_size: float = 0.010, y: float = 0.50) -> void:
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_burst_2d"):
+		GameState.active_rig.spawn_burst_2d(pos, glyph, color, count, spread,
+			lifetime, direction, cone, pixel_size, y)
+
+func _fp_streak(pos: Vector2, dir: Vector2, glyph: String, color: Color, count: int,
+		length: float = 0.7, lifetime: float = 0.18,
+		pixel_size: float = 0.010, y: float = 0.50) -> void:
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_streak_2d"):
+		GameState.active_rig.spawn_streak_2d(pos, dir, glyph, color, count,
+			length, lifetime, pixel_size, y)
+
+func _fp_ring(pos: Vector2, glyph: String, color: Color,
+		start_radius: float, end_radius: float,
+		segments: int = 16, lifetime: float = 0.30,
+		pixel_size: float = 0.009, y: float = 0.40) -> void:
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_ring_2d"):
+		GameState.active_rig.spawn_ring_2d(pos, glyph, color, start_radius, end_radius,
+			segments, lifetime, pixel_size, y)
+
+func _fp_chain(from_2d: Vector2, to_2d: Vector2, color: Color,
+		lifetime: float = 0.35) -> void:
+	# The rig now draws chain arcs as a 3D box stretched between the two
+	# points (the ASCII post-shader pixelates it into a line). Only color
+	# + lifetime matter at the wrapper layer; segment/glyph args are
+	# vestigial and left out for clarity.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_chain_arc_2d"):
+		GameState.active_rig.spawn_chain_arc_2d(from_2d, to_2d, color, 0, lifetime)
+
 func _get_proj_color() -> Color:
+	# Trail color matches the per-type palette — yellow stays reserved for
+	# shotgun so trails read as the wand type at a glance.
 	match shoot_type:
-		"regular":  return Color(1.0, 0.72, 0.08)
-		"pierce":   return Color(0.95, 0.95, 0.12)
+		"regular":  return Color(0.95, 0.95, 0.95)
+		"pierce":   return Color(0.25, 0.60, 1.0)
 		"ricochet": return Color(0.15, 1.0, 0.28)
 		"freeze":   return Color(0.55, 0.88, 1.0)
 		"fire":     return Color(1.0, 0.28, 0.04)
-		"shock":    return Color(0.55, 0.85, 1.0)
+		"shock":    return Color(0.70, 0.40, 1.0)
 		"beam":     return Color(0.3, 1.0, 0.8)
 		"shotgun":  return Color(1.0, 0.85, 0.1)
-		"homing":   return Color(0.6, 0.2, 1.0)
+		"homing":   return Color(1.0, 0.40, 0.80)
 		"nova":     return Color(0.7, 0.0, 1.0)
 	return Color(0.72, 0.72, 0.88)
 
@@ -688,15 +817,28 @@ func _spawn_trail_marker() -> void:
 	if not is_inside_tree():
 		return
 	var col := _get_proj_color()
-	var dot := ColorRect.new()
-	dot.size = Vector2(4.0, 4.0)
-	dot.color = Color(col.r, col.g, col.b, 0.55)
-	dot.position = global_position - Vector2(2.0, 2.0)
-	get_tree().current_scene.add_child(dot)
 	var fade := 0.15 if shoot_type in ["fire", "freeze", "homing"] else 0.1
-	var tw := dot.create_tween()
-	tw.tween_property(dot, "modulate:a", 0.0, fade)
-	tw.tween_callback(dot.queue_free)
+	if GameState.render_mode == GameState.RenderMode.TOPDOWN:
+		var dot := ColorRect.new()
+		dot.size = Vector2(4.0, 4.0)
+		dot.color = Color(col.r, col.g, col.b, 0.55)
+		dot.position = global_position - Vector2(2.0, 2.0)
+		get_tree().current_scene.add_child(dot)
+		var tw := dot.create_tween()
+		tw.tween_property(dot, "modulate:a", 0.0, fade)
+		tw.tween_callback(dot.queue_free)
+	else:
+		# FP trail — one tiny billboard per emission, no drift, fades in
+		# place. Spawned at fp_height (matches player projectile height)
+		# so the trail strings along below the crosshair. All shoot types
+		# use the same "." trail glyph so shock no longer reads visually
+		# different from the others (color still distinguishes it).
+		if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+				and GameState.active_rig.has_method("spawn_burst_2d"):
+			var trail_y: float = 0.22 if source == "player" else 0.50
+			GameState.active_rig.spawn_burst_2d(global_position, ".",
+				Color(col.r, col.g, col.b, 0.55), 1, 0.0, fade,
+				Vector2.ZERO, TAU, 0.006, trail_y)
 
 func _spawn_impact_burst(pos: Vector2) -> void:
 	if not is_inside_tree():
@@ -725,10 +867,12 @@ func _impact_default(pos: Vector2) -> void:
 		tw.tween_property(c, "position", c.position + drift, 0.18)
 		tw.parallel().tween_property(c, "modulate:a", 0.0, 0.18)
 		tw.tween_callback(c.queue_free)
+	_fp_burst(pos, ".", col.lightened(0.25), 3, 0.6, 0.18)
 
 func _impact_pierce(pos: Vector2) -> void:
-	# Forward streaks — drilling through
-	var col := Color(0.95, 0.95, 0.30)
+	# Forward streaks — drilling through. Updated palette: pierce is now
+	# steel blue, not yellow.
+	var col := Color(0.25, 0.60, 1.0)
 	var perp := direction.rotated(PI * 0.5)
 	for i in 4:
 		var streak := ColorRect.new()
@@ -742,6 +886,7 @@ func _impact_pierce(pos: Vector2) -> void:
 		tw.tween_property(streak, "position", target, 0.18)
 		tw.parallel().tween_property(streak, "modulate:a", 0.0, 0.18)
 		tw.tween_callback(streak.queue_free)
+	_fp_streak(pos, direction, "-", col, 4, 0.9, 0.18, 0.010, 0.50)
 
 func _impact_ricochet(pos: Vector2) -> void:
 	# Ring shatter — even radial fragments
@@ -758,6 +903,7 @@ func _impact_ricochet(pos: Vector2) -> void:
 		tw.tween_property(c, "position", target, 0.22)
 		tw.parallel().tween_property(c, "modulate:a", 0.0, 0.22)
 		tw.tween_callback(c.queue_free)
+	_fp_burst(pos, "o", col, 6, 0.7, 0.22)
 
 func _impact_freeze(pos: Vector2) -> void:
 	# Crystalline shards
@@ -776,14 +922,16 @@ func _impact_freeze(pos: Vector2) -> void:
 		tw.tween_property(lbl, "position", target, 0.28)
 		tw.parallel().tween_property(lbl, "modulate:a", 0.0, 0.28)
 		tw.tween_callback(lbl.queue_free)
+	_fp_burst(pos, "*", col, 7, 0.75, 0.28)
 
 func _impact_fire(pos: Vector2) -> void:
 	# Flame bloom — flame chars expanding outward
 	var chars := ["(", ")", "*"]
+	var col := Color(1.0, 0.4, 0.05)
 	for i in 6:
 		var lbl := Label.new()
 		lbl.text = chars[i % 3]
-		lbl.add_theme_color_override("font_color", Color(1.0, 0.4, 0.05))
+		lbl.add_theme_color_override("font_color", col)
 		lbl.add_theme_font_size_override("font_size", 14)
 		lbl.position = pos + Vector2(-4.0, -8.0)
 		get_tree().current_scene.add_child(lbl)
@@ -794,9 +942,16 @@ func _impact_fire(pos: Vector2) -> void:
 		tw.tween_property(lbl, "position", target, 0.22)
 		tw.parallel().tween_property(lbl, "modulate:a", 0.0, 0.22)
 		tw.tween_callback(lbl.queue_free)
+	# FP fire bloom — three separate calls so the burst mixes ( / ) / * the
+	# way the 2D version does, rather than just one repeated glyph.
+	_fp_burst(pos, "(", col, 2, 0.65, 0.22)
+	_fp_burst(pos, ")", col, 2, 0.65, 0.22)
+	_fp_burst(pos, "*", col, 2, 0.65, 0.22)
 
 func _impact_shock(pos: Vector2) -> void:
-	# Lightning fork — 3 jagged arcs branching out
+	# Lightning fork — 3 jagged arcs branching out. FP uses pale blue to
+	# match the top-down impact Line2D (0.55/0.85/1.0).
+	var fp_col := Color(0.55, 0.85, 1.0)
 	for i in 3:
 		var arc := Line2D.new()
 		arc.width = 2.0
@@ -815,6 +970,10 @@ func _impact_shock(pos: Vector2) -> void:
 		var tw := arc.create_tween()
 		tw.tween_property(arc, "modulate:a", 0.0, 0.22)
 		tw.tween_callback(arc.queue_free)
+		# FP fork — chain arc from the impact point out to the strike tip.
+		# Same defaults as the chain-hop arc so all three forks read as the
+		# same flavor of lightning.
+		_fp_chain(pos, end_pt, fp_col)
 
 func _impact_shotgun(pos: Vector2) -> void:
 	# Buckshot scatter — forward cone of small dots
@@ -831,14 +990,17 @@ func _impact_shotgun(pos: Vector2) -> void:
 		tw.tween_property(c, "position", target, 0.18)
 		tw.parallel().tween_property(c, "modulate:a", 0.0, 0.18)
 		tw.tween_callback(c.queue_free)
+	_fp_burst(pos, "#", col, 7, 0.85, 0.18, direction, deg_to_rad(80.0))
 
 func _impact_homing(pos: Vector2) -> void:
-	# Pulse ring — expanding circle outline
+	# Pulse ring — expanding circle outline. Updated palette: homing is hot
+	# pink, not purple (purple now means shock/nova).
+	var col := Color(1.0, 0.40, 0.80)
 	var holder := Node2D.new()
 	holder.global_position = pos
 	var ring := Line2D.new()
 	ring.width = 2.0
-	ring.default_color = Color(0.75, 0.30, 1.0, 1.0)
+	ring.default_color = col
 	var segments := 14
 	for j in segments + 1:
 		var ang := (TAU / float(segments)) * float(j)
@@ -849,6 +1011,7 @@ func _impact_homing(pos: Vector2) -> void:
 	tw.tween_property(holder, "scale", Vector2(3.2, 3.2), 0.28)
 	tw.parallel().tween_property(ring, "modulate:a", 0.0, 0.28)
 	tw.tween_callback(holder.queue_free)
+	_fp_ring(pos, "o", col, 0.25, 0.7, 14, 0.28)
 
 func _impact_nova(pos: Vector2) -> void:
 	# 8-directional sparks
@@ -865,6 +1028,7 @@ func _impact_nova(pos: Vector2) -> void:
 		tw.tween_property(c, "position", target, 0.20)
 		tw.parallel().tween_property(c, "modulate:a", 0.0, 0.20)
 		tw.tween_callback(c.queue_free)
+	_fp_burst(pos, "+", col, 8, 0.6, 0.20)
 
 func _spawn_death_pop(pos: Vector2) -> void:
 	if not is_inside_tree():
@@ -883,3 +1047,9 @@ func _spawn_death_pop(pos: Vector2) -> void:
 		tw.tween_property(c, "position", target, 0.30)
 		tw.parallel().tween_property(c, "modulate:a", 0.0, 0.30)
 		tw.tween_callback(c.queue_free)
+	# FP mirror — radial 4-way burst at chest height. Drift radius matches
+	# the 2D version (~0.6 wu = 20 px) so the visual scale reads the same.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_burst_2d"):
+		GameState.active_rig.spawn_burst_2d(pos, "*", col, 4, 0.7, 0.30,
+			Vector2.ZERO, TAU, 0.011, 0.50)

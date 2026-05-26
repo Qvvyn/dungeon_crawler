@@ -24,7 +24,14 @@ func _ready() -> void:
 	add_to_group("loot_bag")
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
-	GameState.attach_fp_visual(self, "$", Color(1.0, 0.85, 0.30), 0.30)
+	# Smaller pixel_size so the multi-line bag silhouette sits like a small
+	# pouch on the floor rather than the default body-size billboard. The
+	# rig auto-divides by line count, so 0.010 yields ~0.32 wu per line —
+	# 2-line regular bag fits in roughly half a tile.
+	set_meta("fp_pixel_size", 0.010)
+	# Placeholder glyph + color; _recolor_by_rarity() below builds the real
+	# multi-line bag art and pushes it via GameState.update_fp_visual.
+	GameState.attach_fp_visual(self, ",---,\n)___(", Color(0.85, 0.55, 0.15), 0.20)
 
 	# Only generate random items if none were pre-set (e.g. from a discard)
 	if items.is_empty():
@@ -350,6 +357,10 @@ func _recolor_by_rarity() -> void:
 	visual.text = glyph
 	visual.add_theme_color_override("font_color", col)
 	visual.add_theme_color_override("font_outline_color", col.darkened(0.7))
+	# Sync to FP — the rig has no AsciiChar to read off (this LootBag's 2D
+	# Label is named "Visual" by .tscn convention), so we push the glyph +
+	# color through update_fp_visual after every rarity change.
+	GameState.update_fp_visual(self, glyph, col)
 
 func _close_popup() -> void:
 	if _popup:

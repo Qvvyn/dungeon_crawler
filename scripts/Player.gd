@@ -2242,12 +2242,17 @@ func _apply_mobile_hud_scale() -> void:
 
 const _SHAKE_INTENSITY_CAP: float = 22.0
 func camera_shake(intensity: float, duration: float) -> void:
-	var cam: Camera2D = get_node_or_null("Camera2D") as Camera2D
-	if cam == null:
-		return
 	# Hard cap on peak amplitude so back-to-back hits don't compound into a
 	# screen-flinging jitter — better feel than unbounded stacking.
 	intensity = minf(intensity, _SHAKE_INTENSITY_CAP)
+	# Mirror into FP so the camera shakes when in first-person too. The rig
+	# does its own decay; we just pass duration + intensity.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("shake"):
+		GameState.active_rig.shake(duration, intensity)
+	var cam: Camera2D = get_node_or_null("Camera2D") as Camera2D
+	if cam == null:
+		return
 	if is_instance_valid(_shake_tween) and _shake_tween.is_running():
 		if cam.offset.length() > intensity:
 			return
@@ -2468,11 +2473,14 @@ func _input(event: InputEvent) -> void:
 					SoundManager.play("gold", 1.20)
 				get_viewport().set_input_as_handled()
 		KEY_1:
-			if not _is_dead and not _is_paused and GameState.test_mode:
+			# Cycle through shoot_types in any mode (was test-mode only). Same
+			# behavior the arena/test loop uses: fresh legendary wand per
+			# press, name shows current slot, FloatingText announces it.
+			if not _is_dead and not _is_paused:
 				_cycle_test_wand(-1)
 				get_viewport().set_input_as_handled()
 		KEY_2:
-			if not _is_dead and not _is_paused and GameState.test_mode:
+			if not _is_dead and not _is_paused:
 				_cycle_test_wand(1)
 				get_viewport().set_input_as_handled()
 		KEY_0:
@@ -4810,6 +4818,9 @@ func _handle_shooting(delta: float) -> void:
 	# Hide beam line if we switched away from beam
 	if _beam_line:
 		_beam_line.visible = false
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("clear_beam"):
+		GameState.active_rig.clear_beam()
 
 	# Each wand carries its own wand_fire_rate. DEX trims that down via
 	# _dex_fire_reduction (5 DEX = -10 ms). Flaws and equipment bonuses
@@ -4851,6 +4862,9 @@ func _handle_beam(delta: float, wand: Item) -> void:
 	if not _wants_shoot():
 		if _beam_line:
 			_beam_line.visible = false
+		if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+				and GameState.active_rig.has_method("clear_beam"):
+			GameState.active_rig.clear_beam()
 		return
 
 	var drain: float = wand.wand_mana_cost
@@ -4928,6 +4942,13 @@ func _handle_beam(delta: float, wand: Item) -> void:
 	_beam_line.clear_points()
 	_beam_line.add_point(Vector2.ZERO)
 	_beam_line.add_point(to_local(end_pos))
+	# Mirror the beam into FP — the 2D Line2D doesn't render to the 3D
+	# SubViewport, so without this the beam wand was invisible in FP. The
+	# rig pools "=" billboards along the beam path and clears them when
+	# the trigger releases.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("set_beam"):
+		GameState.active_rig.set_beam(global_position, end_pos, Color(0.30, 1.0, 0.80))
 
 func _fire(wand: Item = null) -> void:
 	if projectile_scene == null:
@@ -5150,6 +5171,25 @@ func _fire_melee(wand: Item, _base_dir: Vector2) -> void:
 		SoundManager.play("punch", randf_range(0.95, 1.05))
 		if any_hit:
 			SoundManager.play("punch_hit", randf_range(0.92, 1.08))
+
+	# FP punch flash — drop a >< glyph at the strike point so the player
+	# sees melee land in front of them. The fist art below is positioned for
+	# top-down (covers the cursor); without this FP-only call, melee was
+	# completely invisible in first-person.
+	if GameState.render_mode != GameState.RenderMode.TOPDOWN \
+			and GameState.active_rig != null \
+			and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("flash_melee"):
+		# Position the flash a short way in front of the player along the
+		# aim line — close enough that it sits "right in front of you" in
+		# the 3D view rather than projecting all the way to the cursor.
+		var aim_dir := (_get_aim_pos() - global_position)
+		if aim_dir.length() > 0.0:
+			aim_dir = aim_dir.normalized()
+		else:
+			aim_dir = Vector2.RIGHT
+		var fp_hit := global_position + aim_dir * 28.0
+		GameState.active_rig.flash_melee(fp_hit, Color(1.0, 0.85, 0.30))
 
 	# Visual: knuckles rushing AT the viewer — start small, slam outward
 	var art_node := Node2D.new()
@@ -5790,18 +5830,20 @@ func _build_death_weapon_panel(parent: Node, pos: Vector2, size: Vector2) -> voi
 # ItemDB._wand_color so a chartreuse "shock" MVP matches the wand the
 # player remembers carrying.
 func _shoot_type_color(stype: String) -> Color:
+	# Palette matches Projectile.gd — yellow is reserved for shotgun so MVP
+	# callouts and the wand the player remembers carrying read as the same hue.
 	match stype:
-		"pierce":   return Color(0.95, 0.95, 0.30)
-		"ricochet": return Color(0.35, 1.00, 0.50)
-		"freeze":   return Color(0.30, 0.75, 1.00)
+		"pierce":   return Color(0.25, 0.60, 1.00)
+		"ricochet": return Color(0.20, 1.00, 0.35)
+		"freeze":   return Color(0.55, 0.92, 1.00)
 		"fire":     return Color(1.00, 0.40, 0.10)
-		"shock":    return Color(0.90, 0.95, 0.30)
+		"shock":    return Color(0.70, 0.40, 1.00)
 		"beam":     return Color(0.30, 1.00, 0.80)
-		"shotgun":  return Color(1.00, 0.65, 0.20)
-		"homing":   return Color(0.55, 0.30, 1.00)
+		"shotgun":  return Color(1.00, 0.85, 0.10)
+		"homing":   return Color(1.00, 0.40, 0.80)
 		"nova":     return Color(0.85, 0.40, 1.00)
 		"melee":    return Color(0.95, 0.85, 0.55)
-	return Color(0.95, 0.90, 0.85)
+	return Color(0.95, 0.95, 0.95)
 
 func _add_lb_column(parent: Node, title: String, entries: Array, pos: Vector2, highlight_rank: int = -1) -> void:
 	var col_w := 320.0

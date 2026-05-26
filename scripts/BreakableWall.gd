@@ -53,3 +53,11 @@ func _burst() -> void:
 		tw.tween_property(c, "position", gpos + Vector2(cos(angle), sin(angle)) * dist, 0.35)
 		tw.parallel().tween_property(c, "modulate:a", 0.0, 0.35)
 		tw.tween_callback(c.queue_free)
+	# FP rubble — three quick bursts using the same char palette so the
+	# wall collapse reads as chunks of stone scattering in first-person.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_burst_2d"):
+		var fp_col := _col.lightened(0.5)
+		GameState.active_rig.spawn_burst_2d(gpos, "#", fp_col, 2, 0.65, 0.35, Vector2.ZERO, TAU, 0.010, 0.50)
+		GameState.active_rig.spawn_burst_2d(gpos, "+", fp_col, 2, 0.65, 0.35, Vector2.ZERO, TAU, 0.010, 0.50)
+		GameState.active_rig.spawn_burst_2d(gpos, "*", fp_col, 2, 0.65, 0.35, Vector2.ZERO, TAU, 0.010, 0.50)

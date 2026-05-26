@@ -11,7 +11,11 @@ const MAGNET_SPEED  := 340.0
 func _ready() -> void:
 	add_to_group("gold_pickup")
 	body_entered.connect(_on_body_entered)
-	GameState.attach_fp_visual(self, "g", Color(1.0, 0.95, 0.30), 0.20)
+	# "$" matches the 2D pickup label below — FP previously diverged with "g".
+	# Hugs the floor and uses a small pixel_size so the coin reads as a
+	# pickup glinting on the ground, not a chest-high token.
+	set_meta("fp_pixel_size", 0.007)
+	GameState.attach_fp_visual(self, "$", Color(1.0, 0.95, 0.30), 0.05)
 	_player = get_tree().get_first_node_in_group("player")
 	var vis := get_node_or_null("Visual")
 	if vis: vis.visible = false

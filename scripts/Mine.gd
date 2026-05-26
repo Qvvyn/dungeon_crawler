@@ -26,10 +26,16 @@ static var _shared_font: Font = null
 func _ready() -> void:
 	body_entered.connect(_on_body_entered)
 	add_to_group("mine")
-	GameState.attach_fp_visual(self, "*", Color(1.0, 0.45, 0.15), 0.10)
+	# Multi-line FP visual — the mine's 2D art already animates between
+	# disarmed and armed frames; naming the label "AsciiChar" + enabling
+	# fp_multiline lets the FP rig mirror those frames live.
+	set_meta("fp_multiline", true)
+	set_meta("fp_pixel_size", 0.012)
+	GameState.attach_fp_visual(self, F_UNARMED, Color(0.95, 0.85, 0.20), 0.20)
 	if _shared_font == null:
 		_shared_font = MonoFont.get_font()
 	_lbl = Label.new()
+	_lbl.name = "AsciiChar"
 	_lbl.add_theme_font_override("font", _shared_font)
 	_lbl.add_theme_font_size_override("font_size", 13)
 	_lbl.add_theme_constant_override("line_separation", -4)
