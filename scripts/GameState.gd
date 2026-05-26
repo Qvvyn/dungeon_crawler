@@ -3,7 +3,7 @@ extends Node
 # Bump on each release. Surfaced on the title screen and available to
 # leaderboard submissions / debug snapshots so issues filed by players
 # can be matched against the build they were on.
-const GAME_VERSION := "v0.2.3"
+const GAME_VERSION := "v0.2.4"
 
 signal leveled_up
 

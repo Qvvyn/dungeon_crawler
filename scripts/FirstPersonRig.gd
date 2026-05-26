@@ -406,22 +406,22 @@ func _process(delta: float) -> void:
 			ascii_child = body.get_node_or_null("AsciiArt")
 		if ascii_child != null and ascii_child is Label:
 			var al: Label = ascii_child as Label
-			# Live text sync — only for body-kind entities. Projectiles set
-			# their AsciiChar.text once in _apply_visual (e.g. pierce writes
-			# ")" for 2D); reading that here would clobber the FP-specific
-			# stored_glyph (e.g. "/-\" for pierce). Modulate is still synced
-			# for all kinds so status tints + projectile alpha still work.
+			# Live text sync — for body-kind entities (enemies animate
+			# multi-frame), OR any projectile that opts in via fp_animate
+			# (nova swaps + ↔ x). Static-glyph projectiles like pierce keep
+			# their FP-specific stored_glyph instead of being clobbered by
+			# the 2D AsciiChar.text.
 			var kind: String = entry.get("kind", "body")
-			if kind == "body":
-				if al.text != "":
-					var allow_multiline: bool = bool(body.get_meta("fp_multiline", false)) \
-							or kind == "body"
-					if allow_multiline:
-						live_text = al.text
-					else:
-						var first_line: String = al.text.split("\n")[0]
-						if first_line.strip_edges() != "":
-							live_text = first_line
+			var allow_text_sync: bool = (kind == "body") or bool(body.get_meta("fp_animate", false))
+			if allow_text_sync and al.text != "":
+				var allow_multiline: bool = bool(body.get_meta("fp_multiline", false)) \
+						or kind == "body"
+				if allow_multiline:
+					live_text = al.text
+				else:
+					var first_line: String = al.text.split("\n")[0]
+					if first_line.strip_edges() != "":
+						live_text = first_line
 			live_modulate = al.modulate
 		# Status overlay sync — read FrozenBlock / EnflameOverlay / ElectricBolt
 		# siblings off the body so debuffs read in FP the same way they do in
