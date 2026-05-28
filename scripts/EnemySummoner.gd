@@ -153,10 +153,10 @@ func _try_summon() -> void:
 	FloatingText.spawn_str(global_position, "SUMMON!", Color(0.75, 0.2, 1.0), get_tree().current_scene)
 	if SoundManager:
 		SoundManager.play("summon", randf_range(0.95, 1.08))
-	for _i in randi_range(1, 2):
-		var minion := MINION_SCENE.instantiate()
-		minion.position = global_position + Vector2(randf_range(-60.0, 60.0), randf_range(-60.0, 60.0))
-		enemies_node.call_deferred("add_child", minion)
+	# One minion per cycle (was 1-2) to slow the mid-level add rate.
+	var minion := MINION_SCENE.instantiate()
+	minion.position = global_position + Vector2(randf_range(-60.0, 60.0), randf_range(-60.0, 60.0))
+	enemies_node.call_deferred("add_child", minion)
 
 # ── Status ticking ────────────────────────────────────────────────────────────
 

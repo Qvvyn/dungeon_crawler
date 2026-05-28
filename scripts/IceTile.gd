@@ -22,6 +22,7 @@ func _ready() -> void:
 	# makes it look like ice crystals dusting the ground.
 	set_meta("fp_pixel_size", 0.006)
 	set_meta("fp_floor_decal", true)   # lie flat on the floor in FP
+	set_meta("fp_outline_size", 3)     # thin glyph outline
 	GameState.attach_fp_visual(self, "*", Color(0.55, 0.92, 1.0), 0.04)
 	var cshape := CollisionShape2D.new()
 	var shape  := CircleShape2D.new()

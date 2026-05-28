@@ -27,7 +27,7 @@ static func spawn_str(world_pos: Vector2, text: String, col: Color, parent: Node
 	label.text = text
 	_setup_label(label, col)
 	parent.add_child(label)
-	label.global_position = world_pos + Vector2(-80.0 + randf_range(-8.0, 8.0), -40.0)
+	label.global_position = world_pos + Vector2(-80.0 + randf_range(-8.0, 8.0), -52.0)
 	var tween := label.create_tween()
 	tween.tween_property(label, "position", label.position + Vector2(0.0, -50.0), 0.85)
 	tween.parallel().tween_property(label, "modulate:a", 0.0, 0.85)
@@ -53,7 +53,7 @@ static func spawn(world_pos: Vector2, value: int, is_heal: bool, parent: Node, c
 		col = Color(0.15, 0.9, 0.15) if is_heal else Color(1.0, 0.15, 0.15)
 	_setup_label(label, col)
 	parent.add_child(label)
-	label.global_position = world_pos + Vector2(-80.0 + randf_range(-8.0, 8.0), -40.0)
+	label.global_position = world_pos + Vector2(-80.0 + randf_range(-8.0, 8.0), -52.0)
 
 	var tween := label.create_tween()
 	tween.tween_property(label, "position", label.position + Vector2(0.0, -50.0), 0.85)

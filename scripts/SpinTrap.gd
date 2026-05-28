@@ -19,6 +19,7 @@ func _ready() -> void:
 	# floor mark. Green tint.
 	set_meta("fp_pixel_size", 0.006)
 	set_meta("fp_floor_decal", true)   # lie flat on the floor in FP
+	set_meta("fp_outline_size", 3)     # thin glyph outline
 	GameState.attach_fp_visual(self, "@", Color(0.30, 0.95, 0.45), 0.04)
 
 func _process(delta: float) -> void:

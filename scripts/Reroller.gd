@@ -58,7 +58,13 @@ func _total_points() -> int:
 func _open() -> void:
 	_ui = CanvasLayer.new()
 	_ui.layer = 28
+	# Stay interactive while the game is paused below.
+	_ui.process_mode = Node.PROCESS_MODE_ALWAYS
 	get_tree().current_scene.add_child(_ui)
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	var ply := get_tree().get_first_node_in_group("player")
+	if ply != null and ply.has_method("set_interface_open"):
+		ply.set_interface_open(true)
 
 	var dim := ColorRect.new()
 	dim.color = Color(0.0, 0.0, 0.0, 0.78)
@@ -189,3 +195,7 @@ func _close() -> void:
 	if is_instance_valid(_ui):
 		_ui.queue_free()
 		_ui = null
+		var ply := get_tree().get_first_node_in_group("player")
+		if ply != null and ply.has_method("set_interface_open"):
+			ply.set_interface_open(false)
+		process_mode = Node.PROCESS_MODE_INHERIT

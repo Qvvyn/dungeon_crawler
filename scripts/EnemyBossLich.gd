@@ -65,10 +65,12 @@ func _ready() -> void:
 	collision_layer = 2
 	collision_mask  = 1
 	_player = get_tree().get_first_node_in_group("player")
+	# Bosses loom large in FP (~1.7× a normal body) + a bigger hitbox to match.
+	set_meta("fp_pixel_size", 0.024)
 
 	var cshape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()
-	circ.radius = 24.0
+	circ.radius = 32.0
 	cshape.shape = circ
 	add_child(cshape)
 
@@ -89,6 +91,12 @@ func _ready() -> void:
 	_create_boss_bar()
 
 func _physics_process(delta: float) -> void:
+	# Tick status + gate before the freeze/stun early-return so they keep
+	# advancing while frozen (otherwise freeze never thaws and a triggered
+	# HP gate never releases — see EnemyBossDevourer for the same fix).
+	_tick_status(delta)
+	if not is_instance_valid(self): return
+	_gate.tick(delta)
 	if _frozen or _stun_timer > 0.0:
 		velocity = Vector2.ZERO
 		move_and_slide()
@@ -98,9 +106,6 @@ func _physics_process(delta: float) -> void:
 		_anim_t = 0.0
 		_anim_f = 1 - _anim_f
 		_lbl.text = BOSS_F0 if _anim_f == 0 else BOSS_F1
-	_tick_status(delta)
-	if not is_instance_valid(self): return
-	_gate.tick(delta)
 
 	# Light kite — drift slowly perpendicular to the player vector with
 	# occasional reversals so the lich doesn't park in melee range.

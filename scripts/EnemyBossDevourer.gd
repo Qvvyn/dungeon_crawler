@@ -69,10 +69,13 @@ func _ready() -> void:
 	collision_layer = 2
 	collision_mask  = 1
 	_player = get_tree().get_first_node_in_group("player")
+	# Bosses loom large in FP — ~1.7× a normal body (base 0.014) so they read
+	# as a real threat filling the corridor.
+	set_meta("fp_pixel_size", 0.024)
 
 	var cshape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()
-	circ.radius = 34.0   # bigger than other bosses — Devourer is chunky
+	circ.radius = 44.0   # chunky Devourer — enlarged hitbox to match FP scale
 	cshape.shape = circ
 	add_child(cshape)
 
@@ -99,6 +102,14 @@ func _ready() -> void:
 	_create_boss_bar()
 
 func _physics_process(delta: float) -> void:
+	# Tick status timers + the HP gate FIRST, so freeze/stun actually
+	# expire and the gate keeps counting down even while the boss is
+	# frozen/stunned. (Previously these ran after the early-return below,
+	# so a frozen boss never thawed AND a triggered gate never released —
+	# making the boss effectively immortal under a freeze/shock build.)
+	_tick_status(delta)
+	if not is_instance_valid(self): return
+	_gate.tick(delta)
 	if _frozen or _stun_timer > 0.0:
 		velocity = Vector2.ZERO
 		move_and_slide()
@@ -108,9 +119,6 @@ func _physics_process(delta: float) -> void:
 		_anim_t = 0.0
 		_anim_f = 1 - _anim_f
 		_lbl.text = BOSS_F0 if _anim_f == 0 else BOSS_F1
-	_tick_status(delta)
-	if not is_instance_valid(self): return
-	_gate.tick(delta)
 
 	# Slow shamble toward the player. Tether handles the burst pressure.
 	if is_instance_valid(_player):

@@ -99,7 +99,10 @@ func _ready() -> void:
 	add_to_group("interactable")   # bullets pass through (Projectile group check)
 	body_entered.connect(_on_body_entered)
 	body_exited.connect(_on_body_exited)
-	GameState.attach_fp_visual(self, "+", Color(0.85, 0.45, 1.0), 0.40)
+	# Show the full 2D ASCII table standing upright in FP, not a bare "+".
+	set_meta("fp_multiline", true)
+	set_meta("fp_pixel_size", 0.011)
+	GameState.attach_fp_visual(self, " ___ \n[✦✦✦]\n |_| ", Color(0.85, 0.45, 1.0), 0.55)
 
 	_hint = Label.new()
 	_hint.text = "[E] Enchant"
@@ -200,7 +203,15 @@ func _auto_upgrade(player: Node) -> void:
 func _open_popup() -> void:
 	_popup = CanvasLayer.new()
 	_popup.layer = 12
+	# PROCESS_MODE_ALWAYS so the popup's buttons keep handling clicks while the
+	# tree is paused (set_interface_open pauses the game below).
+	_popup.process_mode = Node.PROCESS_MODE_ALWAYS
 	get_tree().current_scene.add_child(_popup)
+	# Self ALWAYS too, so _process keeps polling the [E] close key under pause.
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	var ply := get_tree().get_first_node_in_group("player")
+	if ply != null and ply.has_method("set_interface_open"):
+		ply.set_interface_open(true)
 	_build_ui()
 
 func _build_ui() -> void:
@@ -492,6 +503,10 @@ func _close_popup() -> void:
 	if _popup:
 		_popup.queue_free()
 		_popup = null
+		var ply := get_tree().get_first_node_in_group("player")
+		if ply != null and ply.has_method("set_interface_open"):
+			ply.set_interface_open(false)
+		process_mode = Node.PROCESS_MODE_INHERIT
 	_close_transmute_picker()
 	_cell_rects.clear()
 	_cell_indices.clear()

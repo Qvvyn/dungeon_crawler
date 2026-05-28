@@ -380,6 +380,9 @@ func _effective_fire_interval() -> float:
 func _fire_wand() -> void:
 	if equipped_wand == null:
 		return
+	# Don't fire through walls.
+	if is_instance_valid(_player) and not EnemyVision.has_los(self, _player.global_position):
+		return
 	var aim_dir := (_player.global_position - global_position).normalized()
 	# Backwards flaw: enemy wand intentionally fires opposite. Funny tell.
 	if "backwards" in equipped_wand.wand_flaws:

@@ -31,8 +31,13 @@ func _ready() -> void:
 	# fp_multiline lets the FP rig mirror those frames live.
 	set_meta("fp_multiline", true)
 	set_meta("fp_pixel_size", 0.012)
-	set_meta("fp_floor_decal", true)   # mine art lies flat on the floor
-	GameState.attach_fp_visual(self, F_UNARMED, Color(0.95, 0.85, 0.20), 0.04)
+	set_meta("fp_outline_size", 3)   # thin glyph outline
+	# Always lies FLAT on the floor like the other floor hazards (lava, poison,
+	# spin, etc). Disarmed reads white; on arming the 2D frames swap + tint red
+	# (live-synced into FP) so it still flips to a red animated mark — just on
+	# the ground, never standing upright.
+	set_meta("fp_floor_decal", true)
+	GameState.attach_fp_visual(self, F_UNARMED, Color(1.0, 1.0, 1.0), 0.04)
 	if _shared_font == null:
 		_shared_font = MonoFont.get_font()
 	_lbl = Label.new()
@@ -42,7 +47,7 @@ func _ready() -> void:
 	_lbl.add_theme_constant_override("line_separation", -4)
 	_lbl.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0))
 	_lbl.add_theme_constant_override("outline_size", 2)
-	_lbl.add_theme_color_override("font_color", Color(0.95, 0.85, 0.2))
+	_lbl.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0))
 	_lbl.text = F_UNARMED
 	_lbl.size = Vector2(60.0, 50.0)
 	_lbl.position = Vector2(-30.0, -25.0)
@@ -89,7 +94,7 @@ func _spawn_danger_ring() -> void:
 	# behind the glyph so it doesn't block reads, but bright enough that
 	# the player can route around it instead of guessing at the radius.
 	_danger_ring = Line2D.new()
-	_danger_ring.width = 2.0
+	_danger_ring.width = 0.75   # much thinner danger outline
 	_danger_ring.z_index = -1
 	_danger_ring.default_color = Color(1.0, 0.30, 0.05, 0.55)
 	var segs := 28

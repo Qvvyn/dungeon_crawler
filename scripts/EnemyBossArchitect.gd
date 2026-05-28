@@ -66,10 +66,12 @@ func _ready() -> void:
 	collision_layer = 2
 	collision_mask  = 1
 	_player = get_tree().get_first_node_in_group("player")
+	# Bosses loom large in FP (~1.7× a normal body) + a bigger hitbox to match.
+	set_meta("fp_pixel_size", 0.024)
 
 	var cshape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()
-	circ.radius = 26.0
+	circ.radius = 34.0
 	cshape.shape = circ
 	add_child(cshape)
 

@@ -58,6 +58,27 @@ func _detach_fp_visual(body: Node) -> void:
 			and active_rig.has_method("unregister_entity"):
 		active_rig.unregister_entity(body)
 
+# Cohesive per-biome enemy tint for FP/3rd-person, replacing the old flat red.
+# Indexed by biome; readable + bright against the dim biome wall colors.
+const BIOME_ENEMY_COLORS: Array[Color] = [
+	Color(0.95, 0.45, 0.35),   # Dungeon    — clay red
+	Color(0.65, 0.95, 0.45),   # Catacombs  — sickly green
+	Color(0.55, 0.85, 1.00),   # Ice Cavern — icy cyan
+	Color(1.00, 0.55, 0.20),   # Lava Rift  — molten orange
+]
+
+# Enemy FP color by tier (0 normal, 1 elite, 2 champion/rare, 3 boss). Higher
+# tiers lighten the base biome hue so they visibly "glow" through the ASCII
+# shader, keeping the floor's enemies cohesive while flagging the dangerous ones.
+func enemy_fp_color(tier: int = 0) -> Color:
+	var idx: int = clampi(biome, 0, BIOME_ENEMY_COLORS.size() - 1)
+	var base: Color = BIOME_ENEMY_COLORS[idx]
+	match tier:
+		1: return base.lightened(0.25)
+		2: return base.lightened(0.45)
+		3: return base.lightened(0.55)
+		_: return base
+
 # Refresh an already-attached entity's FP glyph/color without re-registering.
 # Used by LootBag when its rarity tier changes mid-floor so the FP bag re-
 # shapes and re-tints to match the 2D view. Also updates the meta fields so
@@ -154,10 +175,20 @@ var master_volume: float = 1.0   # 0.0 – 1.0
 # rapid mine flicker, banshee pulse intensity, level-up pop). Slow sine
 # pulses and animation frame swaps stay since they're softer.
 var disable_flashing: bool = false
+# FP limb-drift master toggle (Shift+D). When true (default) each row of a
+# multi-line ASCII entity is its own camera-facing billboard offset along the
+# camera-right vector, so rows swing independently as the camera orbits. When
+# false the whole entity renders as one rigid camera-facing plane (rows'
+# billboarding disabled, parent Y-billboards toward the camera) so multi-line
+# art reads solid with no inter-row wobble.
+var fp_limb_drift: bool = true
 # Debug / playtest toggle — when true, _spend_mana_or_hp short-circuits to
 # success so wand shots, nova, shield, levitate, etc. cost nothing. The
 # only thing that still gates is wand_charges (limited-use wands).
 var infinite_mana: bool = false
+# Player wizard tint — applied to the wizard's 2D glyph + FP/3rd-person body.
+# Customizable via the pause-menu hex field. Default is the classic purple.
+var wizard_color: Color = Color(0.85, 0.55, 1.0)
 # Display name for global leaderboard submissions. Empty until the player
 # fills in the prompt that appears on first top-10 death.
 var player_name: String  = ""
@@ -221,6 +252,8 @@ func save_settings() -> void:
 		"starting_climb_rate": starting_climb_rate,
 		"player_name":         player_name,
 		"disable_flashing":    disable_flashing,
+		"fp_limb_drift":       fp_limb_drift,
+		"wizard_color":        wizard_color.to_html(false),
 		"render_mode":         render_mode,
 		"infinite_mana":       infinite_mana,
 	}))
@@ -242,6 +275,10 @@ func _load_settings() -> void:
 		starting_climb_rate = clampf(float(result.get("starting_climb_rate", 0.5)), 0.1, 4.0)
 		player_name         = String(result.get("player_name", "")).substr(0, 16)
 		disable_flashing    = bool(result.get("disable_flashing", false))
+		fp_limb_drift       = bool(result.get("fp_limb_drift", true))
+		var wc: String = String(result.get("wizard_color", ""))
+		if wc != "" and Color.html_is_valid(wc):
+			wizard_color = Color.html(wc)
 		render_mode         = clampi(int(result.get("render_mode", RenderMode.TOPDOWN)),
 									 0, RenderMode.size() - 1)
 		infinite_mana       = bool(result.get("infinite_mana", false))

@@ -404,6 +404,9 @@ func _tick_shoot(delta: float) -> void:
 func _fire() -> void:
 	if projectile_scene == null:
 		return
+	# Don't fire through walls — needs a clear sightline to the player.
+	if is_instance_valid(_player) and not EnemyVision.has_los(self, _player.global_position):
+		return
 	var proj := projectile_scene.instantiate()
 	proj.global_position = global_position
 	proj.direction = (_player.global_position - global_position).normalized()

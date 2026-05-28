@@ -127,6 +127,14 @@ const BIOME_FLOOR_TINTS: Array[Color] = [
 	Color(0.80, 0.88, 1.00),   # Ice Cavern
 	Color(1.00, 0.82, 0.76),   # Lava Rift
 ]
+# Dark per-biome floor color for the FP ground plane (the 2D floor uses a
+# shader + the tint above; FP needs a concrete albedo per zone).
+const BIOME_FP_FLOOR_COLORS: Array[Color] = [
+	Color(0.16, 0.13, 0.11),   # Dungeon
+	Color(0.11, 0.16, 0.11),   # Catacombs
+	Color(0.11, 0.14, 0.20),   # Ice Cavern
+	Color(0.20, 0.11, 0.08),   # Lava Rift
+]
 
 # ── Floor modifiers ───────────────────────────────────────────────────────────
 const FLOOR_MODIFIERS := {
@@ -164,7 +172,7 @@ const DUNGEON_SPAWN_BURST_DURATION: float = 1.5
 # frame. Themed-room spawns + summoner minions sit on top of this cap so
 # the live count can briefly exceed it, but the bulk regular spawn is
 # clipped here.
-const MAX_DUNGEON_ENEMIES: int = 80
+const MAX_DUNGEON_ENEMIES: int = 50
 # How many enemies to spawn synchronously inside _spawn_enemies, before any
 # frame ticks at all. Avoids the first-frame "empty world" gap; tuned so the
 # nearest few rooms are populated before the player even sees the level.
@@ -235,6 +243,11 @@ var _wall_ascii: Node2D         = null   # the AsciiWalls overlay, hidden in FP 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────
 func _ready() -> void:
+	# Defensive un-pause: get_tree().paused is GLOBAL and persists across scene
+	# changes, so if a level transition ever fires while an interface/pause
+	# menu held the tree paused, the next floor would load frozen (every enemy
+	# inert). Always start a fresh level running.
+	get_tree().paused = false
 	_init_grid()
 	# Render-mode plumbing — both rigs sit in the tree, only the active one
 	# is visible. World owns the toggle so it can also push the live grid to
@@ -285,6 +298,10 @@ func _ready() -> void:
 	# Skipped on cave / arena floors (cave is non-rectangular; arena has
 	# its own pattern stamped in _gen_arena).
 	_apply_room_layouts(layout_player_room, layout_portal_room, boss_arena_room)
+
+	# Re-seal secret entrances to WALL now that connectivity / bridging is done,
+	# so the hidden rooms read as solid wall in both 2D and FP until broken.
+	_seal_secret_doors()
 
 	_build_floor_visual()
 	_build_walls()
@@ -368,7 +385,8 @@ func _ready() -> void:
 		_spawn_arena_enemies(player_room, player_pos)
 	else:
 		_spawn_enemies(player_room, portal_room if is_boss_floor else Rect2i())
-	_spawn_hazard_rooms(player_room, portal_room)
+	# _spawn_hazard_rooms removed — the spike-room-with-loot-in-the-middle
+	# read as a weird "hidden loot hazard". Dropped per design.
 	_spawn_challenge_room(player_room, portal_room if is_boss_floor else Rect2i())
 	if _gen_mode == GenMode.ROOMS:
 		_spawn_pressure_plates()
@@ -446,6 +464,11 @@ func _apply_render_mode(mode: int) -> void:
 	# existing body so entities that spawned before the rig was shown
 	# (or that spawned during TOPDOWN play) get a visual representation.
 	if rig_to_show != null:
+		# Match FP wall color to the active biome's 2D wall color.
+		if rig_to_show.has_method("set_wall_color"):
+			rig_to_show.set_wall_color(BIOME_WALL_COLORS[GameState.biome])
+		if rig_to_show.has_method("set_floor_color"):
+			rig_to_show.set_floor_color(BIOME_FP_FLOOR_COLORS[clampi(GameState.biome, 0, BIOME_FP_FLOOR_COLORS.size() - 1)])
 		if rig_to_show.has_method("set_grid"):
 			rig_to_show.set_grid(_grid, GRID_W, GRID_H)
 		_register_all_entities_with(rig_to_show)
@@ -473,14 +496,25 @@ func _register_all_entities_with(rig: Node) -> void:
 		# unprojected screen point. The (now-hidden) Label3D defaults are
 		# fine for bookkeeping.
 		player.set_meta("fp_multiline", true)
-		rig.register_entity(player, wizard_glyph, Color(0.85, 0.55, 1.0))
+		# Shrink the 3rd-person wizard to 75% of the default body size so he
+		# doesn't dominate the screen (default body pixel_size is 0.014).
+		player.set_meta("fp_pixel_size", 0.0105)
+		rig.register_entity(player, wizard_glyph, GameState.wizard_color)
 	# Enemies — iterate the $Enemies node since EnemyBase doesn't auto-add
 	# to a group. Both flat enemies and bosses live under here.
 	var enemies_node: Node = get_node_or_null("Enemies")
 	if enemies_node != null:
 		for child in enemies_node.get_children():
 			if child is Node2D:
-				rig.register_entity(child, "D", Color(0.95, 0.28, 0.22))
+				var tier: int = 0
+				if (child as Node).is_in_group("boss"):
+					tier = 3
+				elif child.get("is_champion") == true:
+					tier = 2
+				elif child.get("is_elite") == true:
+					tier = 1
+				var glyph: String = "B" if tier > 0 else "D"
+				rig.register_entity(child, glyph, GameState.enemy_fp_color(tier))
 	# Everything else (shrines / traps / loot / portals / village shops /
 	# floor hazards) self-tags into "fp_visible" via GameState.attach_fp_visual,
 	# storing its preferred glyph + color as metadata. One loop handles them all.
@@ -733,6 +767,9 @@ func _sweep_test_ground() -> void:
 
 # ── Grid ──────────────────────────────────────────────────────────────────────
 func _init_grid() -> void:
+	# Clear secret-door records so a regeneration pass (the <3-rooms fallback)
+	# doesn't carry stale entrances that point into the freshly-reset grid.
+	_secret_door_data.clear()
 	_grid.resize(GRID_H)
 	for y in GRID_H:
 		var row: Array = []
@@ -1244,10 +1281,18 @@ func _build_floor_visual() -> void:
 # ── Wall building (scanline batch) ────────────────────────────────────────────
 func _build_walls() -> void:
 	var wall_col: Color = BIOME_WALL_COLORS[GameState.biome]
+	# Secret-door tiles are WALL in the grid (so FP renders solid wall) but are
+	# excluded from the merged 2D collision strips — the SecretDoor body is the
+	# sole 2D collider there, so breaking it (which frees the body) opens the
+	# passage without having to surgically split a strip.
+	var secret_tiles: Dictionary = {}
+	for data in _secret_door_data:
+		for t in _secret_door_tiles(data["entrance"]):
+			secret_tiles[t] = true
 	for y in GRID_H:
 		var x_start := -1
 		for x in GRID_W:
-			if _grid[y][x] == WALL:
+			if _grid[y][x] == WALL and not secret_tiles.has(Vector2i(x, y)):
 				if x_start == -1:
 					x_start = x
 			else:
@@ -1261,20 +1306,12 @@ func _build_walls() -> void:
 # Overlays ASCII glyphs on every wall tile that borders floor and "=" on
 # doorway tiles — gives the world a consistent ASCII look while keeping the
 # dark wall fill underneath for readability of the playfield.
-func _build_wall_ascii(wall_col: Color) -> void:
-	var overlay := Node2D.new()
-	overlay.set_script(ASCII_WALLS_SCRIPT)
-	overlay.z_index = -4   # above wall fills (-5) but below entities (default 0)
-	overlay.add_to_group("topdown_only")
-	var glyph_col: Color = wall_col.lightened(0.55)
-	var outline_col: Color = wall_col.darkened(0.6)
-	add_child(overlay)
-	overlay.setup(_grid, GRID_W, GRID_H, TILE, glyph_col, outline_col)
-	# Cached so _apply_render_mode can flip its visibility without re-walking
-	# the topdown_only group. (Also the wall colorrect ColorRects inside the
-	# StaticBody2D wall strips stay visible — they read as wall fills behind
-	# the FP overlay, which is fine.)
-	_wall_ascii = overlay
+func _build_wall_ascii(_wall_col: Color) -> void:
+	# 2D ASCII wall outlines disabled — too messy, and the visual focus is
+	# now FP mode. Walls keep their dark ColorRect fills; we just skip the
+	# bordering glyph overlay. (_wall_ascii stays null; the render-mode
+	# toggle null-checks it.)
+	pass
 
 # A doorway is a floor tile sitting just outside a room rect on a side where
 # a corridor punches through the wall. We scan each room's perimeter and
@@ -1508,36 +1545,13 @@ func _spawn_eruption_near_player() -> void:
 	var tile: Vector2i = candidates[randi() % candidates.size()]
 	var pos := _tile_center(tile)
 
-	# Telegraph — animated red label that fades up over 3 s, then we drop
-	# the lava tile and free the telegraph.
-	var warn := Label.new()
-	warn.text = "(!)"
-	warn.add_theme_font_override("font", MonoFont.get_font())
-	warn.add_theme_font_size_override("font_size", 30)
-	warn.add_theme_color_override("font_color", Color(1.0, 0.45, 0.05, 0.0))
-	warn.add_theme_color_override("font_outline_color", Color(0.45, 0.05, 0.0))
-	warn.add_theme_constant_override("outline_size", 3)
-	warn.size = Vector2(60, 40)
-	warn.position = pos - Vector2(30, 20)
-	warn.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	warn.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	warn.z_index = 5
-	add_child(warn)
-	var tw := warn.create_tween()
-	tw.tween_property(warn, "modulate:a", 1.0, 1.4)
-	tw.tween_interval(1.6)
-	tw.tween_callback(warn.queue_free)
-	# FP eruption warning — float "(!)" rising from the spawn point and
-	# spawn a small persistent ring at floor level so the player can see
-	# the impact footprint coming. Both clear themselves with their tween
-	# / lifetime, so we don't need to track the warn ring separately.
-	if GameState.active_rig != null and is_instance_valid(GameState.active_rig):
-		if GameState.active_rig.has_method("spawn_floating_text"):
-			GameState.active_rig.spawn_floating_text(pos, "(!)",
-				Color(1.0, 0.45, 0.05), 3.0, 0.10)
-		if GameState.active_rig.has_method("spawn_ring_2d"):
-			GameState.active_rig.spawn_ring_2d(pos, "x",
-				Color(1.0, 0.30, 0.05, 0.85), 0.40, 0.40, 16, 3.0, 0.009, 0.05)
+	# Telegraph — just the impact-footprint ring (the "(!)" glyph was
+	# removed per design: it read as a confusing "spawn" marker). The ring
+	# still gives a fair tell that lava is about to erupt here.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_ring_2d"):
+		GameState.active_rig.spawn_ring_2d(pos, "x",
+			Color(1.0, 0.30, 0.05, 0.85), 0.40, 0.40, 16, 3.0, 0.009, 0.05)
 
 	# Spawn the actual lava tile after the telegraph completes. Reuses
 	# the same script-instantiation pattern the static hazard pass uses.
@@ -1984,13 +1998,6 @@ func _spawn_hazard_rooms(player_room: Rect2i, skip_room: Rect2i) -> void:
 		_make_hazard_room(candidates[i])
 
 func _make_hazard_room(room: Rect2i) -> void:
-	var tint := ColorRect.new()
-	tint.color = Color(0.7, 0.6, 0.1, 0.18)
-	tint.position = Vector2(room.position.x * TILE, room.position.y * TILE)
-	tint.size = Vector2(room.size.x * TILE, room.size.y * TILE)
-	tint.z_index = -10
-	add_child(tint)
-
 	for _i in randi_range(5, 9):
 		for _attempt in 10:
 			var tx := randi_range(room.position.x + 1, room.position.x + room.size.x - 2)
@@ -2032,13 +2039,6 @@ func _spawn_challenge_room(player_room: Rect2i, skip_room: Rect2i) -> void:
 
 # Champion-room body extracted so we can spawn multiple on high-tier floors.
 func _spawn_one_champion(room: Rect2i) -> void:
-	var tint := ColorRect.new()
-	tint.color = Color(0.7, 0.05, 0.05, 0.18)
-	tint.position = Vector2(room.position.x * TILE, room.position.y * TILE)
-	tint.size = Vector2(room.size.x * TILE, room.size.y * TILE)
-	tint.z_index = -10
-	add_child(tint)
-
 	var type_scenes: Array = [CHASER_SCENE, TANK_SCENE, SHOOTER_SCENE, SNIPER_SCENE]
 	var champ_scene: PackedScene = type_scenes[randi() % type_scenes.size()]
 	var champion := champ_scene.instantiate()
@@ -2187,21 +2187,14 @@ func _make_themed_room(room: Rect2i) -> void:
 	]
 	var theme: Dictionary = themes[randi() % themes.size()]
 
-	var tint := ColorRect.new()
-	tint.color = theme["tint"] as Color
-	tint.position = Vector2(room.position.x * TILE, room.position.y * TILE)
-	tint.size = Vector2(room.size.x * TILE, room.size.y * TILE)
-	tint.z_index = -10
-	add_child(tint)
-
 	match String(theme["name"]):
 		"SPIDER DEN":
-			# Swarm. Lots of spiders, a couple bulkier "matriarchs", traps to
-			# punish kiting around the edges.
-			for _i in randi_range(8, 12):
+			# Swarm. Spiders + a bulkier "matriarch", traps to punish kiting.
+			# Counts trimmed (was 8-12 + 2) to keep the swarm readable and avoid
+			# the high-difficulty frame stalls from oversized clusters.
+			for _i in randi_range(5, 7):
 				_place_enemy(SPIDER_SCENE, room, hp_mult)
-			for _i in 2:
-				_place_enemy(SPIDER_SCENE, room, hp_mult * 2.2)
+			_place_enemy(SPIDER_SCENE, room, hp_mult * 2.2)
 			_sprinkle_traps(room, randi_range(2, 4))
 		"SNIPER ALLEY":
 			# Pure ranged pressure — snipers + archers with no melee filler.
@@ -3077,8 +3070,42 @@ func _try_secret_off_room(base: Rect2i) -> bool:
 
 	@warning_ignore("integer_division")
 	var loot_tile := Vector2i(sx + sw / 2, sy + sh / 2)
+	# The entrance is carved to FLOOR here so the level-connectivity /
+	# region-bridging passes treat the secret room as reachable and don't
+	# tunnel a second way in. It gets RE-SEALED to WALL in _seal_secret_doors()
+	# (after bridging, before walls are built) so the room is genuinely hidden
+	# behind solid wall geometry — in both 2D and FP — until the player breaks
+	# through and open_secret_passage() carves it back open for real.
 	_secret_door_data.append({"entrance": entrance, "loot_tile": loot_tile})
 	return true
+
+# The three vertical tiles a secret door occupies (matches the door body's
+# 32×96 collision: one column, three rows centered on the entrance).
+func _secret_door_tiles(entrance: Vector2i) -> Array:
+	return [
+		Vector2i(entrance.x, entrance.y - 1),
+		Vector2i(entrance.x, entrance.y),
+		Vector2i(entrance.x, entrance.y + 1),
+	]
+
+# Re-seal every secret entrance back to WALL after region bridging but before
+# walls/floor are built, so the secret room reads as solid wall everywhere.
+func _seal_secret_doors() -> void:
+	for data in _secret_door_data:
+		for t in _secret_door_tiles(data["entrance"]):
+			if t.y >= 0 and t.y < GRID_H and t.x >= 0 and t.x < GRID_W:
+				_grid[t.y][t.x] = WALL
+
+# Called by SecretDoor when broken: carve the entrance back to FLOOR and
+# refresh the active rig's geometry so the opening appears in FP / 3rd person.
+# (2D collision is the door body itself, which frees on break.)
+func open_secret_passage(entrance: Vector2i) -> void:
+	for t in _secret_door_tiles(entrance):
+		if t.y >= 0 and t.y < GRID_H and t.x >= 0 and t.x < GRID_W:
+			_grid[t.y][t.x] = FLOOR
+	var rig: Node = GameState.active_rig
+	if rig != null and is_instance_valid(rig) and rig.has_method("set_grid"):
+		rig.set_grid(_grid, GRID_W, GRID_H)
 
 func _place_secret_doors() -> void:
 	var wall_col: Color = BIOME_WALL_COLORS[GameState.biome]
@@ -3088,6 +3115,9 @@ func _place_secret_doors() -> void:
 
 		var door: Node = SECRET_DOOR_SCENE.instantiate()
 		door.set("wall_color", wall_col)
+		# Grid coords so the door can carve the passage open (geometry change)
+		# when broken, rebuilding the FP wall mesh.
+		door.set("entrance_tile", entrance)
 		door.set("loot_world_pos", _tile_center(loot_tile))
 		door.set("loot_items", [ItemDB.random_drop(), ItemDB.random_drop(), ItemDB.random_drop()])
 		# 5 % roll for an ambush boss inside the secret room. SecretDoor
@@ -3326,6 +3356,23 @@ func _on_room_cleared() -> void:
 		tw.tween_property(bag_node, "global_position", merge_target, 0.45) \
 			.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 		tw.tween_callback(bag_node.queue_free)
+	# Cap the mega bag — a heavily-farmed high-difficulty floor was merging
+	# into 1000+ item bags (huge popup, absurd hoard). Keep the best items by
+	# rarity then sell value; convert the overflow into bonus gold so the
+	# player isn't robbed of the value, just the clutter.
+	const MEGA_BAG_MAX_ITEMS: int = 40
+	if merged_items.size() > MEGA_BAG_MAX_ITEMS:
+		merged_items.sort_custom(func(a, b):
+			if a.rarity != b.rarity:
+				return a.rarity > b.rarity
+			return a.sell_value > b.sell_value)
+		var overflow_gold: int = 0
+		for k in range(MEGA_BAG_MAX_ITEMS, merged_items.size()):
+			overflow_gold += maxi(1, int(merged_items[k].sell_value))
+		merged_items = merged_items.slice(0, MEGA_BAG_MAX_ITEMS)
+		GameState.gold += overflow_gold
+		FloatingText.spawn_str(player.global_position + Vector2(0.0, -92.0),
+			"+%dg (excess loot sold)" % overflow_gold, Color(1.0, 0.92, 0.30), scene_root)
 	if not merged_items.is_empty():
 		# Wait for the converge animation, then drop one fancy mega bag.
 		# scene_root captured up top — but the timer fires 0.5 s later and

@@ -42,7 +42,12 @@ func _open() -> void:
 		return
 	_ui = CanvasLayer.new()
 	_ui.layer = 28
+	_ui.process_mode = Node.PROCESS_MODE_ALWAYS
 	get_tree().current_scene.add_child(_ui)
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	var ply := get_tree().get_first_node_in_group("player")
+	if ply != null and ply.has_method("set_interface_open"):
+		ply.set_interface_open(true)
 
 	var dim := ColorRect.new()
 	dim.color = Color(0.0, 0.0, 0.0, 0.78)
@@ -149,9 +154,15 @@ func _open() -> void:
 	_refresh_all()
 
 func _close() -> void:
+	var was_open := is_instance_valid(_ui)
 	if is_instance_valid(_ui):
 		_ui.queue_free()
 	_ui = null
+	if was_open:
+		var ply := get_tree().get_first_node_in_group("player")
+		if ply != null and ply.has_method("set_interface_open"):
+			ply.set_interface_open(false)
+		process_mode = Node.PROCESS_MODE_INHERIT
 
 func _refresh_all() -> void:
 	_refresh_gold()

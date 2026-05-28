@@ -11,6 +11,11 @@ var health: int = 20
 var _shoot_cooldown: float = 0.0
 var _is_dead: bool = false
 var _is_paused: bool = false
+# Count of open interfaces (enchant table, reroller, inventory, shop, bank…).
+# While >0 the game is paused and the cursor freed so the player can manage
+# gear without combat continuing behind the menu. A count (not a bool) keeps
+# the pause correct if two interfaces overlap (e.g. inventory over a table).
+var _interface_open_count: int = 0
 var _pause_menu: CanvasLayer = null
 var _pause_autoplay_label: Label = null
 # Mobile-only run-stats line shown on the pause menu (kills / gold / floor).
@@ -312,8 +317,11 @@ func _ready() -> void:
 	else:
 		_try_load_save()
 		if not GameState.has_saved_state:
-			health = max_health
 			GameState.reset_run_stats()
+			# Start at full HP derived from VIT (reset first so VIT is at
+			# its level-1 value). Was `max_health` (50), which ignored the
+			# VIT-based max and started the player short.
+			health = _max_hp()
 		else:
 			health = GameState.player_health
 			GameState.has_saved_state = false
@@ -401,11 +409,15 @@ func _ready() -> void:
 	_ascii_label.add_theme_color_override("font_outline_color", Color(0.55, 0.20, 1.0, 0.85))
 	z_index = 10
 	var _aura := ColorRect.new()
+	_aura.name     = "WizardAura"
 	_aura.size     = Vector2(32.0, 38.0)
 	_aura.color    = Color(0.55, 0.20, 1.0, 0.18)
 	_aura.position = Vector2(-16.0, -19.0)
 	_aura.z_index  = -1
 	add_child(_aura)
+	# Apply the player's saved wizard tint to the 2D glyph + aura (and the FP
+	# body once a rig is live).
+	apply_wizard_color(GameState.wizard_color)
 
 	# Inventory UI
 	var inv_ui := INVENTORY_UI_SCENE.instantiate()
@@ -1046,6 +1058,7 @@ func _build_settings_panel() -> void:
 	_add_flash_toggle(Vector2(640, 562), _settings_root)
 	_add_volume_slider(420, _settings_root)
 	_add_difficulty_slider(496, _settings_root)
+	_add_wizard_color_field(Vector2(632, 608), _settings_root)
 
 	# BACK button
 	var back_lbl := Label.new()
@@ -1083,6 +1096,46 @@ func _close_settings() -> void:
 	for n in _pause_main_buttons:
 		if is_instance_valid(n):
 			(n as CanvasItem).visible = true
+
+# Hex-code wizard color picker — type a 6-digit hex (e.g. a08cff) + Enter to
+# recolor the wizard. A live swatch shows the current color.
+func _add_wizard_color_field(pos: Vector2, parent: Node) -> void:
+	var lbl := Label.new()
+	lbl.text = "WIZARD #"
+	lbl.position = pos
+	lbl.size = Vector2(120, 32)
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	lbl.add_theme_font_size_override("font_size", 16)
+	lbl.add_theme_color_override("font_color", Color(0.85, 0.7, 1.0))
+	parent.add_child(lbl)
+
+	var input := LineEdit.new()
+	input.position = pos + Vector2(126, 0)
+	input.size = Vector2(120, 32)
+	input.max_length = 7   # allows an optional leading '#'
+	input.placeholder_text = "a08cff"
+	input.text = GameState.wizard_color.to_html(false)
+	input.add_theme_font_size_override("font_size", 16)
+	parent.add_child(input)
+
+	var swatch := ColorRect.new()
+	swatch.position = pos + Vector2(254, 4)
+	swatch.size = Vector2(24, 24)
+	swatch.color = GameState.wizard_color
+	parent.add_child(swatch)
+
+	var apply := func(t: String) -> void:
+		var hex: String = t.strip_edges().lstrip("#")
+		if not Color.html_is_valid(hex):
+			return
+		var col := Color.html(hex)
+		col.a = 1.0
+		GameState.wizard_color = col
+		GameState.save_settings()
+		swatch.color = col
+		apply_wizard_color(col)
+	input.text_submitted.connect(apply)
 
 func _add_flash_toggle(pos: Vector2, parent: Node = null) -> void:
 	if parent == null:
@@ -1410,9 +1463,14 @@ func _humanize_test_key(key: String) -> String:
 func _toggle_pause() -> void:
 	_is_paused = not _is_paused
 	_pause_menu.visible = _is_paused
-	get_tree().paused = _is_paused
-	if _inventory_ui:
+	# Force-close the inventory when toggling the pause menu; decrement its
+	# interface-pause contribution so the count stays balanced (toggle() would
+	# normally do this, but we're hiding it directly).
+	if _inventory_ui and _inventory_ui.visible:
 		_inventory_ui.visible = false
+		_interface_open_count = maxi(0, _interface_open_count - 1)
+	# Keep the tree paused if an interface is still open underneath.
+	get_tree().paused = _is_paused or _interface_open_count > 0
 	if _is_paused:
 		_refresh_weapon_stats_panel()
 		_refresh_autoplay_pause_label()
@@ -2394,6 +2452,11 @@ func _input(event: InputEvent) -> void:
 	if _is_perk_selecting:
 		get_viewport().set_input_as_handled()
 		return
+	# While paused (pause menu OR an open interface that pauses the tree),
+	# only ESC is allowed through — debug/cheat shortcuts (0, F2, 1, 2, 4,
+	# brackets, etc.) must not fire behind menus and mess with inputs.
+	if (_is_paused or get_tree().paused) and event.physical_keycode != KEY_ESCAPE:
+		return
 	match event.physical_keycode:
 		KEY_ESCAPE:
 			if not _is_dead:
@@ -2487,9 +2550,22 @@ func _input(event: InputEvent) -> void:
 					"SPRINT: " + ("ON" if _autoplay_sprint else "OFF"),
 					Color(0.6, 1.0, 0.4), get_tree().current_scene)
 				get_viewport().set_input_as_handled()
+		KEY_D:             # Shift+D  →  toggle FP limb-drift for all entities
+			# Master switch for the loose per-row "drift" on multi-line ASCII
+			# entities in FP. Off = every entity renders as one rigid plane.
+			if event.shift_pressed:
+				GameState.fp_limb_drift = not GameState.fp_limb_drift
+				GameState.save_settings()
+				FloatingText.spawn_str(global_position,
+					"LIMB DRIFT: " + ("ON" if GameState.fp_limb_drift else "OFF"),
+					Color(0.6, 0.85, 1.0), get_tree().current_scene)
+				get_viewport().set_input_as_handled()
 
 func _physics_process(delta: float) -> void:
-	if _is_dead or _is_paused or _is_perk_selecting:
+	# Player is PROCESS_MODE_ALWAYS, so it keeps running while the tree is
+	# paused — bail out on interface pause too, otherwise the player could
+	# still move / shoot behind an open menu.
+	if _is_dead or _is_paused or _is_perk_selecting or _interface_open_count > 0:
 		return
 	if _buff_timer > 0.0:
 		_buff_timer -= delta
@@ -4554,11 +4630,14 @@ func _autoplay_count_free_slots() -> int:
 # Late-game mana stays meaningful — wand mana costs scale up with difficulty
 # so player WIS investment matters at the higher tiers.
 func _difficulty_mana_multiplier() -> float:
-	# Mana cost grows with difficulty but caps at 2.5× so deep-floor wands
-	# stay fireable. Past ~floor 9 the previous uncapped formula made every
-	# wand cost more than the player's pool refilled per shot.
+	# Mana cost scales with difficulty tier. Early game (low difficulty, low
+	# wisdom pool) now gets a DISCOUNT — a high base-cost wand was unfireable
+	# on floor 1 with a small mana pool. Starts at 0.6× at difficulty 1, reaches
+	# 1.0× around difficulty ~3.2, then climbs and caps at 2.5× so deep-floor
+	# wands still stay fireable (uncapped, every wand cost more than the pool
+	# refilled per shot).
 	var d: float = GameState.test_difficulty if GameState.test_mode else GameState.difficulty
-	return clampf(1.0 + maxf(0.0, d - 1.0) * 0.18, 1.0, 2.5)
+	return clampf(0.6 + maxf(0.0, d - 1.0) * 0.18, 0.6, 2.5)
 
 # Picks the perk most useful right now. Heals when HP is low, otherwise leans
 # into long-term survival/DPS multipliers; falls back to any perk so the bot
@@ -5404,6 +5483,8 @@ func _should_capture_mouse() -> bool:
 		return false
 	if _is_paused or _is_dead or _is_perk_selecting:
 		return false
+	if _interface_open_count > 0:
+		return false
 	if _inventory_ui != null and _inventory_ui.visible:
 		return false
 	if _autoplay:
@@ -5415,6 +5496,32 @@ func _sync_mouse_mode() -> void:
 		else Input.MOUSE_MODE_VISIBLE
 	if Input.mouse_mode != target:
 		Input.mouse_mode = target
+
+# Called by interfaces (enchant table, reroller, inventory, shop, bank) when
+# they open/close. Pauses the tree (combat freezes) and frees the cursor while
+# any interface is up. Pause is OR'd with the pause-menu flag so closing one
+# source doesn't unpause while another is still open. Interfaces that call
+# this MUST also set their own + their popup's process_mode to
+# PROCESS_MODE_ALWAYS so they keep handling input while the tree is paused.
+func set_interface_open(open: bool) -> void:
+	_interface_open_count = maxi(0, _interface_open_count + (1 if open else -1))
+	get_tree().paused = _is_paused or _interface_open_count > 0
+	_sync_mouse_mode()
+
+# Recolor the wizard everywhere: the 2D glyph fill + outline + aura, and the
+# FP / 3rd-person body (via the active rig's stored color). Called on spawn
+# with the saved color and live from the pause-menu hex field.
+func apply_wizard_color(col: Color) -> void:
+	if _ascii_label != null and is_instance_valid(_ascii_label):
+		_ascii_label.add_theme_color_override("font_color", col)
+		_ascii_label.add_theme_color_override("font_outline_color",
+			Color(col.r * 0.5, col.g * 0.5, col.b * 0.5, 0.85))
+	var aura := get_node_or_null("WizardAura")
+	if aura != null:
+		(aura as ColorRect).color = Color(col.r, col.g, col.b, 0.18)
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("update_fp_visual"):
+		GameState.active_rig.update_fp_visual(self, WIZARD_F0, col)
 
 # Unit vector the player is currently aiming. Top-down uses (mouse - player);
 # first-person uses the mouse-look heading. In FP autoplay the camera follows
@@ -5928,8 +6035,12 @@ func _add_lb_column(parent: Node, title: String, entries: Array, pos: Vector2, h
 		shown += 1
 
 func _max_hp() -> int:
-	# +10 max HP per VIT point — VIT is the dedicated HP stat.
-	return max_health + _equip_health_bonus + GameState.get_stat_bonus("VIT") * 10
+	# HP derives entirely from the full VIT stat value (base 10 + level +
+	# equip + run bonuses) at 10 HP per point — so a fresh character with
+	# VIT 10 has 100 HP, scaling +10 per level. The old `max_health` base
+	# (50) was a hard floor that didn't reflect the VIT total, which is why
+	# starting HP read short.
+	return GameState.get_stat("VIT") * 10 + _equip_health_bonus
 
 func heal_to_full() -> void:
 	health = _max_hp()
@@ -5950,12 +6061,12 @@ func update_equip_stats() -> void:
 	_equip_wisdom_bonus     += BASE_WISDOM * sb.get("wisdom_pct", 0.0)
 	_set_def_bonus          = int(sb.get("DEF", 0))
 	new_bonus               += int(sb.get("max_health", 0))
-	# WIS is the dedicated mana stat: +10 max mana per point (and still
-	# drives regen, see _physics_process). Base + gear "max_mana" affixes +
-	# perk bonus stack on top. Legacy MIND gear still contributes +5 max
-	# mana / point as a compat shim so save-loaded inventories don't go dead.
-	max_mana = 100.0 + sb.get("max_mana", 0.0) + _perk_mana_bonus \
-		+ GameState.get_stat_bonus("WIS") * 10.0 \
+	# WIS is the dedicated mana stat: max mana = full WIS stat value × 10
+	# (base 10 + level + bonuses), so VIT/WIS mirror each other — a fresh
+	# character with WIS 10 has 100 mana, +10 per level. WIS also drives
+	# regen (see _physics_process). Gear "max_mana" affixes + perk bonus +
+	# legacy MIND (+5/pt compat shim) stack on top.
+	max_mana = GameState.get_stat("WIS") * 10.0 + sb.get("max_mana", 0.0) + _perk_mana_bonus \
 		+ InventoryManager.get_stat("MIND") * 5.0
 	# Stamina removed in Theme A; dashes spend mana now. Legacy stam_regen
 	# on gear gets re-pointed to wisdom (mana regen) so old "+stam regen"

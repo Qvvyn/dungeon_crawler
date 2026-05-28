@@ -11,6 +11,7 @@ func setup(pos: Vector2) -> void:
 	collision_layer = 0
 	collision_mask  = 1
 	set_meta("fp_floor_decal", true)   # lie flat on the floor in FP
+	set_meta("fp_outline_size", 3)     # thin glyph outline
 	GameState.attach_fp_visual(self, ".", Color(0.95, 0.80, 0.30), 0.04)
 
 	var cshape := CollisionShape2D.new()

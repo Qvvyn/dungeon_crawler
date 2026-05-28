@@ -13,6 +13,11 @@ const LOOT_BAG_SCENE = preload("res://scenes/LootBag.tscn")
 var wall_color: Color = Color(0.12, 0.10, 0.18)
 var loot_world_pos: Vector2 = Vector2.ZERO
 var loot_items: Array = []
+# Grid coords of the entrance (set by World). On break we ask World to carve
+# the passage open for real (set the grid tiles to FLOOR + rebuild FP walls),
+# so the door is an actual change to the level geometry rather than a floating
+# overlay that never read correctly in FP.
+var entrance_tile: Vector2i = Vector2i(-1, -1)
 # When >= 0, spawn the matching biome boss inside the secret room when the
 # wall is broken. World stamps this on a 5% roll.
 var spawn_boss_biome: int = -1
@@ -35,9 +40,10 @@ func _ready() -> void:
 	var detect := get_node_or_null("DetectArea")
 	if detect:
 		detect.queue_free()
-	# FP: a wall-like "#" tinted to the biome wall colour at wall height, so
-	# the segment reads as part of the wall rather than a floating marker.
-	GameState.attach_fp_visual(self, "#", wall_color.lightened(0.30), 0.50)
+	# No FP billboard: the entrance tiles are WALL in the grid, so the FP rig
+	# already renders this segment as solid wall geometry, indistinguishable
+	# from the surrounding wall. The player discovers it by the hit-spark
+	# feedback when a shot lands on what looks like ordinary wall.
 
 func take_damage(amount: int) -> void:
 	_health -= amount
@@ -51,6 +57,12 @@ func _break_open() -> void:
 	FloatingText.spawn_str(global_position, "SECRET FOUND!",
 		Color(1.0, 0.9, 0.2), get_tree().current_scene)
 	_rubble_burst()
+	# Carve the passage open for real — flips the entrance grid tiles to FLOOR
+	# and rebuilds the FP wall mesh so the opening appears in first-person /
+	# 3rd-person, not just 2D.
+	var world := get_tree().current_scene
+	if world != null and world.has_method("open_secret_passage") and entrance_tile.x >= 0:
+		world.open_secret_passage(entrance_tile)
 	if not loot_items.is_empty():
 		var bag := LOOT_BAG_SCENE.instantiate()
 		bag.position = loot_world_pos
@@ -59,7 +71,6 @@ func _break_open() -> void:
 	# Ambush boss — World stamps spawn_boss_biome on a 5 % roll. Pulls the
 	# biome boss factory off the active World scene.
 	if spawn_boss_biome >= 0:
-		var world := get_tree().current_scene
 		if world != null and world.has_method("_instantiate_biome_boss"):
 			var boss: Node2D = world._instantiate_biome_boss(
 				spawn_boss_biome, GameState.difficulty)

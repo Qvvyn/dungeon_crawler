@@ -19,6 +19,7 @@ func _ready() -> void:
 	# as a wisp hugging the floor instead of a billowing waist-high mass.
 	set_meta("fp_pixel_size", 0.007)
 	set_meta("fp_floor_decal", true)   # lie flat on the floor in FP
+	set_meta("fp_outline_size", 3)     # thin glyph outline
 	GameState.attach_fp_visual(self, "~", Color(0.45, 1.0, 0.30), 0.04)
 	var cshape := CollisionShape2D.new()
 	var shape  := CircleShape2D.new()

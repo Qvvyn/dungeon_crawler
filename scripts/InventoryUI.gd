@@ -58,6 +58,9 @@ var _tooltip: Label
 func _ready() -> void:
 	layer = 10
 	visible = false
+	# ALWAYS so the inventory keeps handling [I] / clicks while the tree is
+	# paused (opening it pauses the game via Player.set_interface_open).
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	_build_ui()
 	InventoryManager.inventory_changed.connect(_refresh)
 
@@ -225,6 +228,10 @@ func toggle() -> void:
 		InventoryManager.cancel_drag()
 	else:
 		_refresh()
+	# Pause the game + free the cursor while the inventory is up.
+	var ply := get_tree().get_first_node_in_group("player")
+	if ply != null and ply.has_method("set_interface_open"):
+		ply.set_interface_open(visible)
 
 # ── Input ─────────────────────────────────────────────────────────────────────
 

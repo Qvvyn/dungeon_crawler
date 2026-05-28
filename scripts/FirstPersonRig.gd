@@ -64,6 +64,13 @@ var _viewport_ent: SubViewport = null   # entity-only viewport (no shader)
 var _camera_ent: Camera3D = null         # mirrors _camera each frame
 var _ent_world3d: Node3D = null          # root inside _viewport_ent's world
 
+# Wall albedo — set by World to the active biome's 2D wall color so FP
+# walls match top-down. Defaults to the old tan until set.
+var _wall_albedo: Color = Color(0.78, 0.74, 0.70)
+# Floor albedo — set by World per biome so the FP ground reads the zone
+# (was a fixed warm grey for every biome).
+var _floor_albedo: Color = Color(0.15, 0.13, 0.10)
+
 # In 3rd-person mode the player needs a Label3D so they're actually visible
 # in front of the camera. Tracked here so we can register on entry to
 # 3rd-person and unregister on exit (first-person should not show a
@@ -73,6 +80,10 @@ var _viewport: SubViewport = null
 var _world3d: Node3D       = null
 var _camera: Camera3D      = null
 var _wall_mm: MultiMeshInstance3D = null
+# Floor + ceiling plane instances, tracked so rebuild_walls() (which can run
+# again mid-floor when a secret passage opens) frees the old ones instead of
+# stacking duplicate planes that z-fight.
+var _floor_ceiling: Array[MeshInstance3D] = []
 var _player_light: OmniLight3D = null
 var _entity_root: Node3D   = null
 # body InstanceID → {body, label3d (Label3D), stored_glyph, stored_color, base_pixel_size}
@@ -87,6 +98,7 @@ var _grid_h: int = 0
 # here to there" or "punch landed at this point" and the rig pools labels
 # accordingly.
 var _beam_dots: Array[Label3D] = []
+var _beam_tube: MeshInstance3D = null
 var _beam_active: bool = false
 var _melee_lbl: Label3D = null
 var _melee_timer: float = 0.0
@@ -298,6 +310,18 @@ func _build_scene() -> void:
 	crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(crosshair)
 
+func set_wall_color(col: Color) -> void:
+	_wall_albedo = col
+	# If walls already exist, rebuild so the new color takes effect.
+	if _wall_mm != null and is_instance_valid(_wall_mm) and not _grid.is_empty():
+		rebuild_walls()
+
+func set_floor_color(col: Color) -> void:
+	_floor_albedo = col
+	# Rebuild so the floor plane picks up the new biome color.
+	if _wall_mm != null and is_instance_valid(_wall_mm) and not _grid.is_empty():
+		rebuild_walls()
+
 func set_grid(grid: Array, grid_w: int, grid_h: int) -> void:
 	_grid = grid
 	_grid_w = grid_w
@@ -325,7 +349,9 @@ func rebuild_walls() -> void:
 	var box := BoxMesh.new()
 	box.size = Vector3(1.0, _WALL_H, 1.0)
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.78, 0.74, 0.70)
+	# Brighten the biome wall color a touch so it reads under the dim
+	# dungeon lighting + ASCII shader (the raw 2D color is quite dark).
+	mat.albedo_color = _wall_albedo.lightened(0.15)
 	mat.roughness = 1.0
 	box.material = mat
 	var mm := MultiMesh.new()
@@ -341,14 +367,20 @@ func rebuild_walls() -> void:
 	_build_floor_ceiling()
 
 func _build_floor_ceiling() -> void:
+	# Free any planes from a previous build so re-runs (secret passage opening)
+	# don't stack duplicates.
+	for old in _floor_ceiling:
+		if is_instance_valid(old):
+			old.queue_free()
+	_floor_ceiling.clear()
 	# Ceiling matches the wall top (1.5) so the camera never floats above
 	# it. The original 1.0 ceiling was below the new 1.5 walls, which the
 	# 3rd-person camera (y≈1.05) sat *above* — making the dark ceiling
 	# plane render as a giant black billboard covering most of the lower
 	# half of the screen.
 	for kv in [
-		{"y": 0.0,  "color": Color(0.15, 0.13, 0.10)},
-		{"y": 1.5,  "color": Color(0.05, 0.05, 0.08)},
+		{"y": 0.0,  "color": _floor_albedo},
+		{"y": 1.5,  "color": _floor_albedo.darkened(0.6)},
 	]:
 		var plane := PlaneMesh.new()
 		plane.size = Vector2(float(_grid_w) * 2.0, float(_grid_h) * 2.0)
@@ -361,6 +393,7 @@ func _build_floor_ceiling() -> void:
 		inst.position = Vector3(float(_grid_w) * 0.5, kv["y"], float(_grid_h) * 0.5)
 		inst.layers = LAYER_ENV
 		_world3d.add_child(inst)
+		_floor_ceiling.append(inst)
 
 # Pixel size (world units per font pixel) baseline by kind. Projectiles are
 # kept small and uniform so they read as fast-moving sparks rather than
@@ -658,8 +691,17 @@ func _process(delta: float) -> void:
 		if body.has_meta("fp_height"):
 			ent_y = float(body.get_meta("fp_height"))
 		var ent_3d := Vector3(bp.x / TILE_PX, ent_y, bp.y / TILE_PX)
-		# Near-cull so projectiles fresh off the gun don't engulf the view.
-		if cam_pos.distance_to(ent_3d) < 0.55:
+		# Player grounding (3rd-person) — the shrunken wizard billboard is
+		# centered at chest height, which leaves his robe floating above the
+		# floor. Keep that raised height while LEVITATING (he's meant to hover),
+		# but drop him when grounded so the bottom of the robe meets the floor.
+		if body == player2d and _camera_mode == "third":
+			ent_3d.y = 0.55 if (body.get("_is_levitating") == true) else 0.38
+		# Near-cull so the PLAYER's own shots (fresh off the gun, right at
+		# the camera) don't engulf the view. Enemy projectiles are NOT
+		# culled — an incoming shot vanishing right before it hits read as
+		# "invisible projectiles", so we keep those visible all the way in.
+		if cam_pos.distance_to(ent_3d) < 0.55 and str(body.get("source")) == "player":
 			lbl.visible = false
 			continue
 		# Wall occlusion — entity Label3Ds render in the no-shader viewport
@@ -833,10 +875,23 @@ func _process(delta: float) -> void:
 			# vector so it always reads as a consistent screen-space shift
 			# (rows stay locked to the body). Opt in via the `fp_limb_drift`
 			# meta for the floaty effect.
-			var limb_drift: bool = bool(body.get_meta("fp_limb_drift", false))
+			var drift_on: bool = GameState.fp_limb_drift
 			var cam_right := _camera.global_transform.basis.x
 			cam_right.y = 0.0
 			cam_right = cam_right.normalized() if cam_right.length() > 0.001 else Vector3.RIGHT
+			# When drift is OFF, render the whole multi-line entity as one rigid
+			# plane: per-row billboarding is disabled below and the parent
+			# Y-billboards toward the camera here, so the art stays solid with
+			# no inter-row wobble. When ON, the parent stays unrotated and each
+			# row billboards independently (the loose "drift" look).
+			if not is_floor_decal:
+				if drift_on:
+					lbl.rotation = Vector3.ZERO
+				else:
+					var to_cam := _camera.global_position - lbl.global_position
+					to_cam.y = 0.0
+					if to_cam.length() > 0.001:
+						lbl.rotation = Vector3(0.0, atan2(to_cam.x, to_cam.z), 0.0)
 			for i in row_labels.size():
 				var row_lbl: Label3D = row_labels[i] as Label3D
 				if i < live_lines_arr.size():
@@ -853,12 +908,16 @@ func _process(delta: float) -> void:
 						# space (local Y → world Z spreads them across the
 						# floor). cam_right logic assumes an unrotated parent.
 						row_lbl.position = Vector3(row_x_off2, row_y, 0.0)
-					elif limb_drift:
-						row_lbl.position = Vector3(row_x_off2, row_y, 0.0)
-					else:
-						# Screen-relative offset (parent has no rotation, so
-						# the camera-right world vector IS the local offset).
+					elif drift_on:
+						# Each row billboards on its own; the offset rides the
+						# camera-right vector so it stays screen-aligned.
+						row_lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 						row_lbl.position = Vector3(cam_right.x * row_x_off2, row_y, cam_right.z * row_x_off2)
+					else:
+						# Rigid: rows fixed in the parent's local frame, which
+						# the parent already rotated to face the camera.
+						row_lbl.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+						row_lbl.position = Vector3(row_x_off2, row_y, 0.0)
 				else:
 					row_lbl.visible = false
 		else:
@@ -901,54 +960,60 @@ func _process(delta: float) -> void:
 	# camera turns (was tweening screen-space, drifted off).
 	_update_floating_texts(delta)
 
-# Beam wand — draws a chain of "=" billboards from the player position to
-# end_pos2d. Called every frame the beam is firing; clear_beam() hides
-# the dots when the trigger releases. Each dot is a normal Label3D so the
-# post-shader treats it like any other entity (ASCII conversion + occlusion
-# behind walls).
+# Beam wand — a single blue 3D tube (cylinder) from the muzzle to end_pos2d.
+# Lives on LAYER_ENV so the ASCII post-shader converts it to glyphs (a solid
+# beam reads cleaner than the old "=" billboard chain) and it occludes behind
+# walls like the rest of the environment. Called every frame the beam fires;
+# clear_beam() hides it on release.
 func set_beam(start_pos2d: Vector2, end_pos2d: Vector2, color: Color) -> void:
 	if not visible or _world3d == null or not is_instance_valid(_world3d):
 		return
 	# 0.22 matches player projectile fp_height so the beam appears to come
-	# from the same waist-level muzzle as everything else (was 0.40, which
-	# read as eye-level / centered).
+	# from the same waist-level muzzle as everything else.
 	var start_3d := Vector3(start_pos2d.x / TILE_PX, 0.22, start_pos2d.y / TILE_PX)
 	var end_3d   := Vector3(end_pos2d.x / TILE_PX, 0.22, end_pos2d.y / TILE_PX)
 	var dist := start_3d.distance_to(end_3d)
-	var step := 0.30
-	# Hide the first ~0.6 units so the dots don't engulf the camera — the
-	# beam should appear to leave from a position just in front of the
-	# player rather than starting at the player's exact eye.
+	# Start the tube ~0.6 units out so it doesn't engulf the camera.
 	var skip := 0.6
-	var count: int = maxi(0, int((dist - skip) / step))
-	while _beam_dots.size() < count:
-		var lbl := Label3D.new()
-		lbl.text = "="
-		lbl.font = MonoFont.get_font()
-		lbl.font_size = 48
-		lbl.outline_size = 6
-		lbl.pixel_size = 0.010
-		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.no_depth_test = false
-		lbl.shaded = false
-		lbl.double_sided = true
-		lbl.outline_modulate = Color(0, 0, 0, 1)
-		lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
-		_world3d.add_child(lbl)
-		_beam_dots.append(lbl)
-	var dir3d := Vector3.ZERO if dist <= 0.0 else (end_3d - start_3d) / dist
-	for i in count:
-		var lbl: Label3D = _beam_dots[i]
-		lbl.position = start_3d + dir3d * (skip + float(i) * step)
-		lbl.modulate = color
-		lbl.visible = true
-	for i in range(count, _beam_dots.size()):
-		_beam_dots[i].visible = false
-	_beam_active = count > 0
+	if dist <= skip:
+		clear_beam()
+		return
+	var dir3d := (end_3d - start_3d) / dist
+	var seg_len := dist - skip
+	var mid := start_3d + dir3d * (skip + seg_len * 0.5)
+	# Bias the tube blue regardless of the wand's element tint.
+	var tube_col: Color = color.lerp(Color(0.35, 0.65, 1.0), 0.6)
+	if _beam_tube == null or not is_instance_valid(_beam_tube):
+		_beam_tube = MeshInstance3D.new()
+		var cyl := CylinderMesh.new()
+		cyl.top_radius = 0.08
+		cyl.bottom_radius = 0.08
+		cyl.height = 1.0
+		cyl.radial_segments = 8
+		var mat := StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.albedo_color = tube_col
+		cyl.material = mat
+		_beam_tube.mesh = cyl
+		_beam_tube.layers = LAYER_ENV   # through the ASCII post-shader
+		_world3d.add_child(_beam_tube)
+	var m := (_beam_tube.mesh as CylinderMesh).material as StandardMaterial3D
+	if m != null:
+		m.albedo_color = tube_col
+	# Orient the cylinder's local +Y along the beam and stretch it to seg_len;
+	# X/Z stay unit so the radius is unchanged.
+	var up_ref: Vector3 = Vector3.UP if absf(dir3d.dot(Vector3.UP)) < 0.99 else Vector3.RIGHT
+	var xv := up_ref.cross(dir3d).normalized()
+	var zv := xv.cross(dir3d).normalized()
+	_beam_tube.global_transform = Transform3D(Basis(xv, dir3d * seg_len, zv), mid)
+	_beam_tube.visible = true
+	_beam_active = true
 
 func clear_beam() -> void:
 	if not _beam_active:
 		return
+	if _beam_tube != null and is_instance_valid(_beam_tube):
+		_beam_tube.visible = false
 	for lbl in _beam_dots:
 		if is_instance_valid(lbl):
 			lbl.visible = false
@@ -1510,7 +1575,7 @@ func _scan_hint_text(body: Node) -> String:
 # tweened in screen space) so the text stays glued to the enemy when the
 # player turns the camera.
 func spawn_floating_text(pos_2d: Vector2, text: String, color: Color,
-		lifetime: float = 0.85, y: float = 0.65) -> void:
+		lifetime: float = 0.85, y: float = 1.2) -> void:
 	if not visible or _camera == null or not is_instance_valid(_camera):
 		return
 	var world_pos := Vector3(pos_2d.x / TILE_PX, y, pos_2d.y / TILE_PX)

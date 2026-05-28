@@ -107,7 +107,8 @@ func _ready() -> void:
 	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
 			and GameState.active_rig.has_method("register_entity"):
 		var enemy_glyph: String = "B" if (is_elite or is_champion) else "d"
-		GameState.active_rig.register_entity(self, enemy_glyph, Color(0.95, 0.28, 0.22))
+		var tier: int = 2 if is_champion else (1 if is_elite else 0)
+		GameState.active_rig.register_entity(self, enemy_glyph, GameState.enemy_fp_color(tier))
 	_on_ready_extra()
 
 func _exit_tree() -> void:

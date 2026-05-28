@@ -14,7 +14,8 @@ func _ready() -> void:
 	# "$" matches the 2D pickup label below — FP previously diverged with "g".
 	# Hugs the floor and uses a small pixel_size so the coin reads as a
 	# pickup glinting on the ground, not a chest-high token.
-	set_meta("fp_pixel_size", 0.007)
+	set_meta("fp_pixel_size", 0.005)
+	set_meta("fp_outline_size", 0)   # no outline — reads as a small floor glint
 	GameState.attach_fp_visual(self, "$", Color(1.0, 0.95, 0.30), 0.05)
 	_player = get_tree().get_first_node_in_group("player")
 	var vis := get_node_or_null("Visual")
@@ -46,9 +47,12 @@ func _physics_process(delta: float) -> void:
 	if not is_instance_valid(_player):
 		return
 	var dist := global_position.distance_to(_player.global_position)
+	# LCK widens the magnet — +10 px reach per LCK point so a lucky build
+	# vacuums coins from across the room.
+	var magnet := MAGNET_RANGE + float(GameState.get_stat_bonus("LCK")) * 10.0
 	if dist <= PICKUP_RANGE:
 		_collect()
-	elif dist <= MAGNET_RANGE:
+	elif dist <= magnet:
 		var dir := (_player.global_position - global_position).normalized()
 		global_position += dir * MAGNET_SPEED * delta
 

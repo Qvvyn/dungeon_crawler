@@ -124,8 +124,12 @@ func _process(delta: float) -> void:
 		return
 	# Active phase — count down, spawn waves, update HUD.
 	_time_left -= delta
-	# Prune dead refs so the concurrent-cap is accurate.
-	_spawned_alive = _spawned_alive.filter(func(e: Object) -> bool:
+	# Prune dead refs so the concurrent-cap is accurate. The lambda param is
+	# left UNTYPED on purpose: the array can hold freed object references, and
+	# coercing a freed instance into a typed `Object` param throws
+	# ("Cannot convert argument 1 from Object to Object"). Untyped lets
+	# is_instance_valid() do its job.
+	_spawned_alive = _spawned_alive.filter(func(e):
 		return is_instance_valid(e))
 	_spawn_t -= delta
 	if _spawn_t <= 0.0 and _spawned_alive.size() < MAX_CONCURRENT:

@@ -63,6 +63,13 @@ var _homing_target: Node2D   = null  # cached lock-on target
 # and at high wand_status_stacks the splash would chain-freeze whole
 # adjacent rooms before the player even engaged.
 var _did_freeze_aoe: bool    = false
+# Walls the projectile is already overlapping at spawn (e.g. fired while the
+# player is pressed against a wall, so the muzzle clips the wall collision).
+# Those walls are ignored until the projectile exits them — otherwise the
+# spawn-frame body_entered insta-kills the shot in EVERY direction. New walls
+# still collide normally. Populated on the first physics frame.
+var _spawn_overlap_walls: Dictionary = {}
+var _spawn_overlap_checked: bool = false
 
 func _ready() -> void:
 	# Homing's "^" glyph natively points up (-Y), so the body needs an
@@ -108,13 +115,14 @@ func _ready() -> void:
 		var zap := Line2D.new()
 		zap.name = "ShockZap"
 		zap.width = 3.0
-		zap.default_color = Color(0.55, 0.85, 1.0, 1.0)
+		zap.default_color = Color(1.0, 0.92, 0.20, 1.0)
 		zap.z_index = 1
 		add_child(zap)
 	else:
 		_apply_visual()
 	body_entered.connect(_on_body_entered)
 	area_entered.connect(_on_area_entered)
+	body_exited.connect(_on_body_exited)
 	# Hide the top-down glyph (and the ShockZap line) when in a first-person
 	# mode. Projectiles are short-lived so we don't reconnect to the signal —
 	# whichever mode is active at spawn dictates the visual for this shot's
@@ -154,18 +162,16 @@ func _ready() -> void:
 						glyph = "*"
 						color = Color(0.55, 0.92, 1.0)
 					"shock":
-						# "z" head + the set_shock_zap crackle trail. Same
-						# split as the 2D version (hidden AsciiChar + Line2D
-						# ShockZap), just rendered in FP.
+						# "z" head, now yellow (was light blue) and tilted -45°
+						# (the other way from the original +45°).
 						glyph = "z"
-						color = Color(0.55, 0.85, 1.0)
+						color = Color(1.0, 0.92, 0.20)
+						set_meta("fp_rotation_z", -PI / 4.0)
 					"pierce":
 						# ")" rotated +PI/2 around the camera-facing axis
-						# (in-plane). Billboard is disabled in the rig for
-						# entities with fp_rotation_z so we can manually
-						# orient them each frame.
+						# (in-plane). Now light blue (took shock's old color).
 						glyph = ")"
-						color = Color(0.25, 0.60, 1.0)
+						color = Color(0.55, 0.85, 1.0)
 						set_meta("fp_pixel_size", 0.018)
 						set_meta("fp_rotation_z", PI / 2.0)
 					"ricochet":
@@ -173,7 +179,7 @@ func _ready() -> void:
 						color = Color(0.20, 1.0, 0.35)
 					"shotgun":
 						glyph = "#"
-						color = Color(1.0, 0.85, 0.10)
+						color = Color(0.85, 0.85, 0.85)
 					"nova_shard":
 						glyph = "+"
 						color = Color(0.85, 0.30, 1.0)
@@ -202,9 +208,16 @@ func _ready() -> void:
 						# the 2D apostrophe label.
 						glyph = "'"
 						color = Color(0.95, 0.95, 0.95)
+				# Single source of truth — the match above sets each type's FP
+				# glyph + metas; the palette sets the color so it matches the 2D
+				# shot and the trail particle.
+				color = _type_color(shoot_type)
 			else:
 				glyph = "o"
 				color = Color(1.0, 0.35, 0.35)
+				# Enemy shots read bigger so incoming threats are legible in
+				# FP (default projectile size is a near-invisible speck).
+				set_meta("fp_pixel_size", 0.008)
 			GameState.active_rig.register_entity(self, glyph, color)
 			tree_exiting.connect(_unregister_from_rig)
 	# Freeze bolts get a short leash — at default lifetime + speed they'd
@@ -250,7 +263,7 @@ func _apply_visual() -> void:
 			lbl.offset_top    = -18.0
 			lbl.offset_right  =  18.0
 			lbl.offset_bottom =  18.0
-			lbl.add_theme_color_override("font_color", Color(0.25, 0.60, 1.0))
+			lbl.add_theme_color_override("font_color", Color(0.55, 0.85, 1.0))
 			# Bigger collision rect — the visual width should match the hit
 			# area so the arc feels like it actually sweeps a wide arc.
 			var cshape := get_node_or_null("CollisionShape2D") as CollisionShape2D
@@ -270,7 +283,7 @@ func _apply_visual() -> void:
 			lbl.add_theme_color_override("font_color", Color(0.70, 0.40, 1.0))
 		"shotgun":
 			lbl.text = "#"
-			lbl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.1))
+			lbl.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
 		"homing":
 			lbl.text = "^"
 			lbl.add_theme_color_override("font_color", Color(1.0, 0.40, 0.80))
@@ -293,10 +306,12 @@ func _apply_visual() -> void:
 			lbl.add_theme_color_override("font_color", Color(1.0, 0.35, 0.05))
 		"missile":
 			lbl.text = ">"
-			lbl.add_theme_color_override("font_color", Color(1.0, 0.25, 0.15))
 		_:
 			lbl.text = "."
-			lbl.add_theme_color_override("font_color", Color(0.72, 0.72, 0.88))
+	# Single source of truth for the glyph color so the 2D shot, FP shot, and
+	# trail particle all share the per-type palette (the match above only sets
+	# each type's glyph + sizing now).
+	lbl.add_theme_color_override("font_color", _type_color(shoot_type))
 
 func _physics_process(delta: float) -> void:
 	# Nova glyph cycle — swap "+" / "x" every 100 ms. The FP rig live-syncs
@@ -345,7 +360,7 @@ func _physics_process(delta: float) -> void:
 				if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
 						and GameState.active_rig.has_method("spawn_shock_zap"):
 					GameState.active_rig.spawn_shock_zap(global_position, direction,
-						Color(0.55, 0.85, 1.0))
+						Color(1.0, 0.92, 0.20))
 
 	if shoot_type == "homing":
 		if not is_instance_valid(_homing_target):
@@ -387,6 +402,14 @@ func _physics_process(delta: float) -> void:
 		else:
 			rotation = direction.angle()
 
+	# Capture walls overlapping at spawn (once) so a shot fired while
+	# clipping a wall can escape it instead of insta-dying.
+	if not _spawn_overlap_checked:
+		_spawn_overlap_checked = true
+		for b in get_overlapping_bodies():
+			if b is StaticBody2D:
+				_spawn_overlap_walls[b.get_instance_id()] = true
+
 	var move := direction * speed * delta
 
 	# CCD wall check — raycasts ahead to prevent tunneling at high speeds.
@@ -403,7 +426,8 @@ func _physics_process(delta: float) -> void:
 	ray.exclude = [get_rid()]
 	ray.collision_mask = 1
 	var hit := space.intersect_ray(ray)
-	if not hit.is_empty() and hit.get("collider") is StaticBody2D:
+	if not hit.is_empty() and hit.get("collider") is StaticBody2D \
+			and not _spawn_overlap_walls.has((hit.get("collider") as Object).get_instance_id()):
 		var wall_c = hit.get("collider")
 		if shoot_type == "grenade":
 			_explode_grenade()
@@ -471,6 +495,22 @@ func _on_body_entered(body: Node2D) -> void:
 
 	# Wall hit handled by CCD raycast above; fallback for slow projectiles
 	if body is StaticBody2D:
+		# Ignore walls the shot spawned inside (fired while pressed against
+		# a wall) until it exits them — otherwise the shot dies instantly in
+		# every direction. Cleared in _on_body_exited.
+		if _spawn_overlap_walls.has(body.get_instance_id()):
+			return
+		# A wall overlapping at spawn emits body_entered at the END of the spawn
+		# frame — BEFORE the projectile's first _physics_process runs (which is
+		# where get_overlapping_bodies could see it). Until that first process
+		# flips _spawn_overlap_checked, ANY wall we're already touching is a
+		# muzzle clip (fired while pressed against a wall), not a real hit — so
+		# exclude it and let the shot escape in every direction. Far walls reached
+		# later can't fire body_entered until after the shot has moved, by which
+		# point _spawn_overlap_checked is true and they block normally.
+		if not _spawn_overlap_checked:
+			_spawn_overlap_walls[body.get_instance_id()] = true
+			return
 		if shoot_type == "grenade":
 			_explode_grenade()
 			queue_free()
@@ -627,6 +667,12 @@ func _on_body_entered(body: Node2D) -> void:
 		return
 
 	queue_free()
+
+# Once the shot leaves a wall it spawned inside, that wall counts as a real
+# obstacle again (so it can't tunnel back through the same wall later).
+func _on_body_exited(body: Node2D) -> void:
+	if body is StaticBody2D:
+		_spawn_overlap_walls.erase(body.get_instance_id())
 
 # Reconstructs a wall normal from the projectile's position relative to the
 # wall's RectangleShape2D — used when body_entered fires (no normal carried
@@ -902,21 +948,31 @@ func _fp_chain(from_2d: Vector2, to_2d: Vector2, color: Color,
 			and GameState.active_rig.has_method("spawn_chain_arc_2d"):
 		GameState.active_rig.spawn_chain_arc_2d(from_2d, to_2d, color, 0, lifetime)
 
-func _get_proj_color() -> Color:
-	# Trail color matches the per-type palette — yellow stays reserved for
-	# shotgun so trails read as the wand type at a glance.
-	match shoot_type:
-		"regular":  return Color(0.95, 0.95, 0.95)
-		"pierce":   return Color(0.25, 0.60, 1.0)
-		"ricochet": return Color(0.15, 1.0, 0.28)
-		"freeze":   return Color(0.55, 0.88, 1.0)
-		"fire":     return Color(1.0, 0.28, 0.04)
-		"shock":    return Color(0.70, 0.40, 1.0)
-		"beam":     return Color(0.3, 1.0, 0.8)
-		"shotgun":  return Color(1.0, 0.85, 0.1)
-		"homing":   return Color(1.0, 0.40, 0.80)
-		"nova":     return Color(0.7, 0.0, 1.0)
+# Canonical per-shoot-type color. SINGLE source of truth shared by the 2D
+# glyph (_apply_visual), the FP billboard (registration), and the trail/impact
+# particles (_get_proj_color) so a type's trail always matches its projectile.
+func _type_color(stype: String) -> Color:
+	match stype:
+		"regular":    return Color(0.95, 0.95, 0.95)
+		"pierce":     return Color(0.55, 0.85, 1.0)
+		"ricochet":   return Color(0.20, 1.0, 0.35)
+		"freeze":     return Color(0.55, 0.92, 1.0)
+		"fire":       return Color(1.0, 0.42, 0.08)
+		"shock":      return Color(1.0, 0.92, 0.20)
+		"beam":       return Color(0.3, 1.0, 0.8)
+		"shotgun":    return Color(0.85, 0.85, 0.85)
+		"homing":     return Color(1.0, 0.40, 0.80)
+		"nova":       return Color(0.70, 0.0, 1.0)
+		"nova_shard": return Color(0.85, 0.30, 1.0)
+		"arc":        return Color(1.0, 0.55, 0.15)
+		"grenade":    return Color(1.0, 0.45, 0.15)
+		"missile":    return Color(1.0, 0.20, 0.10)
 	return Color(0.72, 0.72, 0.88)
+
+func _get_proj_color() -> Color:
+	# Trail/impact particles use the same palette as the projectile so each
+	# attack type's trail matches its shot.
+	return _type_color(shoot_type)
 
 func _spawn_trail_marker() -> void:
 	if not is_inside_tree():
@@ -1051,13 +1107,13 @@ func _impact_fire(pos: Vector2) -> void:
 	_fp_burst(pos, "@", col, 1, 0.0, 0.26, Vector2.ZERO, TAU, 0.009, 0.40)
 
 func _impact_shock(pos: Vector2) -> void:
-	# Lightning fork — 2 jagged arcs (was 3) branching out. FP uses pale
-	# blue to match the top-down impact Line2D.
-	var fp_col := Color(0.55, 0.85, 1.0)
+	# Lightning fork — 2 jagged arcs (was 3) branching out. Yellow to match
+	# the recolored shock projectile.
+	var fp_col := Color(1.0, 0.92, 0.20)
 	for i in 2:
 		var arc := Line2D.new()
 		arc.width = 2.0
-		arc.default_color = Color(0.55, 0.85, 1.0, 1.0)
+		arc.default_color = Color(1.0, 0.92, 0.20, 1.0)
 		var angle := (TAU / 2.0) * float(i) + randf_range(-0.5, 0.5)
 		var len := randf_range(20.0, 32.0)
 		var end_pt := pos + Vector2(cos(angle), sin(angle)) * len

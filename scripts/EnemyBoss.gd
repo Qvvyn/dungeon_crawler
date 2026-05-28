@@ -89,6 +89,11 @@ func _ready() -> void:
 	collision_layer = 2
 	collision_mask  = 1
 	_player = get_tree().get_first_node_in_group("player")
+	# Bosses loom large in FP (~1.7× a normal body) + a bigger hitbox to match.
+	set_meta("fp_pixel_size", 0.024)
+	var _cs := get_node_or_null("CollisionShape2D")
+	if _cs != null:
+		(_cs as Node2D).scale = Vector2(1.4, 1.4)
 	_update_health_bar()
 	_create_boss_bar()
 	FloatingText.spawn_str(global_position, "BOSS!", Color(1.0, 0.2, 0.0), get_tree().current_scene)
