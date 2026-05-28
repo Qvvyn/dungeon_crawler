@@ -67,7 +67,7 @@ var _syn_assassin_mark: bool = false  # homing deals double damage
 # Mana
 var mana: float = 10.0
 var max_mana: float = 100.0
-const BASE_WISDOM: float = 25.0   # mana/sec base regen
+const BASE_WISDOM: float = 32.0   # mana/sec base regen — Theme B bumped 25→32 to keep up with the new wand rarity multipliers (legendary wands cost 1.6× as much per shot, and dashes now spend 18 mana). Player can still empty quickly with no wisdom gear, but baseline combat doesn't dry out.
 var _mana_bar_fg: ColorRect = null
 var _mana_label: Label = null
 # Equipped-wand charge readout — visible only when a limited-use wand is
@@ -147,14 +147,10 @@ func _effective_fire_rate(wand: Item) -> float:
 			rate /= 1.5
 	return maxf(0.04, (rate - _equip_fire_rate_bonus) / _fire_rate_multiplier)
 
-# Stamina
-var stamina:           float = 100.0
-var max_stamina:       float = 100.0
-var _stam_bar_fg:      ColorRect = null
-var _perk_stam_bonus:  float = 0.0
-var _stam_regen_bonus: float = 0.0
-const STAMINA_REGEN      := 18.0
-const DASH_STAMINA_COST  := 35.0
+# Dash uses mana now (Theme A stat overhaul — stamina removed). Cost picked
+# so a fresh-mana dash still leaves room for ~5 wand shots before the pool
+# empties; cheaper than the old 35-stamina cost since mana is multi-purpose.
+const DASH_MANA_COST: float = 18.0
 
 # Nova spell
 var _spell_cooldown: float = 0.0
@@ -257,7 +253,7 @@ const PERKS := [
 	{"id": "mana_up",      "name": "+25 Max Mana",      "desc": "Expand your mana pool by 25"},
 	{"id": "speed_up",     "name": "+40 Move Speed",    "desc": "Move permanently faster"},
 	{"id": "fire_rate_up", "name": "Rapid Fire",        "desc": "Reduce shot delay by 0.04s"},
-	{"id": "dash_up",      "name": "+20 Max Stamina",   "desc": "Dash stamina pool +20, more dashes"},
+	{"id": "dash_up",      "name": "+20 Max Mana",      "desc": "Mana pool +20 — more dashes, shield, casts"},
 	{"id": "wisdom_up",    "name": "+15% Mana Regen",   "desc": "Regenerate mana 15% faster"},
 	{"id": "proj_up",      "name": "Extra Shot",        "desc": "+1 base projectile (no wand)"},
 	{"id": "heal_now",     "name": "Vitality",          "desc": "Fully restore HP right now"},
@@ -287,6 +283,9 @@ var _gold_label: Label = null
 var _aim_reticle: Label = null   # `+` glyph at cursor — non-autoplay only
 
 # Wizard ASCII animation
+# Canonical wizard art. Used in both 2D and FP — the FP rig now renders
+# each row as its own Label3D, so leading spaces position the visible
+# content directly without per-line CENTER drift.
 const WIZARD_F0 := "   ^\n__/_\\__\n (*-*)\n /)V(\\|\n /___\\|"
 const WIZARD_F1 := "   ^\n__/_\\__\n (*3*)\n /)V(\\|\n /___\\|"
 var _ascii_label: Label   = null
@@ -391,6 +390,10 @@ func _ready() -> void:
 
 	_ascii_label = $AsciiChar
 	_ascii_label.text = WIZARD_F0
+	# FP per-row x nudge — rows 4 & 5 (the legs, 6-char even content) center
+	# 0.5 char left of the parent under Label3D CENTER alignment. Push them
+	# back to centered. Other rows fine at 0.
+	set_meta("fp_line_x_offsets", [0.0, 0.0, 0.0, 0.5, 0.5])
 	var _mono := MonoFont.get_font()
 	_ascii_label.add_theme_font_override("font", _mono)
 	_ascii_label.add_theme_constant_override("line_separation", -6)
@@ -448,9 +451,9 @@ func _ready() -> void:
 		_autoplay = true
 		_autoplay_sprint = GameState.autoplay_sprint
 		_autoplay_last_pos = global_position
-		# Autoplay-only VIT subsidy. With VIT now worth +5 max HP per point,
-		# +10 VIT = +50 max HP — enough cushion that the bot can survive a
-		# few cheap shots while still dying to real mistakes (was +90).
+		# Autoplay-only VIT subsidy. With VIT worth +10 max HP per point,
+		# +10 VIT = +100 max HP — enough cushion that the bot can survive a
+		# few cheap shots while still dying to real mistakes.
 		GameState.run_stat_bonuses["VIT"] = 10
 		update_equip_stats()
 		health = mini(health, _max_hp())
@@ -732,20 +735,7 @@ func _setup_hud_additions() -> void:
 	_floor_mod_label.visible = false
 	hud.add_child(_floor_mod_label)
 
-	# Stamina bar background
-	var stam_bg := ColorRect.new()
-	stam_bg.name = "StamBarBG"
-	stam_bg.color = Color(0.05, 0.2, 0.05)
-	stam_bg.position = Vector2(10, 49)
-	stam_bg.size = Vector2(202, 8)
-	hud.add_child(stam_bg)
-
-	_stam_bar_fg = ColorRect.new()
-	_stam_bar_fg.name = "StamBarFG"
-	_stam_bar_fg.color = Color(0.3, 0.9, 0.25)
-	_stam_bar_fg.position = Vector2(11, 50)
-	_stam_bar_fg.size = Vector2(200.0, 6.0)
-	hud.add_child(_stam_bar_fg)
+	# Stamina bar removed — Theme A overhaul folded dashes into the mana pool.
 
 	# Dash label
 	var dash_lbl := Label.new()
@@ -852,7 +842,7 @@ func _setup_pause_menu() -> void:
 	stats_title.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
 	_pause_menu.add_child(stats_title)
 	var stats_help := Label.new()
-	stats_help.text = "INT  +1 damage / point, scales elements\nDEX  -0.01 s shot cooldown per 5 points\nAGI  +4 move speed per point\nVIT  +5 max HP per point\nEND  +4 max stamina per point\nWIS  +2 mana regen per second per point\nMIND  +5 max mana per point\nSPR  +0.05 HP/sec per point\nDEF  +1% block per point\nLCK  +0.5% crit per point"
+	stats_help.text = "INT  +1 damage, +shot range, scales elements\nDEX  -0.01 s shot cooldown / 5 pts, +shot speed\nAGI  +4 move speed per point\nVIT  +10 max HP per point\nEND  +0.05 HP/sec per point\nWIS  +10 max mana + 2.5 regen/sec per point\nDEF  +1% block per point\nLCK  +0.5% crit per point, +loot rarity"
 	stats_help.position = Vector2(1048, 282)
 	stats_help.size     = Vector2(260, 280)
 	stats_help.add_theme_font_size_override("font_size", 13)
@@ -1307,7 +1297,6 @@ func _add_test_level_input(y: float, parent: Node) -> void:
 		# slider feels dead until they take damage.
 		health  = _max_hp()
 		mana    = max_mana
-		stamina = max_stamina
 		_update_health_bar()
 		FloatingText.spawn_str(global_position,
 			"LEVEL %d" % lv, col, get_tree().current_scene)
@@ -1620,8 +1609,8 @@ func _debug_log_snapshot() -> void:
 	lines.append("Last pos: (%.1f, %.1f)  Δ since last frame=%.2f" % [
 		_autoplay_last_pos.x, _autoplay_last_pos.y,
 		global_position.distance_to(_autoplay_last_pos)])
-	lines.append("HP: %d/%d  Mana: %.0f/%.0f  Stam: %.0f/%.0f  defensive=%s" % [
-		health, _max_hp(), mana, max_mana, stamina, max_stamina,
+	lines.append("HP: %d/%d  Mana: %.0f/%.0f  defensive=%s" % [
+		health, _max_hp(), mana, max_mana,
 		str(_autoplay_is_defensive())])
 	# Autoplay state
 	lines.append("Autoplay: %s  sprint=%s  force_sprint(<25%%hp)=%s" % [
@@ -2017,10 +2006,10 @@ func _update_mana_bar() -> void:
 		_difficulty_label.text = "T%d  DIFFICULTY  %.2fx" % [tier, diff_val]
 
 func _update_stam_bar() -> void:
-	if _stam_bar_fg == null:
-		return
-	var ratio := clampf(stamina / max_stamina, 0.0, 1.0)
-	_stam_bar_fg.size.x = _stam_bar_inner_width * ratio
+	# Stamina removed in Theme A; this is now a no-op kept around so any
+	# remaining call sites (autoplay UI ticks, etc) don't error. Safe to
+	# delete the call sites and this stub in a later cleanup pass.
+	pass
 
 func _cast_nova_spell() -> void:
 	# Blood-magic rule applies to nova too — over-cast eats HP for the
@@ -2199,15 +2188,7 @@ func _apply_mobile_hud_scale() -> void:
 		_mana_label.add_theme_font_size_override("font_size", 12)
 	_mana_bar_inner_width = 320.0
 
-	# Stam bar — moved down to y=78, sized 322×14.
-	var stam_bg := get_node_or_null("HUD/StamBarBG") as Control
-	if stam_bg != null:
-		stam_bg.position = Vector2(10, 78)
-		stam_bg.size     = Vector2(322, 14)
-	if _stam_bar_fg != null:
-		_stam_bar_fg.position = Vector2(11, 79)
-		_stam_bar_fg.size     = Vector2(0, 12)
-	_stam_bar_inner_width = 320.0
+	# Stamina bar removed in Theme A stat overhaul — nothing to reposition.
 
 	# Dash hint shifts down and grows a bit.
 	var dash_lbl := get_node_or_null("HUD/DashLabel") as Label
@@ -2321,17 +2302,16 @@ func _process(_delta: float) -> void:
 	if _level_label:
 		_level_label.text = "LVL " + str(GameState.level)
 	if _stats_label:
-		# 10 stats in 5 rows — pairs grouped by archetype:
+		# 8 stats in 4 rows after the Theme A overhaul (SPR + MIND removed,
+		# END absorbed SPR's HP-regen role):
 		#   INT/DEX  → damage / fire-rate
-		#   WIS/MIND → mana regen / mana pool
-		#   AGI/VIT  → mobility / health
-		#   SPR/END  → spirit / stamina
-		#   DEF/LCK  → armor / luck
-		_stats_label.text = "INT %d  DEX %d\nWIS %d  MIND %d\nAGI %d  VIT %d\nSPR %d  END %d\nDEF %d  LCK %d" % [
+		#   WIS/AGI  → mana regen / move speed
+		#   VIT/END  → max HP / HP regen
+		#   DEF/LCK  → armor / luck + loot rarity
+		_stats_label.text = "INT %d  DEX %d\nWIS %d  AGI %d\nVIT %d  END %d\nDEF %d  LCK %d" % [
 			GameState.get_stat("INT"), GameState.get_stat("DEX"),
-			GameState.get_stat("WIS"), GameState.get_stat("MIND"),
-			GameState.get_stat("AGI"), GameState.get_stat("VIT"),
-			GameState.get_stat("SPR"), GameState.get_stat("END"),
+			GameState.get_stat("WIS"), GameState.get_stat("AGI"),
+			GameState.get_stat("VIT"), GameState.get_stat("END"),
 			GameState.get_stat("DEF"), GameState.get_stat("LCK"),
 		]
 	_update_xp_bar()
@@ -2341,8 +2321,8 @@ func _process(_delta: float) -> void:
 		if _dash_timer > 0.0:
 			dash_lbl.text = "DASHING"
 			dash_lbl.add_theme_color_override("font_color", Color(0.3, 1.0, 1.0))
-		elif stamina < DASH_STAMINA_COST:
-			dash_lbl.text = "DASH (LOW STAM)"
+		elif mana < DASH_MANA_COST:
+			dash_lbl.text = "DASH (LOW MANA)"
 			dash_lbl.add_theme_color_override("font_color", Color(0.4, 0.4, 0.5))
 		else:
 			dash_lbl.text = "DASH [SHIFT]"
@@ -2516,26 +2496,33 @@ func _physics_process(delta: float) -> void:
 		if _buff_timer <= 0.0:
 			_speed_multiplier = 1.0
 			_fire_rate_multiplier = 1.0
-	# Mana regen
-	var wisdom := BASE_WISDOM + _equip_wisdom_bonus + float(GameState.get_stat_bonus("WIS")) * 2.0
+	# Mana regen — Theme B bumped WIS multiplier 2.0→2.5 so stat investment
+	# delivers a more noticeable regen swing on top of the higher base.
+	var wisdom := BASE_WISDOM + _equip_wisdom_bonus + float(GameState.get_stat_bonus("WIS")) * 2.5
 	# ARCANE floor scales with difficulty — 2× at low diff, up to 3× at high.
 	var mana_mult: float = 1.0
 	if GameState.has_floor_modifier("arcane"):
 		mana_mult = 2.0 + 0.20 * maxf(0.0, GameState.difficulty - 1.0)
-	mana = minf(mana + wisdom * delta * mana_mult, max_mana)
-	# Stamina regen — halved in the Ice Cavern when the player hasn't
-	# killed anything in the last 4 s (hypothermia biome mechanic).
-	# Encourages aggressive play instead of camping safe spots.
-	var stam_mult: float = 1.0
+	# Ice Cavern hypothermia — mana regen halves if the player has gone
+	# 4+ in-game seconds without a kill, encouraging aggressive play. Uses
+	# the delta-accumulated GameState.since_kill_s (not wall-clock) so the
+	# threshold respects Engine.time_scale (the 0.75× FP-mode slowdown
+	# would otherwise make hypothermia kick in 1.3 s of in-game time
+	# early). EnemyBase resets the accumulator on each kill alongside
+	# last_kill_msec.
+	GameState.since_kill_s += delta
 	if GameState.biome == 2:
-		var since_kill_ms: int = Time.get_ticks_msec() - GameState.last_kill_msec
-		if since_kill_ms > 4000:
-			stam_mult = 0.5
-	stamina = minf(stamina + (STAMINA_REGEN + _stam_regen_bonus) * stam_mult * delta, max_stamina)
-	# HP regen via SPR (slow trickle, scales with stat bonus)
-	var spr_bonus := GameState.get_stat_bonus("SPR")
-	if spr_bonus > 0 and health > 0 and health < _max_hp():
-		_hp_regen_acc += float(spr_bonus) * 0.05 * delta
+		if GameState.since_kill_s > 4.0:
+			mana_mult *= 0.5
+	mana = minf(mana + wisdom * delta * mana_mult, max_mana)
+	# HP regen via END (slow trickle, scales with stat bonus). END absorbed
+	# SPR's role in the stat overhaul — there's no more stamina pool, so
+	# END is now the "stay topped up out of combat" stat. Rate kept at the
+	# old SPR rate (0.05 HP/sec/point) for parity. Legacy SPR on gear is
+	# re-pointed here so save-loaded inventories still contribute.
+	var end_bonus := GameState.get_stat_bonus("END") + int(InventoryManager.get_stat("SPR"))
+	if end_bonus > 0 and health > 0 and health < _max_hp():
+		_hp_regen_acc += float(end_bonus) * 0.05 * delta
 		if _hp_regen_acc >= 1.0:
 			var heal_amt := int(_hp_regen_acc)
 			_hp_regen_acc -= float(heal_amt)
@@ -2610,7 +2597,7 @@ func _tick_dash(delta: float) -> void:
 			for enemy in get_tree().get_nodes_in_group("enemy"):
 				if is_instance_valid(enemy):
 					remove_collision_exception_with(enemy)
-	elif Input.is_action_just_pressed("dash") and stamina >= DASH_STAMINA_COST and not _is_dead:
+	elif Input.is_action_just_pressed("dash") and mana >= DASH_MANA_COST and not _is_dead:
 		_start_dash()
 	elif _autoplay and _autoplay_dash_t <= 0.0 and _autoplay_wants_dash():
 		_autoplay_dash_t = 1.5
@@ -2801,7 +2788,9 @@ func _start_dash() -> void:
 			dir = (-dir.y) * forward + dir.x * right
 	_dash_dir      = dir
 	_dash_timer    = DASH_DURATION
-	stamina       -= DASH_STAMINA_COST
+	# Blood-magic fallback — dashing past empty mana drains HP. Same path
+	# wand shots / shield / levitate use.
+	_spend_mana_or_hp(DASH_MANA_COST)
 	_is_invincible = true
 	modulate        = Color(0.5, 0.8, 1.0, 0.6)
 	_spawn_dash_afterimages()
@@ -3816,11 +3805,12 @@ func _autoplay_build_astar() -> void:
 		for x in grid_w:
 			if int((grid[y] as Array)[x]) != 0:   # FLOOR=0, WALL=1
 				_astar.set_point_solid(Vector2i(x, y), true)
-	# Secret doors are StaticBody2Ds sitting on tiles the grid still says are
-	# floor — weight them moderately so paths prefer alternatives, but allow
-	# routing through (the bot auto-opens any door it physically touches via
-	# SecretDoor.gd). Letting paths go through means the bot actually
-	# *finds* secret-room loot instead of perpetually skipping past.
+	# Secret doors are destructible StaticBody2Ds sitting on tiles the grid
+	# still says are floor — weight them moderately so paths prefer
+	# alternatives, but allow routing through. When the bot ends up adjacent
+	# it smashes the door open (see _autoplay tick), so letting paths go
+	# through means the bot actually *finds* secret-room loot rather than
+	# perpetually skipping past.
 	for door in get_tree().get_nodes_in_group("secret_door"):
 		if not is_instance_valid(door):
 			continue
@@ -4128,12 +4118,10 @@ func _autoplay_tick(delta: float) -> void:
 		_autoplay_enemy_last_hp = -1
 		_autoplay_enemy_dmg_t = 0.0
 
-	# Force-trigger any secret door we're hovering near. The door's
-	# DetectArea normally fires on body_entered, but we've seen cases
-	# where the bot's collider grazes the StaticBody2D body before the
-	# Area2D registers, leaving the bot pushing against an unopened
-	# door. Polling every tick is cheap (one distance check per door)
-	# and guarantees the bot never sits next to a closed secret door.
+	# Secret doors are now destructible wall segments (no [E] open). When the
+	# bot ends up next to one, smash it open so it still claims the hidden
+	# loot instead of pushing against a solid body forever. One big hit
+	# breaks it (no HP bar, mirrors the player shooting it).
 	for door in get_tree().get_nodes_in_group("secret_door"):
 		if not is_instance_valid(door):
 			continue
@@ -4141,8 +4129,8 @@ func _autoplay_tick(delta: float) -> void:
 		if door_n == null:
 			continue
 		if global_position.distance_to(door_n.global_position) <= 56.0:
-			if door.has_method("_trigger_open"):
-				door._trigger_open()
+			if door.has_method("take_damage"):
+				door.take_damage(9999)
 				_autoplay_invalidate_path()
 				break
 
@@ -4398,7 +4386,7 @@ func _wand_score(w: Item) -> float:
 	# unable to shoot. Effective cost includes the same flaw / difficulty
 	# multipliers _handle_shooting applies, so the score reflects what
 	# actually leaves the muzzle.
-	var eff_cost: float = w.wand_mana_cost
+	var eff_cost: float = _scaled_wand_mana_cost(w)
 	if "mana_guzzle" in w.wand_flaws:
 		eff_cost *= 2.0
 	eff_cost *= _difficulty_mana_multiplier()
@@ -4432,7 +4420,7 @@ func _autoplay_try_nova() -> void:
 	# Heavily-pressured panic — when 5+ enemies are right on top of us, dash
 	# away from the cluster centroid the moment cooldowns allow. Bypasses
 	# _start_dash's movement-input read by setting _dash_dir directly.
-	if cluster >= 5 and stamina >= DASH_STAMINA_COST and _autoplay_dash_t <= 0.0 and _dash_timer <= 0.0:
+	if cluster >= 5 and mana >= DASH_MANA_COST and _autoplay_dash_t <= 0.0 and _dash_timer <= 0.0:
 		_autoplay_panic_dash()
 
 # Computes the centroid of nearby enemies and dashes opposite that vector.
@@ -4454,7 +4442,7 @@ func _autoplay_panic_dash() -> void:
 		away = Vector2.RIGHT.rotated(randf_range(0.0, TAU))
 	_dash_dir   = away.normalized()
 	_dash_timer = DASH_DURATION
-	stamina    -= DASH_STAMINA_COST
+	_spend_mana_or_hp(DASH_MANA_COST)
 	_is_invincible = true
 	modulate    = Color(0.5, 0.8, 1.0, 0.6)
 	_spawn_dash_afterimages()
@@ -4617,7 +4605,7 @@ func _autoplay_try_potion() -> void:
 func _autoplay_wants_dash() -> bool:
 	if not _autoplay:
 		return false
-	if stamina < DASH_STAMINA_COST:
+	if mana < DASH_MANA_COST:
 		return false
 	# Dash when any enemy is in contact / about to be. Was previously gated
 	# behind <30 % HP + a 100 px range — too late to actually escape damage.
@@ -4787,6 +4775,21 @@ func _shatter_wand(wand: Item) -> void:
 		Color(1.0, 0.45, 0.65),
 		get_tree().current_scene)
 
+# Per-shot mana cost for a wand after Theme A's rarity + level scaling.
+# Rarity multiplier: COMMON 1.0, UNCOMMON 1.15, RARE 1.35, LEGENDARY 1.6
+# (better wands punch harder, so they should cost more to fire).
+# Player level offsets up to 30% off at lvl 20+ so late-game progression
+# brings every wand into a sustainable cost range. Returns raw cost
+# (caller still multiplies flaws + difficulty).
+func _scaled_wand_mana_cost(w: Item) -> float:
+	if w == null:
+		return BASE_SHOT_MANA_COST
+	const RARITY_MULT := [1.0, 1.15, 1.35, 1.6]
+	var rar_idx: int = clampi(int(w.rarity), 0, RARITY_MULT.size() - 1)
+	var rarity_mult: float = RARITY_MULT[rar_idx]
+	var level_offset: float = 1.0 - clampf(float(maxi(0, GameState.level - 1)) * 0.015, 0.0, 0.30)
+	return w.wand_mana_cost * rarity_mult * level_offset
+
 func _handle_shooting(delta: float) -> void:
 	_shoot_cooldown -= delta
 	if _inventory_ui and _inventory_ui.visible:
@@ -4845,7 +4848,7 @@ func _handle_shooting(delta: float) -> void:
 	if _wants_shoot() and _shoot_cooldown <= 0.0:
 		var mana_cost: float
 		if wand != null:
-			mana_cost = wand.wand_mana_cost
+			mana_cost = _scaled_wand_mana_cost(wand)
 			if "mana_guzzle" in wand.wand_flaws:
 				mana_cost *= 2.0
 		else:
@@ -4874,7 +4877,7 @@ func _handle_beam(delta: float, wand: Item) -> void:
 			GameState.active_rig.clear_beam()
 		return
 
-	var drain: float = wand.wand_mana_cost
+	var drain: float = _scaled_wand_mana_cost(wand)
 	if "mana_guzzle" in wand.wand_flaws:
 		drain *= 2.0
 	drain *= _difficulty_mana_multiplier()
@@ -5458,6 +5461,10 @@ func get_aim_world_pos() -> Vector2:
 	return get_global_mouse_position()
 
 func _on_level_up() -> void:
+	# Refresh derived stats so the per-level WIS → max mana (and the rest of
+	# the stat-scaled values) update on level-up. _max_hp() is computed
+	# live so HP tracks VIT automatically.
+	update_equip_stats()
 	var lbl := Label.new()
 	lbl.text = "LEVEL UP!"
 	lbl.add_theme_font_size_override("font_size", 32)
@@ -5584,7 +5591,8 @@ func _apply_perk(perk: Dictionary) -> void:
 		"fire_rate_up":
 			fire_rate = maxf(0.04, fire_rate - 0.04)
 		"dash_up":
-			_perk_stam_bonus += 20.0
+			# Repointed from stamina to mana — dashes spend mana now (Theme A).
+			_perk_mana_bonus += 20.0
 			update_equip_stats()
 		"wisdom_up":
 			_perk_wisdom_bonus_p += 0.15
@@ -5920,9 +5928,8 @@ func _add_lb_column(parent: Node, title: String, entries: Array, pos: Vector2, h
 		shown += 1
 
 func _max_hp() -> int:
-	# +2 max HP per VIT point above 10 (was +1) — meaningful tank scaling
-	# +5 max HP per VIT point — investing in VIT now meaningfully tanks up.
-	return max_health + _equip_health_bonus + GameState.get_stat_bonus("VIT") * 5
+	# +10 max HP per VIT point — VIT is the dedicated HP stat.
+	return max_health + _equip_health_bonus + GameState.get_stat_bonus("VIT") * 10
 
 func heal_to_full() -> void:
 	health = _max_hp()
@@ -5943,14 +5950,17 @@ func update_equip_stats() -> void:
 	_equip_wisdom_bonus     += BASE_WISDOM * sb.get("wisdom_pct", 0.0)
 	_set_def_bonus          = int(sb.get("DEF", 0))
 	new_bonus               += int(sb.get("max_health", 0))
-	# +5 max mana per MIND stat point. WIS now ONLY drives regen so the
-	# two stats split cleanly: MIND = pool size, WIS = refill rate.
-	# Hats and Apprentice/Wizard robes carry the bulk of MIND; the rest
-	# of the gear leaves it for build choice.
+	# WIS is the dedicated mana stat: +10 max mana per point (and still
+	# drives regen, see _physics_process). Base + gear "max_mana" affixes +
+	# perk bonus stack on top. Legacy MIND gear still contributes +5 max
+	# mana / point as a compat shim so save-loaded inventories don't go dead.
 	max_mana = 100.0 + sb.get("max_mana", 0.0) + _perk_mana_bonus \
-		+ float(GameState.get_stat_bonus("MIND")) * 5.0
-	max_stamina = 100.0 + _perk_stam_bonus + float(GameState.get_stat_bonus("END")) * 4.0
-	_stam_regen_bonus = InventoryManager.get_stat("stam_regen") + sb.get("stam_regen", 0.0)
+		+ GameState.get_stat_bonus("WIS") * 10.0 \
+		+ InventoryManager.get_stat("MIND") * 5.0
+	# Stamina removed in Theme A; dashes spend mana now. Legacy stam_regen
+	# on gear gets re-pointed to wisdom (mana regen) so old "+stam regen"
+	# items contribute to the new resource.
+	_equip_wisdom_bonus += InventoryManager.get_stat("stam_regen")
 
 	_equip_projectile_count += _perk_proj_bonus
 	_equip_wisdom_bonus     += BASE_WISDOM * _perk_wisdom_bonus_p

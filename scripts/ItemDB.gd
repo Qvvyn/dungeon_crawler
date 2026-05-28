@@ -9,8 +9,15 @@ class_name ItemDB
 static func legendary_drop_chance(diff: float) -> float:
 	return clampf(diff * 0.001, 0.0, 0.50)
 
+# Active LCK total (level + equip + run-stat bonuses). Read once per
+# drop roll so each enemy drop reflects the player's current LCK.
+static func _active_luck() -> int:
+	if GameState == null:
+		return 0
+	return GameState.get_stat_bonus("LCK")
+
 # Drop-rarity roll. Rolls in order from rarest to most common — first
-# success wins. Curves:
+# success wins. Curves (before LCK bonus):
 #   * LEGENDARY: diff × 0.1 % (capped 50 %).
 #   * RARE: diff % at every tier — 1 % at diff 1, 50 % at diff 50,
 #     capped at 100 %. No floor gate; rare can drop on a fresh run.
@@ -18,17 +25,22 @@ static func legendary_drop_chance(diff: float) -> float:
 #     deep runs always leave a sliver of common rolls and rare /
 #     legendary continue to take the dominant share as they scale up.
 #   * COMMON: whatever's left (the implicit fallback).
-# Successive rolls instead of a single weighted pick — keeps each tier's
-# advertised chance accurate without renormalizing when uncommon's
-# 80 % cap bites at high difficulty.
+# LCK shifts the distribution upward: +0.05 %/pt legendary, +0.5 %/pt
+# rare, +1 %/pt uncommon. At LCK 20 a player sees ~+1 % legendary, +10 %
+# rare, +20 % uncommon relative to a fresh character — a noticeable but
+# not run-defining boost. Same caps apply.
 static func roll_drop_rarity() -> int:
 	var diff: float = GameState.test_difficulty if GameState.test_mode else GameState.difficulty
-	if randf() < legendary_drop_chance(diff):
+	var lck: int = _active_luck()
+	var leg_chance: float = clampf(legendary_drop_chance(diff) + float(lck) * 0.0005, 0.0, 0.55)
+	if randf() < leg_chance:
 		return Item.RARITY_LEGENDARY
-	var rare_chance: float = clampf(diff * 0.01, 0.0, 1.0)
+	var rare_chance: float = clampf(diff * 0.01 + float(lck) * 0.005, 0.0, 1.0)
 	if randf() < rare_chance:
 		return Item.RARITY_RARE
-	var uncommon_chance: float = clampf(0.10 + maxf(0.0, diff - 1.0) * 0.05, 0.0, 0.80)
+	var uncommon_chance: float = clampf(
+		0.10 + maxf(0.0, diff - 1.0) * 0.05 + float(lck) * 0.01,
+		0.0, 0.85)
 	if randf() < uncommon_chance:
 		return Item.RARITY_UNCOMMON
 	return Item.RARITY_COMMON
@@ -557,7 +569,6 @@ const _GEAR_TYPE_POOLS := {
 		"stats": [
 			["VIT",     2, 4],
 			["wisdom",  3, 8],
-			["MIND",    2, 5],
 			["INT",     2, 5],
 			["WIS",     2, 5],
 		],
@@ -579,7 +590,7 @@ const _GEAR_TYPE_POOLS := {
 		"stats": [
 			["speed",      25, 60],
 			["AGI",        2, 5],
-			["stam_regen", 25, 80],
+			["END",        2, 5],
 		],
 	},
 	"ring": {
@@ -590,7 +601,7 @@ const _GEAR_TYPE_POOLS := {
 			["VIT",                 2, 4],
 			["fire_rate_reduction", 2, 5],
 			["wisdom",              4, 10],
-			["MIND",                2, 4],
+			["END",                 2, 4],
 			["DEX",                 2, 5],
 			["LCK",                 2, 5],
 			["AGI",                 2, 4],
@@ -605,7 +616,7 @@ const _GEAR_TYPE_POOLS := {
 		"stats": [
 			["VIT",                 3, 6],
 			["wisdom",              5, 12],
-			["MIND",                3, 6],
+			["END",                 3, 6],
 			["fire_rate_reduction", 3, 7],
 			["INT",                 3, 7],
 			["WIS",                 3, 7],
@@ -763,7 +774,11 @@ static func generate_wand(rarity: int = Item.RARITY_COMMON) -> Item:
 			item.wand_mana_cost  = randf_range(7.0, 14.0)
 			item.wand_proj_speed = randf_range(650.0, 900.0)
 
-	# Shoot-type specific adjustments
+	# Shoot-type specific adjustments. Mana multipliers normalize per-shot
+	# "effective" damage across shoot types so a shotgun blast doesn't
+	# trivialize a freeze stack. Numbers tuned against a notional regular
+	# wand at 1× cost — types that hit harder per trigger pay more per
+	# shot. Beam stays per-second since it drains continuously.
 	match item.wand_shoot_type:
 		"pierce":
 			item.wand_pierce    = randi_range(1, 2 + (rarity))
@@ -774,6 +789,19 @@ static func generate_wand(rarity: int = Item.RARITY_COMMON) -> Item:
 		"freeze", "fire", "shock":
 			item.wand_status_stacks = randi_range(1, 1 + rarity)
 			item.wand_mana_cost *= 1.2
+		"shotgun":
+			# 5 pellets per shot — was paying 1× cost for ~3× effective
+			# damage. Bumped to 1.8× so the burst still feels cheap per
+			# pellet but the wand can't infinite-shotgun a room.
+			item.wand_mana_cost *= 1.8
+		"nova":
+			# Nova adds shard burst on impact — pricier per-shot to match
+			# the wide AoE.
+			item.wand_mana_cost *= 1.4
+		"homing":
+			# Tracking + free-aim premium. Player doesn't need to aim, so
+			# the tax for that QoL goes here.
+			item.wand_mana_cost *= 1.25
 		"beam":
 			item.wand_damage    = randi_range(2, 3 + rarity)
 			item.wand_mana_cost = randf_range(11.0, 22.0)   # per second

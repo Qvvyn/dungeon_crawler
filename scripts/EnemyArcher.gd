@@ -312,8 +312,8 @@ func _tick_anim(delta: float) -> void:
 		_aim_indicator.modulate = Color(1.0, pulse * 0.5, 0.0, 0.9)
 
 func _get_status_modulate() -> Color:
-	if _frozen:        return Color(0.78, 0.92, 1.0)
-	if _stun_timer > 0.0: return Color(0.9, 0.9, 0.3)
+	if _frozen:        return StatusTint.frozen()
+	if _stun_timer > 0.0: return StatusTint.stun()
 	if _poisoned:      return Color(0.45, 1.0, 0.55)
 	if _enflamed:
 		var f := sin(Time.get_ticks_msec() * 0.025) * 0.12 + 0.88

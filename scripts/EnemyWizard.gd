@@ -103,6 +103,8 @@ func _ready() -> void:
 		_lbl.add_theme_constant_override("line_separation", -6)
 		_lbl.text = WIZARD_F0
 		_lbl.add_theme_color_override("font_color", _pick_robe_color())
+	# FP per-row x nudge — legs rows compensate for even-char CENTER drift.
+	set_meta("fp_line_x_offsets", [0.0, 0.0, 0.0, 0.5, 0.5])
 	# School indicator — tiny glyph above the wizard showing what type of
 	# damage to expect. Lets the player triage threats by element before
 	# engaging instead of getting surprised by what comes off the wand.
@@ -330,9 +332,9 @@ func _tick_visual(delta: float) -> void:
 
 func _get_status_modulate() -> Color:
 	if _frozen:
-		return Color(0.78, 0.92, 1.0)
+		return StatusTint.frozen()
 	if _stun_timer > 0.0:
-		return Color(0.9, 0.9, 0.3)
+		return StatusTint.stun()
 	if _poisoned:
 		return Color(0.45, 1.0, 0.55)
 	if _enflamed:

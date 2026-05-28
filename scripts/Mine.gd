@@ -31,7 +31,8 @@ func _ready() -> void:
 	# fp_multiline lets the FP rig mirror those frames live.
 	set_meta("fp_multiline", true)
 	set_meta("fp_pixel_size", 0.012)
-	GameState.attach_fp_visual(self, F_UNARMED, Color(0.95, 0.85, 0.20), 0.20)
+	set_meta("fp_floor_decal", true)   # mine art lies flat on the floor
+	GameState.attach_fp_visual(self, F_UNARMED, Color(0.95, 0.85, 0.20), 0.04)
 	if _shared_font == null:
 		_shared_font = MonoFont.get_font()
 	_lbl = Label.new()

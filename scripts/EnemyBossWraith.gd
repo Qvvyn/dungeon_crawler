@@ -20,6 +20,7 @@ var _blink_timer: float     = 2.0
 var _shots_queued: int      = 0
 var _shot_delay_timer: float = 0.0
 var _phase: int             = 1
+var _gate: BossGate = BossGate.new()    # Theme C HP threshold gates — see BossGate.gd
 var _blinking: bool         = false
 var _blink_flash_t: float   = 0.0
 var _hit_flash_t: float     = 0.0
@@ -98,6 +99,7 @@ func _physics_process(delta: float) -> void:
 
 	_tick_status(delta)
 	if not is_instance_valid(self): return
+	_gate.tick(delta)
 
 	_check_phases()
 
@@ -157,22 +159,38 @@ func _tick_phantom(delta: float) -> void:
 		_is_invuln = false
 
 func _spawn_shadow() -> void:
+	# Holder is a Node2D so the FP rig can attach a billboard to it. The
+	# AsciiChar Label is named so the rig's live-text sync picks it up
+	# (and the modulate fade in 2D propagates to the FP billboard).
+	var holder := Node2D.new()
+	holder.global_position = global_position
+	get_tree().current_scene.add_child(holder)
+
 	var ghost := Label.new()
+	ghost.name = "AsciiChar"
 	var mono := MonoFont.get_font()
 	ghost.add_theme_font_override("font", mono)
 	ghost.add_theme_font_size_override("font_size", 15)
 	ghost.add_theme_constant_override("line_separation", -2)
 	ghost.add_theme_color_override("font_color", Color(0.45, 0.10, 0.65, 0.65))
 	ghost.text = BOSS_F0 if _anim_frame == 0 else BOSS_F1
-	ghost.position = global_position + Vector2(-18, -18)
+	ghost.position = Vector2(-18, -18)
 	ghost.size = Vector2(40, 40)
 	ghost.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	ghost.vertical_alignment   = VERTICAL_ALIGNMENT_TOP
 	ghost.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	get_tree().current_scene.add_child(ghost)
+	holder.add_child(ghost)
+
+	# FP billboard at chest height. fp_multiline lets the rig render the
+	# wraith's full ASCII silhouette; fp_pixel_size keeps it slim. The 2D
+	# alpha tween below also propagates to FP via the rig's modulate sync.
+	holder.set_meta("fp_multiline", true)
+	holder.set_meta("fp_pixel_size", 0.011)
+	GameState.attach_fp_visual(holder, ghost.text, Color(0.55, 0.20, 0.75), 0.55)
+
 	var tw := ghost.create_tween()
 	tw.tween_property(ghost, "modulate:a", 0.0, 0.55)
-	tw.tween_callback(ghost.queue_free)
+	tw.tween_callback(holder.queue_free)
 
 func _check_phases() -> void:
 	if _phase == 1 and health * 100 <= max_health * 45:
@@ -324,8 +342,8 @@ func apply_status(effect: String, _duration: float) -> void:
 				FloatingText.spawn_str(global_position, "SHOCK %d/%d" % [_shock_stacks, BOSS_STACK_THRESHOLD], Color(0.7, 0.85, 1.0), get_tree().current_scene)
 
 func _get_status_modulate() -> Color:
-	if _frozen:       return Color(0.78, 0.92, 1.0)
-	if _stun_timer > 0.0: return Color(0.9, 0.9, 0.3)
+	if _frozen:       return StatusTint.frozen()
+	if _stun_timer > 0.0: return StatusTint.stun()
 	if _enflamed:
 		var flicker := sin(Time.get_ticks_msec() * 0.025) * 0.12 + 0.88
 		return Color(1.0, flicker * 0.35, 0.05)
@@ -337,9 +355,26 @@ func take_damage(amount: int) -> void:
 		FloatingText.spawn_str(global_position, "ETHEREAL", Color(0.7, 0.4, 1.0), get_tree().current_scene)
 		return
 	var actual := int(float(amount) * 1.25) if (_frozen or _chill_stacks > 0) else amount
-	health -= actual
+	var r: Dictionary = _gate.apply(actual, health, max_health)
+	if r.triggered:
+		health = int(r.new_hp)
+		_hit_flash_t = 0.28
+		FloatingText.spawn_str(global_position + Vector2(0, -28),
+			"GATE!", Color(1.0, 0.85, 0.30), get_tree().current_scene)
+		EffectFx.spawn_death_pop(global_position, get_tree().current_scene, Color(1.0, 0.85, 0.30))
+		_update_boss_bar()
+		return
+	if r.blocked:
+		health = int(r.new_hp)
+		_hit_flash_t = 0.10
+		FloatingText.spawn(global_position, int(r.actual), false, get_tree().current_scene)
+		_update_boss_bar()
+		return
+	if r.broke:
+		EffectFx.spawn_death_pop(global_position, get_tree().current_scene, Color(1.0, 0.85, 0.30))
+	health = int(r.new_hp)
 	_hit_flash_t = 0.14
-	FloatingText.spawn(global_position, actual, false, get_tree().current_scene)
+	FloatingText.spawn(global_position, int(r.actual), false, get_tree().current_scene)
 	_update_boss_bar()
 	if health <= 0:
 		if is_instance_valid(_boss_canvas):

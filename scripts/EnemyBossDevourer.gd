@@ -15,6 +15,7 @@ const BOSS_NAME  := "THE DEVOURER"
 const BOSS_COLOR := Color(1.0, 0.45, 0.10)
 
 @export var max_health: int = 600
+var _gate: BossGate = BossGate.new()    # Theme C HP threshold gates — see BossGate.gd
 
 var health: int            = 600
 var _player: Node2D        = null
@@ -109,6 +110,7 @@ func _physics_process(delta: float) -> void:
 		_lbl.text = BOSS_F0 if _anim_f == 0 else BOSS_F1
 	_tick_status(delta)
 	if not is_instance_valid(self): return
+	_gate.tick(delta)
 
 	# Slow shamble toward the player. Tether handles the burst pressure.
 	if is_instance_valid(_player):
@@ -126,8 +128,8 @@ func _physics_process(delta: float) -> void:
 		_lbl.modulate = _get_status_modulate()
 
 func _get_status_modulate() -> Color:
-	if _frozen: return Color(0.78, 0.92, 1.0)
-	if _stun_timer > 0.0: return Color(0.9, 0.9, 0.3)
+	if _frozen: return StatusTint.frozen()
+	if _stun_timer > 0.0: return StatusTint.stun()
 	if _poisoned: return Color(0.45, 1.0, 0.55)
 	if _enflamed: return Color(1.0, 0.45, 0.05)
 	return Color.WHITE
@@ -164,6 +166,11 @@ func _tick_tether(delta: float) -> void:
 				_tether_state = TetherState.COOLDOWN
 				_tether_t = TETHER_COOLDOWN
 				_tether_line.width = 0.0
+				# FP beam cleanup — pair with the per-tick set_enemy_beam
+				# in _update_tether_line.
+				if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+						and GameState.active_rig.has_method("clear_enemy_beam"):
+					GameState.active_rig.clear_enemy_beam(self)
 		TetherState.COOLDOWN:
 			if _tether_t <= 0.0:
 				_tether_state = TetherState.IDLE
@@ -176,6 +183,14 @@ func _update_tether_line(target_global: Vector2, col: Color) -> void:
 	_tether_line.add_point(Vector2.ZERO)
 	_tether_line.add_point(_tether_line.to_local(target_global))
 	_tether_line.default_color = col
+	# FP mirror — emit a beam from the boss to the tether target so the
+	# pull telegraph + the active pull both read in first-person. is_telegraph
+	# differentiates the dim "·" vs bright "X" glyph along the line.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("set_enemy_beam"):
+		var is_telegraph: bool = (_tether_state == TetherState.TELEGRAPH)
+		GameState.active_rig.set_enemy_beam(self, global_position, target_global,
+			col, is_telegraph)
 
 func _apply_tether_pull() -> void:
 	if not is_instance_valid(_player):
@@ -273,13 +288,35 @@ func apply_status(effect: String, _duration: float) -> void:
 
 func take_damage(amount: int) -> void:
 	var actual := int(float(amount) * 1.25) if (_frozen or _chill_stacks > 0) else amount
-	health -= actual
+	var r: Dictionary = _gate.apply(actual, health, max_health)
+	if r.triggered:
+		health = int(r.new_hp)
+		_hit_flash_t = 0.28
+		FloatingText.spawn_str(global_position + Vector2(0, -28),
+			"GATE!", Color(1.0, 0.85, 0.30), get_tree().current_scene)
+		EffectFx.spawn_death_pop(global_position, get_tree().current_scene, Color(1.0, 0.85, 0.30))
+		_update_boss_bar()
+		return
+	if r.blocked:
+		health = int(r.new_hp)
+		_hit_flash_t = 0.10
+		FloatingText.spawn(global_position, int(r.actual), false, get_tree().current_scene)
+		_update_boss_bar()
+		return
+	if r.broke:
+		EffectFx.spawn_death_pop(global_position, get_tree().current_scene, Color(1.0, 0.85, 0.30))
+	health = int(r.new_hp)
 	_hit_flash_t = 0.14
-	FloatingText.spawn(global_position, actual, false, get_tree().current_scene)
+	FloatingText.spawn(global_position, int(r.actual), false, get_tree().current_scene)
 	_update_boss_bar()
 	if health <= 0:
 		if is_instance_valid(_boss_canvas):
 			_boss_canvas.queue_free()
+		# Clear any active FP tether so the pooled Line2D doesn't linger
+		# after the boss dies mid-pull.
+		if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+				and GameState.active_rig.has_method("clear_enemy_beam"):
+			GameState.active_rig.clear_enemy_beam(self)
 		GameState.kills += 5
 		GameState.add_xp(40)
 		_drop_loot()

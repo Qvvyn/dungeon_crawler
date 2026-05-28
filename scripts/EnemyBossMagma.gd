@@ -8,6 +8,7 @@ extends CharacterBody2D
 const GOLD_PICKUP_SCENE := preload("res://scenes/GoldPickup.tscn")
 const LOOT_BAG_SCENE    := preload("res://scenes/LootBag.tscn")
 const PROJECTILE_SCENE  := preload("res://scenes/Projectile.tscn")
+const LAVA_TILE_SCRIPT  := preload("res://scripts/LavaTile.gd")
 
 const BOSS_F0 := " /^\\\n[#X#]\n /|\\"
 const BOSS_F1 := " \\^/\n(#X#)\n /|\\"
@@ -22,6 +23,7 @@ var _lbl: Label             = null
 var _anim_timer: float      = 0.0
 var _anim_frame: int        = 0
 var _phase: int             = 1
+var _gate: BossGate = BossGate.new()    # Theme C HP threshold gates — see BossGate.gd
 var _hit_flash_t: float     = 0.0
 var _boss_canvas: CanvasLayer = null
 var _boss_bar_fg: ColorRect   = null
@@ -109,6 +111,7 @@ func _physics_process(delta: float) -> void:
 		return
 	_tick_status(delta)
 	if not is_instance_valid(self): return
+	_gate.tick(delta)
 	_check_phases()
 
 	if _frozen or _stun_timer > 0.0:
@@ -186,71 +189,25 @@ func _finish_telegraph(holder: Node2D, tele: Line2D) -> void:
 
 func _arm_puddle(holder: Node2D) -> void:
 	if not is_instance_valid(holder): return
-	# Audio cue for the puddle landing — uses a low-pitched explosion sound
-	# (the engine's existing sample) so the player gets a "splat" feel
-	# without needing a new asset. Pitch jitter so multiple puddles in a
-	# single eruption don't sound copy-pasted.
+	# Audio cue for the puddle landing — low-pitched explosion "splat".
 	if SoundManager:
 		SoundManager.play("explosion", randf_range(0.55, 0.70))
-	# ASCII glyph for the active puddle so we stay on-brand with the rest
-	# of the visuals (per the project's MonoFont preference).
-	var glyph := Label.new()
-	var mono := MonoFont.get_font()
-	glyph.add_theme_font_override("font", mono)
-	glyph.add_theme_font_size_override("font_size", 14)
-	glyph.add_theme_constant_override("line_separation", -4)
-	glyph.add_theme_color_override("font_color", Color(1.0, 0.45, 0.05))
-	glyph.add_theme_color_override("font_outline_color", Color(0.25, 0.0, 0.0))
-	glyph.add_theme_constant_override("outline_size", 2)
-	glyph.text = "~~~\n>X<\n~~~"
-	glyph.position = Vector2(-18, -18)
-	glyph.size     = Vector2(40, 40)
-	glyph.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	glyph.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
-	glyph.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	holder.add_child(glyph)
-
-	var area := Area2D.new()
-	area.collision_layer = 0
-	area.collision_mask  = 1
-	var cs := CollisionShape2D.new()
-	var sh := CircleShape2D.new()
-	sh.radius = 30.0
-	cs.shape = sh
-	area.add_child(cs)
-	holder.add_child(area)
-
-	holder.set_meta("life", 4.0)
-	holder.set_meta("tick", 0.0)
-	# Tick via a Timer so we don't have to subclass Node2D. The callback
-	# is a bound method (not an anon lambda) so the closing parens stay
-	# unambiguous to the GDScript parser.
-	var t := Timer.new()
-	t.wait_time = 0.10
-	t.autostart = true
-	holder.add_child(t)
-	t.timeout.connect(_puddle_tick.bind(holder, glyph, area))
-
-func _puddle_tick(holder: Node2D, glyph: Label, area: Area2D) -> void:
-	if not is_instance_valid(holder): return
-	var life: float = float(holder.get_meta("life", 0.0)) - 0.10
-	var tick: float = float(holder.get_meta("tick", 0.0)) + 0.10
-	if life <= 0.0:
-		holder.queue_free()
-		return
-	holder.set_meta("life", life)
-	holder.set_meta("tick", tick)
-	# Fade as the puddle expires so the player can see it's almost gone.
-	var fade: float = clampf(life / 4.0, 0.0, 1.0)
-	if is_instance_valid(glyph):
-		glyph.modulate = Color(1.0, 0.5 + 0.3 * fade, 0.1, 0.55 + 0.45 * fade)
-	# 0.5 s damage tick — the player has to leave, not tank.
-	if tick >= 0.5:
-		holder.set_meta("tick", 0.0)
-		if is_instance_valid(area):
-			for body in area.get_overlapping_bodies():
-				if body.is_in_group("player") and body.has_method("take_damage"):
-					body.take_damage(3)
+	# Spawn a shared LavaTile (consolidated hazard) sized + tuned to match
+	# the old boss puddle: wider radius, harder + faster burn, 4 s life.
+	# This unifies the visual ("~" orange) and behavior with biome lava.
+	var tree := get_tree()
+	if tree != null and tree.current_scene != null:
+		var lava: Node = LAVA_TILE_SCRIPT.new()
+		if lava is Node2D:
+			(lava as Node2D).global_position = holder.global_position
+		lava.set("lifetime", 4.0)
+		lava.set("burn_damage", 3)
+		lava.set("burn_interval", 0.5)
+		lava.set("tile_radius", 30.0)
+		tree.current_scene.add_child(lava)
+	# The holder only carried the telegraph ring; the LavaTile is now an
+	# independent node, so the holder can go.
+	holder.queue_free()
 
 # ── Phase-2 fan shot ─────────────────────────────────────────────────────────
 func _tick_fan(delta: float) -> void:
@@ -391,8 +348,8 @@ func apply_status(effect: String, _duration: float) -> void:
 					Color(0.7, 0.85, 1.0), get_tree().current_scene)
 
 func _get_status_modulate() -> Color:
-	if _frozen:           return Color(0.78, 0.92, 1.0)
-	if _stun_timer > 0.0: return Color(0.9, 0.9, 0.3)
+	if _frozen:           return StatusTint.frozen()
+	if _stun_timer > 0.0: return StatusTint.stun()
 	if _enflamed:
 		var flicker := sin(Time.get_ticks_msec() * 0.025) * 0.12 + 0.88
 		return Color(1.0, flicker * 0.35, 0.05)
@@ -406,9 +363,26 @@ func _get_status_modulate() -> Color:
 func take_damage(amount: int) -> void:
 	# Shock crit — same +25% as other bosses.
 	var actual := int(float(amount) * 1.25) if (_shock_stacks >= 5) else amount
-	health -= actual
+	var r: Dictionary = _gate.apply(actual, health, max_health)
+	if r.triggered:
+		health = int(r.new_hp)
+		_hit_flash_t = 0.28
+		FloatingText.spawn_str(global_position + Vector2(0, -28),
+			"GATE!", Color(1.0, 0.85, 0.30), get_tree().current_scene)
+		EffectFx.spawn_death_pop(global_position, get_tree().current_scene, Color(1.0, 0.85, 0.30))
+		_update_boss_bar()
+		return
+	if r.blocked:
+		health = int(r.new_hp)
+		_hit_flash_t = 0.10
+		FloatingText.spawn(global_position, int(r.actual), false, get_tree().current_scene)
+		_update_boss_bar()
+		return
+	if r.broke:
+		EffectFx.spawn_death_pop(global_position, get_tree().current_scene, Color(1.0, 0.85, 0.30))
+	health = int(r.new_hp)
 	_hit_flash_t = 0.14
-	FloatingText.spawn(global_position, actual, false, get_tree().current_scene)
+	FloatingText.spawn(global_position, int(r.actual), false, get_tree().current_scene)
 	_update_boss_bar()
 	if health <= 0:
 		if is_instance_valid(_boss_canvas):

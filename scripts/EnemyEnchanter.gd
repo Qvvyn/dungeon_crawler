@@ -254,6 +254,12 @@ func _spawn_buff_tether(target: Node2D) -> void:
 	var tw := line.create_tween()
 	tw.tween_property(line, "modulate:a", 0.0, 0.55)
 	tw.tween_callback(line.queue_free)
+	# FP mirror — fire-and-forget chain arc between the two points. The
+	# rig pixelates the line and fades it on its own timer, no cleanup.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_chain_arc_2d"):
+		GameState.active_rig.spawn_chain_arc_2d(global_position, target.global_position,
+			Color(0.85, 0.50, 1.0), 0, 0.55)
 
 func heal(amount: int) -> void:
 	var prev := health

@@ -14,7 +14,12 @@ func _ready() -> void:
 	body_entered.connect(_on_body_entered)
 	_label = $AsciiChar
 	_set_idle()
-	GameState.attach_fp_visual(self, "x", Color(1.0, 0.40, 0.40), 0.45)
+	# Render the trap glyph on the floor in FP — was floating at eye height.
+	# Pixel size shrunk further (0.010 → 0.006) so it reads as a small
+	# floor mark. Green tint.
+	set_meta("fp_pixel_size", 0.006)
+	set_meta("fp_floor_decal", true)   # lie flat on the floor in FP
+	GameState.attach_fp_visual(self, "@", Color(0.30, 0.95, 0.45), 0.04)
 
 func _process(delta: float) -> void:
 	if _state == State.COOLDOWN:
@@ -39,10 +44,10 @@ func _on_body_entered(body: Node2D) -> void:
 	_state = State.COOLDOWN
 	_cd = COOLDOWN
 	if _label:
-		_label.add_theme_color_override("font_color", Color(0.35, 0.2, 0.45, 0.4))
+		_label.add_theme_color_override("font_color", Color(0.20, 0.45, 0.25, 0.4))
 
 func _set_idle() -> void:
 	_state = State.IDLE
 	if _label:
 		_label.text = "@"
-		_label.add_theme_color_override("font_color", Color(0.65, 0.35, 0.85, 0.55))
+		_label.add_theme_color_override("font_color", Color(0.30, 0.95, 0.45, 0.55))

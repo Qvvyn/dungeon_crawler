@@ -258,9 +258,9 @@ func _tick_anim(delta: float) -> void:
 
 func _get_status_modulate() -> Color:
 	if _frozen:
-		return Color(0.78, 0.92, 1.0)
+		return StatusTint.frozen()
 	if _stun_timer > 0.0:
-		return Color(0.9, 0.9, 0.3)
+		return StatusTint.stun()
 	if _poisoned:
 		return Color(0.45, 1.0, 0.55)
 	if _enflamed:

@@ -19,6 +19,13 @@ var _shoot_timer: float     = 0.5
 var _teleport_timer: float  = 10.0
 var _phase: int             = 1
 
+# Theme C HP threshold gates — see BossGate.gd for behavior. Boss phase
+# transitions (at 50 / 25 % HP) and these gates work together: the gate
+# triggers a brief invuln window that the player must crit-fish through,
+# and once they do, the phase machinery flips the boss into its next
+# state. Three gates per fight at 75 / 50 / 25 % of max_health.
+var _gate: BossGate = BossGate.new()
+
 # Phase 2+ charge attack — mirrors the Charger enemy
 enum ChargeState { IDLE, TELEGRAPH, DASH, COOLDOWN }
 var _charge_state: int     = ChargeState.IDLE
@@ -110,6 +117,7 @@ func _physics_process(delta: float) -> void:
 
 	_tick_status(delta)
 	if not is_instance_valid(self): return
+	_gate.tick(delta)
 
 	if _phase == 1 and health * 2 <= max_health:
 		_phase = 2
@@ -320,9 +328,9 @@ func _trigger_poisoned() -> void:
 
 func _get_status_modulate() -> Color:
 	if _frozen:
-		return Color(0.78, 0.92, 1.0)
+		return StatusTint.frozen()
 	if _stun_timer > 0.0:
-		return Color(0.9, 0.9, 0.3)
+		return StatusTint.stun()
 	if _poisoned:
 		return Color(0.45, 1.0, 0.55)
 	if _enflamed:
@@ -381,13 +389,22 @@ func _update_fire_telegraph() -> void:
 		add_child(_fire_telegraph_ring)
 	# Color: dim red far from firing → bright red just before the burst.
 	var t: float = clampf(1.0 - (_shoot_timer / FIRE_TELEGRAPH_LEAD), 0.0, 1.0)
-	_fire_telegraph_ring.default_color = Color(1.0, lerpf(0.4, 0.05, t), 0.05,
-		0.35 + 0.55 * t)
+	var ring_col := Color(1.0, lerpf(0.4, 0.05, t), 0.05, 0.35 + 0.55 * t)
+	_fire_telegraph_ring.default_color = ring_col
+	# FP mirror — pooled warning ring at the boss's position. 32px radius
+	# → 1.0 wu. Intensity ramps with countdown.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("set_warning_ring"):
+		GameState.active_rig.set_warning_ring(self, global_position, 1.0,
+			ring_col, 0.5 + 0.5 * t, 16, "o", 0.20)
 
 func _clear_fire_telegraph() -> void:
 	if is_instance_valid(_fire_telegraph_ring):
 		_fire_telegraph_ring.queue_free()
 	_fire_telegraph_ring = null
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("clear_warning_ring"):
+		GameState.active_rig.clear_warning_ring(self)
 
 func _teleport() -> void:
 	var offset := Vector2(randf_range(-240.0, 240.0), randf_range(-240.0, 240.0))
@@ -442,7 +459,17 @@ func _update_charge_line() -> void:
 	_charge_dir = (_player.global_position - global_position).normalized()
 	_charge_line.clear_points()
 	_charge_line.add_point(global_position)
-	_charge_line.add_point(global_position + _charge_dir * (CHARGE_SPEED * CHARGE_DURATION))
+	var end_pt: Vector2 = global_position + _charge_dir * (CHARGE_SPEED * CHARGE_DURATION)
+	_charge_line.add_point(end_pt)
+	# FP charge line — pooled beam from boss along the wind-up direction.
+	# is_telegraph=true so the rig uses the dim "·" glyph for the wind-up
+	# phase; switches to bright when the dash actually launches (handled
+	# in _enter_charge_dash by re-emitting once with telegraph=false, then
+	# cleared in cooldown).
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("set_enemy_beam"):
+		GameState.active_rig.set_enemy_beam(self, global_position, end_pt,
+			Color(1.0, 0.30, 0.0, 0.85), true)
 
 func _enter_charge_dash() -> void:
 	_charge_state = ChargeState.DASH
@@ -450,6 +477,12 @@ func _enter_charge_dash() -> void:
 	if is_instance_valid(_charge_line):
 		_charge_line.queue_free()
 	_charge_line = null
+	# Clear the FP telegraph beam now that the dash is actually happening.
+	# The boss's own movement during the dash is the visible "attack"; we
+	# don't redraw the beam.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("clear_enemy_beam"):
+		GameState.active_rig.clear_enemy_beam(self)
 	if SoundManager:
 		SoundManager.play("whoosh", randf_range(0.85, 1.0))
 
@@ -459,11 +492,23 @@ func _enter_charge_cooldown() -> void:
 	if is_instance_valid(_charge_line):
 		_charge_line.queue_free()
 	_charge_line = null
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig):
+		if GameState.active_rig.has_method("clear_enemy_beam"):
+			GameState.active_rig.clear_enemy_beam(self)
+		if GameState.active_rig.has_method("clear_warning_ring"):
+			GameState.active_rig.clear_warning_ring(self)
 
 func _exit_tree() -> void:
 	if is_instance_valid(_charge_line):
 		_charge_line.queue_free()
 	_charge_line = null
+	# Boss died / scene unloaded — clear any FP visuals so the rig's
+	# pooled lines/rings don't outlive their emitter.
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig):
+		if GameState.active_rig.has_method("clear_enemy_beam"):
+			GameState.active_rig.clear_enemy_beam(self)
+		if GameState.active_rig.has_method("clear_warning_ring"):
+			GameState.active_rig.clear_warning_ring(self)
 
 # ── Shared ────────────────────────────────────────────────────────────────────
 
@@ -524,9 +569,28 @@ func _update_boss_bar() -> void:
 
 func take_damage(amount: int) -> void:
 	var actual := int(float(amount) * 1.25) if (_frozen or _chill_stacks > 0) else amount
-	health -= actual
+	var r: Dictionary = _gate.apply(actual, health, max_health)
+	if r.triggered:
+		health = int(r.new_hp)
+		_hit_flash_t = 0.28
+		FloatingText.spawn_str(global_position + Vector2(0, -28),
+			"GATE!", Color(1.0, 0.85, 0.30), get_tree().current_scene)
+		EffectFx.spawn_death_pop(global_position, get_tree().current_scene, Color(1.0, 0.85, 0.30))
+		_update_health_bar()
+		_update_boss_bar()
+		return
+	if r.blocked:
+		health = int(r.new_hp)
+		_hit_flash_t = 0.10
+		FloatingText.spawn(global_position, int(r.actual), false, get_tree().current_scene)
+		_update_health_bar()
+		_update_boss_bar()
+		return
+	if r.broke:
+		EffectFx.spawn_death_pop(global_position, get_tree().current_scene, Color(1.0, 0.85, 0.30))
+	health = int(r.new_hp)
 	_hit_flash_t = 0.14
-	FloatingText.spawn(global_position, actual, false, get_tree().current_scene)
+	FloatingText.spawn(global_position, int(r.actual), false, get_tree().current_scene)
 	_update_health_bar()
 	_update_boss_bar()
 	if health <= 0:

@@ -421,22 +421,23 @@ func _apply_render_mode(mode: int) -> void:
 		if is_instance_valid(n):
 			(n as CanvasItem).visible = top_down_visible
 
-	# Show whichever rig matches the mode; hide the other.
+	# Show whichever rig matches the mode; hide the other. The shader rig
+	# also hosts 3rd-person — we just flip its camera mode before showing.
 	var rig_to_show: CanvasLayer = null
 	match mode:
 		GameState.RenderMode.FIRSTPERSON_SHADER:
 			rig_to_show = _fp_rig
-		GameState.RenderMode.FIRSTPERSON_RAYCASTER:
-			rig_to_show = _raycaster_rig
+			if _fp_rig and _fp_rig.has_method("set_camera_mode"):
+				_fp_rig.set_camera_mode("first")
+		GameState.RenderMode.THIRD_PERSON:
+			rig_to_show = _fp_rig
+			if _fp_rig and _fp_rig.has_method("set_camera_mode"):
+				_fp_rig.set_camera_mode("third")
 		_:
 			rig_to_show = null
 	for rig in [_fp_rig, _raycaster_rig]:
 		if rig != null and is_instance_valid(rig):
 			rig.visible = (rig == rig_to_show)
-			# Wipe any stale entity entries that accumulated while this
-			# rig was inactive — entities die during off-mode play and
-			# their unregister hooks may target a different / null rig,
-			# leaving zombie references that crash on next _process.
 			if rig.has_method("clear_entities"):
 				rig.clear_entities()
 	GameState.active_rig = rig_to_show
@@ -452,12 +453,27 @@ func _apply_render_mode(mode: int) -> void:
 func _register_all_entities_with(rig: Node) -> void:
 	if not rig.has_method("register_entity"):
 		return
-	# Player — registered for completeness, though the FP rigs anchor the
-	# camera to the player so the player's own glyph is suppressed each
-	# frame in the rig's _process.
+	# Player — register with the full wizard ASCII art + purple tint so the
+	# 3rd-person camera mode can render a recognizable body. First-person
+	# suppresses the glyph in the rig's _process (the camera sits AT the
+	# player so the Label3D would engulf the view). Live-text sync reads
+	# the player's AsciiChar each frame so idle animation works in FP too.
 	var player: Node = get_tree().get_first_node_in_group("player")
 	if is_instance_valid(player) and player is Node2D:
-		rig.register_entity(player, "@", Color(0.55, 0.85, 1.0))
+		# Canonical wizard art. The rig's Label3D uses LEFT alignment +
+		# computed bbox-centering offset, so leading-space layout renders
+		# the same way as 2D.
+		var wizard_glyph: String = "   ^\n__/_\\__\n (*-*)\n /)V(\\|\n /___\\|"
+		if "WIZARD_F0" in player:
+			wizard_glyph = player.get("WIZARD_F0")
+		# Multi-line so the rig's 2D overlay label keeps all 5 lines of the
+		# wizard art. The shader pipeline is now bypassed for entities, so
+		# pixel_size / outline_size / fp_height aren't needed any more —
+		# the overlay Label scales itself by distance and centers on the
+		# unprojected screen point. The (now-hidden) Label3D defaults are
+		# fine for bookkeeping.
+		player.set_meta("fp_multiline", true)
+		rig.register_entity(player, wizard_glyph, Color(0.85, 0.55, 1.0))
 	# Enemies — iterate the $Enemies node since EnemyBase doesn't auto-add
 	# to a group. Both flat enemies and bosses live under here.
 	var enemies_node: Node = get_node_or_null("Enemies")
@@ -3037,9 +3053,15 @@ func _try_secret_off_room(base: Rect2i) -> bool:
 	if sx + sw + 1 >= GRID_W or sy < 2 or sy + sh + 1 >= GRID_H:
 		return false
 
-	# Make sure all tiles are walls (no overlap)
-	for ty in range(sy, sy + sh):
-		for tx in range(sx, sx + sw):
+	# Make sure the room AND a 1-tile border ring are all walls. Checking
+	# only the room interior (the old behaviour) let the carved room open
+	# straight into an adjacent corridor/room whenever one happened to abut
+	# the secret room's far side — the "gaping hole leading to the rest of
+	# the level". Requiring the surrounding ring to be solid wall (the
+	# entrance column on the west is still wall at this point and gets
+	# carved afterwards) guarantees the room is sealed except via the door.
+	for ty in range(sy - 1, sy + sh + 1):
+		for tx in range(sx - 1, sx + sw + 1):
 			if tx < 0 or tx >= GRID_W or ty < 0 or ty >= GRID_H:
 				return false
 			if _grid[ty][tx] == FLOOR:

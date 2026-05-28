@@ -533,16 +533,19 @@ func _format_item_tooltip(item: Item) -> String:
 				"DEF":                 parts.append("+%d DEF" % int(val))
 				"projectile_count":    parts.append("+%d projectiles" % int(val))
 				"wisdom":              parts.append("+%.0f mana/s" % val)
-				"stam_regen":          parts.append("+%.0f stam regen" % val)
 				"VIT":                 parts.append("+%d VIT (+%d max HP)" % [int(val), int(val) * 5])
 				"INT":                 parts.append("+%d INT" % int(val))
 				"DEX":                 parts.append("+%d DEX" % int(val))
 				"AGI":                 parts.append("+%d AGI" % int(val))
-				"END":                 parts.append("+%d END" % int(val))
+				"END":                 parts.append("+%d END (+HP regen)" % int(val))
 				"WIS":                 parts.append("+%d WIS" % int(val))
-				"MIND":                parts.append("+%d MIND (+%d max mana)" % [int(val), int(val) * 5])
-				"SPR":                 parts.append("+%d SPR" % int(val))
 				"LCK":                 parts.append("+%d LCK" % int(val))
+				# MIND/SPR removed in Theme A — kept items that still carry
+				# them fall through to the generic _ branch below until the
+				# items themselves are migrated.
+				"MIND":                parts.append("+%d max mana" % (int(val) * 5))
+				"SPR":                 parts.append("+%d END (+HP regen)" % int(val))
+				"stam_regen":          parts.append("+%.0f mana regen" % val)
 				_:                     parts.append("+%g %s" % [val, stat])
 	else:
 		# No stats (valuables, potions) — show the description text

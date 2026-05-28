@@ -75,6 +75,15 @@ func _ready() -> void:
 	else:
 		rotation = direction.angle()
 	_base_direction = direction
+	# Theme A — player stats nudge shot physics. DEX scales projectile
+	# speed (snappier shots reward investment), INT scales lifetime so
+	# long-range pokes survive longer with a high-INT build. Capped so
+	# stacking can't trivially turn every wand into a sniper.
+	if source == "player" and GameState != null:
+		var dex_pts: int = GameState.get_stat_bonus("DEX")
+		var int_pts: int = GameState.get_stat_bonus("INT")
+		speed *= 1.0 + clampf(float(dex_pts) * 0.015, 0.0, 0.60)
+		lifetime *= 1.0 + clampf(float(int_pts) * 0.015, 0.0, 0.50)
 	# Detect both walls (layer 1) and enemies (layer 2 — enemies were moved
 	# off layer 1 so they no longer push each other / the player around)
 	collision_mask = 3
@@ -151,12 +160,14 @@ func _ready() -> void:
 						glyph = "z"
 						color = Color(0.55, 0.85, 1.0)
 					"pierce":
-						# Use unicode arc directly — JetBrainsMono supports
-						# it. No rotation needed; the glyph already reads as
-						# a forward-facing arch.
-						glyph = "⌒"
+						# ")" rotated +PI/2 around the camera-facing axis
+						# (in-plane). Billboard is disabled in the rig for
+						# entities with fp_rotation_z so we can manually
+						# orient them each frame.
+						glyph = ")"
 						color = Color(0.25, 0.60, 1.0)
 						set_meta("fp_pixel_size", 0.018)
+						set_meta("fp_rotation_z", PI / 2.0)
 					"ricochet":
 						glyph = "o"
 						color = Color(0.20, 1.0, 0.35)
@@ -978,7 +989,8 @@ func _impact_pierce(pos: Vector2) -> void:
 		tw.tween_property(streak, "position", target, 0.18)
 		tw.parallel().tween_property(streak, "modulate:a", 0.0, 0.18)
 		tw.tween_callback(streak.queue_free)
-	_fp_streak(pos, direction, "-", col, 2, 0.9, 0.18, 0.010, 0.10)
+	# FP streak glyph matches the pierce projectile ")".
+	_fp_streak(pos, direction, ")", col, 2, 0.9, 0.18, 0.008, 0.10)
 
 func _impact_ricochet(pos: Vector2) -> void:
 	var col := Color(0.35, 1.0, 0.50)
@@ -994,7 +1006,7 @@ func _impact_ricochet(pos: Vector2) -> void:
 		tw.tween_property(c, "position", target, 0.22)
 		tw.parallel().tween_property(c, "modulate:a", 0.0, 0.22)
 		tw.tween_callback(c.queue_free)
-	_fp_burst(pos, "o", col, 3, 0.7, 0.22)
+	_fp_burst(pos, "o", col, 2, 0.7, 0.20, Vector2.ZERO, TAU, 0.008, 0.30)
 
 func _impact_freeze(pos: Vector2) -> void:
 	var col := Color(0.65, 0.92, 1.0)
@@ -1012,7 +1024,7 @@ func _impact_freeze(pos: Vector2) -> void:
 		tw.tween_property(lbl, "position", target, 0.28)
 		tw.parallel().tween_property(lbl, "modulate:a", 0.0, 0.28)
 		tw.tween_callback(lbl.queue_free)
-	_fp_burst(pos, "*", col, 3, 0.75, 0.28)
+	_fp_burst(pos, "*", col, 2, 0.75, 0.24, Vector2.ZERO, TAU, 0.008, 0.30)
 
 func _impact_fire(pos: Vector2) -> void:
 	# 2D: brief flame frame on the enemy (was 3 scattered chars). FP: a
@@ -1033,7 +1045,10 @@ func _impact_fire(pos: Vector2) -> void:
 	var flame_tw := flame_lbl.create_tween()
 	flame_tw.tween_property(flame_lbl, "modulate:a", 0.0, 0.30)
 	flame_tw.tween_callback(flame_lbl.queue_free)
-	_fp_burst(pos, "(((", col, 1, 0.0, 0.30, Vector2.ZERO, TAU, 0.012, 0.55)
+	# Glyph matches the fire projectile (@) so all fire feedback reads
+	# consistently. Was "(((". One label per impact + smaller pixel_size
+	# keeps the visual subtle when many shots land in quick succession.
+	_fp_burst(pos, "@", col, 1, 0.0, 0.26, Vector2.ZERO, TAU, 0.009, 0.40)
 
 func _impact_shock(pos: Vector2) -> void:
 	# Lightning fork — 2 jagged arcs (was 3) branching out. FP uses pale
@@ -1073,7 +1088,7 @@ func _impact_shotgun(pos: Vector2) -> void:
 		tw.tween_property(c, "position", target, 0.18)
 		tw.parallel().tween_property(c, "modulate:a", 0.0, 0.18)
 		tw.tween_callback(c.queue_free)
-	_fp_burst(pos, "#", col, 3, 0.85, 0.18, direction, deg_to_rad(80.0))
+	_fp_burst(pos, "#", col, 2, 0.85, 0.16, direction, deg_to_rad(80.0), 0.008, 0.20)
 
 func _impact_homing(pos: Vector2) -> void:
 	# Pulse ring — expanding circle outline. Updated palette: homing is hot
@@ -1094,7 +1109,8 @@ func _impact_homing(pos: Vector2) -> void:
 	tw.tween_property(holder, "scale", Vector2(3.2, 3.2), 0.28)
 	tw.parallel().tween_property(ring, "modulate:a", 0.0, 0.28)
 	tw.tween_callback(holder.queue_free)
-	_fp_ring(pos, "o", col, 0.25, 0.7, 14, 0.28)
+	# Homing's projectile glyph is "^"; mirror it on impact.
+	_fp_ring(pos, "^", col, 0.20, 0.6, 10, 0.24, 0.008, 0.20)
 
 func _impact_nova(pos: Vector2) -> void:
 	# 4-directional sparks (halved from 8 for perf). 2D only — FP skips the

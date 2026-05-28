@@ -15,6 +15,7 @@ const SHOP_SCRIPT   = preload("res://scripts/Shop.gd")
 const DESCEND_SCRIPT = preload("res://scripts/DescendPortal.gd")
 const HEARTH_SCRIPT  = preload("res://scripts/HearthSign.gd")
 const QUEST_SCRIPT   = preload("res://scripts/QuestBoard.gd")
+const REROLL_SCRIPT  = preload("res://scripts/Reroller.gd")
 
 const VILLAGE_W := 1600
 const VILLAGE_H := 900
@@ -43,6 +44,7 @@ func _ready() -> void:
 	_build_descend(Vector2(VILLAGE_W * 0.50, VILLAGE_H * 0.85))
 	_build_hearth(Vector2(VILLAGE_W * 0.10, VILLAGE_H * 0.85))
 	_build_quest_board(Vector2(VILLAGE_W * 0.90, VILLAGE_H * 0.85))
+	_build_reroller(Vector2(VILLAGE_W * 0.50, VILLAGE_H * 0.45))
 
 # ── World shell ────────────────────────────────────────────────────────────
 
@@ -135,6 +137,10 @@ func _build_hearth(pos: Vector2) -> void:
 func _build_quest_board(pos: Vector2) -> void:
 	_make_building_area("QUEST BOARD",
 		"View & track quests", Color(0.85, 0.65, 0.30), pos, QUEST_SCRIPT)
+
+func _build_reroller(pos: Vector2) -> void:
+	_make_building_area("REROLL",
+		"Shuffle stat points", Color(0.95, 0.65, 1.0), pos, REROLL_SCRIPT)
 
 # Builds the visual shell for a hub building: an ASCII sign on a tinted
 # Label, plus an Area2D that hosts the interaction script. The script is

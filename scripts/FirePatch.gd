@@ -37,7 +37,8 @@ func _ready() -> void:
 	# flame patch sits flat on the ground instead of towering up the wall.
 	set_meta("fp_multiline", true)
 	set_meta("fp_pixel_size", 0.018)
-	GameState.attach_fp_visual(self, FLAME_F0, Color(1.0, 0.45, 0.05), 0.05)
+	set_meta("fp_floor_decal", true)   # flame art lies flat on the floor
+	GameState.attach_fp_visual(self, FLAME_F0, Color(1.0, 0.45, 0.05), 0.04)
 	# Scale radius with player level (mirrors Player._fire intelligence calc).
 	# Tightened — was `28 + INT*5` (33→68 px) which sprayed across most of
 	# a tile cluster; now `18 + INT*3` (21→42 px) so the patch reads as a

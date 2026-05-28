@@ -380,6 +380,7 @@ func take_damage(amount: int) -> void:
 		_on_death()
 		GameState.kills += 1
 		GameState.last_kill_msec = Time.get_ticks_msec()
+		GameState.since_kill_s = 0.0
 		GameState.add_xp(5)
 		QuestLog.note_kill(self)
 		# Test-mode drops toggle — when disabled, enemies skip their entire
@@ -511,8 +512,8 @@ func _update_health_bar() -> void:
 	_health_bar_fg.offset_right = -20.0 + 40.0 * ratio
 
 func _get_status_modulate() -> Color:
-	if _frozen: return Color(0.78, 0.92, 1.0)
-	if _stun_timer > 0.0: return Color(0.9, 0.9, 0.3)
+	if _frozen: return StatusTint.frozen()
+	if _stun_timer > 0.0: return StatusTint.stun()
 	if _poisoned: return Color(0.45, 1.0, 0.55)
 	if _enflamed:
 		var f := sin(Time.get_ticks_msec() * 0.025) * 0.12 + 0.88

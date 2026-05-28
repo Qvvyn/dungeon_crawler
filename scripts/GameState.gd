@@ -12,8 +12,16 @@ signal leveled_up
 # their top-down visuals and to swap in / out the active first-person rig.
 signal render_mode_changed(mode: int)
 
-enum RenderMode { TOPDOWN, FIRSTPERSON_SHADER, FIRSTPERSON_RAYCASTER }
-const RENDER_MODE_NAMES := ["TOP-DOWN", "FP: SHADER", "FP: RAYCAST"]
+# Cycle order (F1): TOPDOWN → THIRD_PERSON_SHADER → FIRSTPERSON_SHADER → TOPDOWN.
+# FIRSTPERSON_RAYCASTER (the full-ASCII raycast renderer) was dropped to keep
+# the cycle to the three core perspectives. Reserved as enum slot 3 in case
+# we re-enable it later.
+enum RenderMode { TOPDOWN, THIRD_PERSON, FIRSTPERSON_SHADER }
+const RENDER_MODE_NAMES := ["TOP-DOWN", "3RD PERSON", "1ST PERSON"]
+# Non-TOPDOWN render modes lose at-a-glance information (corner peek, etc),
+# so the engine ticks slower in those modes to give the player time to read
+# the pixelated scene and react. TOPDOWN stays at 1.0×.
+const NON_TOPDOWN_TIME_SCALE: float = 0.75
 
 var render_mode: int = RenderMode.TOPDOWN
 # The currently-active first-person rig node (FirstPersonRig or RaycasterRig)
@@ -68,6 +76,11 @@ func set_render_mode(mode: int) -> void:
 	if mode == render_mode:
 		return
 	render_mode = mode
+	# Apply the per-mode time scale here so every entry point (F1 cycle,
+	# Village force-TOPDOWN, save-restore) goes through one switch — leaving
+	# any FP mode for the Village hub will snap speed back to 1.0× without
+	# the caller having to remember.
+	Engine.time_scale = 1.0 if mode == RenderMode.TOPDOWN else NON_TOPDOWN_TIME_SCALE
 	render_mode_changed.emit(mode)
 
 func cycle_render_mode() -> void:
@@ -252,7 +265,7 @@ var xp: int = 0
 # duties, so a separate physical-damage stat just doubled up. Existing
 # saves with run_stat_bonuses["STR"] are harmless (get_stat_bonus("STR")
 # still returns the stored value but nothing reads it anymore).
-const STAT_NAMES := ["DEX", "AGI", "VIT", "END", "INT", "WIS", "MIND", "SPR", "DEF", "LCK"]
+const STAT_NAMES := ["DEX", "AGI", "VIT", "END", "INT", "WIS", "DEF", "LCK"]
 const STAT_BASE  := 10
 
 # Run-scoped stat bonuses (e.g., from shrines). Cleared at run reset.
@@ -313,6 +326,12 @@ var run_start_msec: int = 0
 # regen is at full speed or halved (penalty kicks in after 4 s without
 # a kill).
 var last_kill_msec: int = 0
+# Delta-accumulated "seconds since last kill". Player ticks this each frame
+# with delta so it respects Engine.time_scale (non-TOPDOWN modes slow the
+# clock to 0.75×). Reset to 0 in EnemyBase when an enemy dies. Hypothermia
+# (Player.gd) checks this instead of the wall-clock last_kill_msec so the
+# 4 s threshold fires at in-game time, not real time.
+var since_kill_s: float = 0.0
 
 # Testing-arena enemy override. When non-empty, _tick_test_wave only
 # spawns enemies of this scene name (matches a key in the enemy

@@ -5,14 +5,9 @@ var _hint: Label = null
 var _popup: CanvasLayer = null
 var _cell_rects: Array = []
 var _cell_indices: Array = []
-var _tab: int = 0
-var _fuse_selected: Array = []
-var _fuse_cell_rects: Array = []
-var _fuse_cell_indices: Array = []
 
 const REROLL_COST   := 40
 const FORGE_COST    := 60
-const FUSE_COST     := 80
 const REFINE_COST   := 110   # transforms one flaw into a stronger perk affix
 const TRANSMUTE_COST := 200  # picks the wand's shoot type, rerolls type-keyed stats
 # Imbue tier costs — Common→Rare is cheap so early upgrades are accessible,
@@ -45,7 +40,6 @@ func _forge_cost()  -> int:
 	var d: float = GameState.test_difficulty if GameState.test_mode else GameState.difficulty
 	var diff_scale: float = clampf(1.0 + maxf(0.0, d - 1.0) * 0.20, 1.0, 5.0)
 	return int(round(float(FORGE_COST) * diff_scale * stack))
-func _fuse_cost()   -> int: return int(round(float(FUSE_COST)   * GameState.price_multiplier()))
 func _refine_cost() -> int: return int(round(float(REFINE_COST) * GameState.price_multiplier()))
 func _transmute_cost() -> int: return int(round(float(TRANSMUTE_COST) * GameState.price_multiplier()))
 # Imbue cost depends on the equipped wand's *current* rarity (the cost to
@@ -223,8 +217,6 @@ func _build_ui() -> void:
 		child.queue_free()
 	_cell_rects.clear()
 	_cell_indices.clear()
-	_fuse_cell_rects.clear()
-	_fuse_cell_indices.clear()
 
 	var wand: Item = InventoryManager.equipped.get("wand") as Item
 	var has_wand := wand != null and wand.type == Item.Type.WAND
@@ -259,38 +251,8 @@ func _build_ui() -> void:
 	strip.size = Vector2(panel_w, 3.0)
 	_popup.add_child(strip)
 
-	# ── Tab strip ─────────────────────────────────────────────────────────────
-	var tab_w := panel_w / 2.0
-	for t in 2:
-		var tab_col := Color(0.35, 0.12, 0.6, 1.0) if t == _tab else Color(0.18, 0.08, 0.3, 1.0)
-		var tab_bg := ColorRect.new()
-		tab_bg.color = tab_col
-		tab_bg.position = Vector2(ox + float(t) * tab_w, oy + 3.0)
-		tab_bg.size = Vector2(tab_w, 27.0)
-		_popup.add_child(tab_bg)
-		var tab_lbl := Label.new()
-		tab_lbl.text = "REROLL" if t == 0 else ("FUSE  %dg" % _fuse_cost())
-		tab_lbl.position = Vector2(ox + float(t) * tab_w, oy + 5.0)
-		tab_lbl.size = Vector2(tab_w, 22.0)
-		tab_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		tab_lbl.add_theme_font_size_override("font_size", 12)
-		tab_lbl.add_theme_color_override("font_color",
-			Color(0.85, 0.6, 1.0) if t == _tab else Color(0.45, 0.35, 0.6))
-		_popup.add_child(tab_lbl)
-		var tab_btn := Button.new()
-		tab_btn.flat = true
-		tab_btn.text = ""
-		tab_btn.position = Vector2(ox + float(t) * tab_w, oy + 3.0)
-		tab_btn.size = Vector2(tab_w, 27.0)
-		var t_cap := t
-		tab_btn.pressed.connect(func() -> void:
-			_tab = t_cap
-			_fuse_selected.clear()
-			_build_ui())
-		_popup.add_child(tab_btn)
-
 	var title := Label.new()
-	title.text = ("✦  ENCHANTING TABLE  ✦   —   %dg reroll   |   [E] close" % _reroll_cost()) if _tab == 0 else "✦  ITEM FUSION  ✦   —   Select 2 items to combine   |   [E] close"
+	title.text = "✦  ENCHANTING TABLE  ✦   —   %dg reroll   |   [E] close" % _reroll_cost()
 	title.position = Vector2(ox, oy + 38.0)
 	title.size = Vector2(panel_w, 22.0)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -306,10 +268,6 @@ func _build_ui() -> void:
 	gold_lbl.add_theme_font_size_override("font_size", 11)
 	gold_lbl.add_theme_color_override("font_color", Color(0.8, 0.75, 0.5))
 	_popup.add_child(gold_lbl)
-
-	if _tab == 1:
-		_build_fuse_content(ox, oy, panel_w, panel_h)
-		return
 
 	# ── Reroll content ────────────────────────────────────────────────────────
 	if count == 0:
@@ -530,105 +488,6 @@ func _build_ui() -> void:
 				Color(0.55, 1.0, 0.85) if can_transmute else Color(0.30, 0.45, 0.40)))
 		_popup.add_child(trans_btn)
 
-func _build_fuse_content(ox: float, oy: float, panel_w: float, _panel_h: float) -> void:
-	var fusable: Array = []
-	for i in InventoryManager.grid.size():
-		var item: Item = InventoryManager.grid[i]
-		if item != null and not item.stat_bonuses.is_empty() and item.type != Item.Type.WAND:
-			fusable.append(i)
-
-	if fusable.size() < 2:
-		var empty := Label.new()
-		empty.text = "Need 2+ items with stats to fuse."
-		empty.position = Vector2(ox, oy + 86.0)
-		empty.size = Vector2(panel_w, 28.0)
-		empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		empty.add_theme_font_size_override("font_size", 13)
-		empty.add_theme_color_override("font_color", Color(0.4, 0.4, 0.4))
-		_popup.add_child(empty)
-		return
-
-	var fc := fusable.size()
-	var fcols := clampi(fc, 1, 8)
-	var frow_w := float(fcols) * CELL_W + float(fcols - 1) * GAP
-	var fcells_ox := ox + (panel_w - frow_w) / 2.0
-	var cy := oy + 84.0
-
-	for i in fc:
-		var grid_idx: int = fusable[i]
-		var item: Item = InventoryManager.grid[grid_idx]
-		var col_i := i % fcols
-		var row_i := i / fcols
-		var ix := fcells_ox + float(col_i) * (CELL_W + GAP)
-		var iy := cy + float(row_i) * (CELL_H + GAP)
-
-		_fuse_cell_rects.append(Rect2(ix, iy, CELL_W, CELL_H))
-		_fuse_cell_indices.append(grid_idx)
-
-		var is_sel := grid_idx in _fuse_selected
-		var cell := ColorRect.new()
-		cell.color = item.color.darkened(0.3) if is_sel else item.color.darkened(0.6)
-		cell.position = Vector2(ix, iy)
-		cell.size = Vector2(CELL_W, CELL_H)
-		_popup.add_child(cell)
-
-		if is_sel:
-			var sel_border := ColorRect.new()
-			sel_border.color = Color(1.0, 0.85, 0.1, 0.6)
-			sel_border.position = Vector2(ix - 2.0, iy - 2.0)
-			sel_border.size = Vector2(CELL_W + 4.0, CELL_H + 4.0)
-			sel_border.z_index = -1
-			_popup.add_child(sel_border)
-
-		var stat_str := ""
-		for key in item.stat_bonuses:
-			stat_str += key.substr(0, 4) + ":" + ("%.2f" % item.stat_bonuses[key]) + " "
-
-		var rarity_tag := " [R]" if item.rarity == Item.RARITY_RARE else (" [L]" if item.rarity == Item.RARITY_LEGENDARY else "")
-		var lbl := Label.new()
-		lbl.text = item.icon_char + " " + item.display_name + rarity_tag + "\n" + stat_str.strip_edges()
-		if is_sel:
-			lbl.text += "\n[SELECTED]"
-		else:
-			lbl.text += "\n[click to select]"
-		lbl.position = Vector2(ix + 4.0, iy + 4.0)
-		lbl.size = Vector2(CELL_W - 8.0, CELL_H - 8.0)
-		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		lbl.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
-		lbl.add_theme_font_size_override("font_size", 9)
-		lbl.add_theme_color_override("font_color",
-			Color(1.0, 0.9, 0.3) if is_sel else item.color.lightened(0.2))
-		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		_popup.add_child(lbl)
-
-	# Fuse button — only when 2 selected
-	if _fuse_selected.size() == 2:
-		var btn_y := cy + float(ceili(float(fc) / float(fcols))) * (CELL_H + GAP) + 8.0
-		var can_fuse := GameState.gold >= _fuse_cost()
-		var fuse_lbl := Label.new()
-		fuse_lbl.text = "[ FUSE ITEMS — %dg ]" % _fuse_cost()
-		fuse_lbl.position = Vector2(ox, btn_y)
-		fuse_lbl.size = Vector2(panel_w, 34.0)
-		fuse_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		fuse_lbl.add_theme_font_size_override("font_size", 18)
-		fuse_lbl.add_theme_color_override("font_color",
-			Color(0.9, 0.7, 0.1) if can_fuse else Color(0.35, 0.3, 0.25))
-		_popup.add_child(fuse_lbl)
-
-		var fuse_btn := Button.new()
-		fuse_btn.flat = true
-		fuse_btn.text = ""
-		fuse_btn.position = Vector2(ox, btn_y)
-		fuse_btn.size = Vector2(panel_w, 34.0)
-		fuse_btn.pressed.connect(_fuse_items)
-		fuse_btn.mouse_entered.connect(func() -> void:
-			if GameState.gold >= _fuse_cost():
-				fuse_lbl.add_theme_color_override("font_color", Color(1.0, 0.9, 0.3)))
-		fuse_btn.mouse_exited.connect(func() -> void:
-			fuse_lbl.add_theme_color_override("font_color",
-				Color(0.9, 0.7, 0.1) if GameState.gold >= _fuse_cost() else Color(0.35, 0.3, 0.25)))
-		_popup.add_child(fuse_btn)
-
 func _close_popup() -> void:
 	if _popup:
 		_popup.queue_free()
@@ -636,10 +495,6 @@ func _close_popup() -> void:
 	_close_transmute_picker()
 	_cell_rects.clear()
 	_cell_indices.clear()
-	_fuse_cell_rects.clear()
-	_fuse_cell_indices.clear()
-	_fuse_selected.clear()
-	_tab = 0
 
 # ── Input ─────────────────────────────────────────────────────────────────────
 
@@ -653,16 +508,6 @@ func _input(event: InputEvent) -> void:
 		return
 
 	var mp := get_viewport().get_mouse_position()
-
-	if _tab == 1:
-		for i in _fuse_cell_rects.size():
-			if _fuse_cell_rects[i].has_point(mp):
-				var grid_idx: int = _fuse_cell_indices[i]
-				_toggle_fuse_select(grid_idx)
-				_build_ui()
-				get_viewport().set_input_as_handled()
-				return
-		return
 
 	for i in _cell_rects.size():
 		if not _cell_rects[i].has_point(mp):
@@ -683,64 +528,6 @@ func _input(event: InputEvent) -> void:
 				_build_ui()
 		get_viewport().set_input_as_handled()
 		return
-
-func _toggle_fuse_select(grid_idx: int) -> void:
-	if grid_idx in _fuse_selected:
-		_fuse_selected.erase(grid_idx)
-	elif _fuse_selected.size() < 2:
-		_fuse_selected.append(grid_idx)
-	else:
-		_fuse_selected[0] = _fuse_selected[1]
-		_fuse_selected[1] = grid_idx
-
-func _fuse_items() -> void:
-	if _fuse_selected.size() < 2:
-		return
-	if GameState.gold < _fuse_cost():
-		var player := InventoryManager._player_ref
-		if player:
-			FloatingText.spawn_str(player.global_position,
-				"Need %dg" % _fuse_cost(), Color(1.0, 0.3, 0.3), get_tree().current_scene)
-		return
-	var idx_a: int = _fuse_selected[0]
-	var idx_b: int = _fuse_selected[1]
-	var item_a: Item = InventoryManager.grid[idx_a]
-	var item_b: Item = InventoryManager.grid[idx_b]
-	if item_a == null or item_b == null:
-		return
-
-	GameState.gold -= _fuse_cost()
-
-	var fused := Item.new()
-	fused.type = item_a.type
-	fused.icon_char = item_a.icon_char
-	fused.rarity = Item.RARITY_RARE
-	fused.display_name = "Fused " + item_a.display_name
-	fused.description = "Fused from " + item_a.display_name + " + " + item_b.display_name
-	fused.color = item_a.color.lerp(item_b.color, 0.5).lightened(0.1)
-	fused.sell_value = (item_a.sell_value + item_b.sell_value) / 2
-	var merged := {}
-	for key in item_a.stat_bonuses:
-		merged[key] = item_a.stat_bonuses[key]
-	for key in item_b.stat_bonuses:
-		if key in merged:
-			merged[key] = merged[key] + item_b.stat_bonuses[key] * 0.6
-		else:
-			merged[key] = item_b.stat_bonuses[key] * 0.6
-	fused.stat_bonuses = merged
-
-	InventoryManager.grid[idx_a] = fused
-	InventoryManager.grid[idx_b] = null
-
-	_fuse_selected.clear()
-	var player := InventoryManager._player_ref
-	if player and player.has_method("update_equip_stats"):
-		player.update_equip_stats()
-	if player:
-		FloatingText.spawn_str(player.global_position,
-			"FUSED!", Color(1.0, 0.8, 0.2), get_tree().current_scene)
-	InventoryManager.inventory_changed.emit()
-	_build_ui()
 
 func _reroll(item: Item) -> void:
 	var new_bonuses := {}

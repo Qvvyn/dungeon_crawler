@@ -18,7 +18,8 @@ func _ready() -> void:
 	# FP mirrors the 2D label's single "~" — small + low so the cloud reads
 	# as a wisp hugging the floor instead of a billowing waist-high mass.
 	set_meta("fp_pixel_size", 0.007)
-	GameState.attach_fp_visual(self, "~", Color(0.45, 1.0, 0.30), 0.10)
+	set_meta("fp_floor_decal", true)   # lie flat on the floor in FP
+	GameState.attach_fp_visual(self, "~", Color(0.45, 1.0, 0.30), 0.04)
 	var cshape := CollisionShape2D.new()
 	var shape  := CircleShape2D.new()
 	shape.radius = 14.0

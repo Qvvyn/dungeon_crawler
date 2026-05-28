@@ -1,34 +1,40 @@
 extends Area2D
 
-const BURN_INTERVAL := 0.65
-const BURN_DAMAGE   := 1
+# Tunables — set before add_child to override (e.g. the Magma boss
+# spawns a bigger, harder-hitting puddle that reuses this same tile).
+var burn_interval: float = 0.65
+var burn_damage: int     = 1
+var tile_radius: float   = 12.0
 
 var _player_inside: bool = false
 var _burn_timer: float   = 0.0
 var _pulse_t: float      = 0.0
 var _label: Label        = null
 # Optional expiry — 0 means "permanent" (biome generator placement); the
-# magma slug / arena eruption set this to a few seconds so dropped tiles
-# don't accumulate forever and clutter the room.
+# magma slug / arena eruption / boss puddle set this to a few seconds so
+# dropped tiles don't accumulate forever and clutter the room.
 var lifetime: float = 0.0
 var _life_t: float  = 0.0
 
 func _ready() -> void:
 	add_to_group("hazard")
-	# FP mirrors the 2D label's single "≈" — small + floor-level so the
+	# FP mirrors the 2D label's single "~" — small + floor-level so the
 	# lava tile reads as a puddle on the ground, not a chest-high glyph.
+	# Unified orange "~" so lava tiles and the Magma boss puddle read as
+	# the same hazard.
 	set_meta("fp_pixel_size", 0.006)
-	GameState.attach_fp_visual(self, "≈", Color(1.0, 0.40, 0.05), 0.03)
+	set_meta("fp_floor_decal", true)   # lie flat on the floor in FP
+	GameState.attach_fp_visual(self, "~", Color(1.0, 0.45, 0.05), 0.04)
 	var cshape := CollisionShape2D.new()
 	var shape  := CircleShape2D.new()
-	shape.radius = 12.0
+	shape.radius = tile_radius
 	cshape.shape = shape
 	add_child(cshape)
 
 	_label = Label.new()
-	_label.text = "≈"
+	_label.text = "~"
 	_label.add_theme_font_size_override("font_size", 20)
-	_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.0, 0.85))
+	_label.add_theme_color_override("font_color", Color(1.0, 0.45, 0.05, 0.85))
 	_label.position = Vector2(-7.0, -12.0)
 	add_child(_label)
 
@@ -67,8 +73,8 @@ func _process(delta: float) -> void:
 		return
 	_burn_timer -= delta
 	if _burn_timer <= 0.0:
-		_burn_timer = BURN_INTERVAL
+		_burn_timer = burn_interval
 		var player: Node2D = get_tree().get_first_node_in_group("player")
 		if is_instance_valid(player) and player.has_method("take_damage"):
-			player.take_damage(BURN_DAMAGE)
+			player.take_damage(burn_damage)
 			FloatingText.spawn_str(global_position, "BURN!", Color(1.0, 0.35, 0.0), get_tree().current_scene)

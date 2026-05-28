@@ -20,7 +20,8 @@ func _ready() -> void:
 	body_entered.connect(_on_body_entered)
 	_label = $AsciiChar
 	_set_idle()
-	GameState.attach_fp_visual(self, "^", Color(1.0, 0.40, 0.40), 0.10)
+	set_meta("fp_floor_decal", true)   # lie flat on the floor in FP
+	GameState.attach_fp_visual(self, "^", Color(1.0, 1.0, 1.0), 0.04)
 
 func _physics_process(delta: float) -> void:
 	match _state:

@@ -21,7 +21,8 @@ func _ready() -> void:
 	# too big and chest-high). Small pixel_size + floor-level fp_height
 	# makes it look like ice crystals dusting the ground.
 	set_meta("fp_pixel_size", 0.006)
-	GameState.attach_fp_visual(self, "*", Color(0.55, 0.92, 1.0), 0.03)
+	set_meta("fp_floor_decal", true)   # lie flat on the floor in FP
+	GameState.attach_fp_visual(self, "*", Color(0.55, 0.92, 1.0), 0.04)
 	var cshape := CollisionShape2D.new()
 	var shape  := CircleShape2D.new()
 	shape.radius = 14.0

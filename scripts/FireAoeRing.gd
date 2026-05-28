@@ -81,5 +81,8 @@ func pulse() -> void:
 	if host != null and is_instance_valid(host) \
 			and GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
 			and GameState.active_rig.has_method("spawn_ring_2d"):
-		GameState.active_rig.spawn_ring_2d(host.global_position, "*",
-			Color(1.0, 0.65, 0.10), 0.25, 2.4, 18, 0.42, 0.011, 0.15)
+		# Glyph matches the fire projectile (@) so all fire feedback reads
+		# consistently. Shrunk from 18 → 10 segments + smaller pixel_size
+		# so heavy fire activity doesn't flood the FP rig with labels.
+		GameState.active_rig.spawn_ring_2d(host.global_position, "@",
+			Color(1.0, 0.65, 0.10), 0.25, 2.2, 10, 0.38, 0.008, 0.15)

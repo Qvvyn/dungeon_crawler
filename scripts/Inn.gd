@@ -42,8 +42,7 @@ func _use() -> void:
 		p.heal_to_full()
 	if "mana" in p and "max_mana" in p:
 		p.mana = p.max_mana
-	if "stamina" in p and "max_stamina" in p:
-		p.stamina = p.max_stamina
+	# Stamina removed in Theme A — only HP + mana to refill.
 	if p.has_method("_save_run"):
 		p.call("_save_run")
 	if SoundManager:

@@ -10,7 +10,8 @@ func setup(pos: Vector2) -> void:
 	add_to_group("pressure_plate")
 	collision_layer = 0
 	collision_mask  = 1
-	GameState.attach_fp_visual(self, ".", Color(0.95, 0.80, 0.30), 0.05)
+	set_meta("fp_floor_decal", true)   # lie flat on the floor in FP
+	GameState.attach_fp_visual(self, ".", Color(0.95, 0.80, 0.30), 0.04)
 
 	var cshape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()

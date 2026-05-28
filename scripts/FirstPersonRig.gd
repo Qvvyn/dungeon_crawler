@@ -18,6 +18,57 @@ const VIEWPORT_W: int = 200
 const VIEWPORT_H: int = 80
 const CELL_PX: float = 8.0
 
+# Camera framing — the rig hosts two modes. "first" keeps the camera at the
+# player's eye height (legacy FP); "third" lifts and pulls back so the
+# player's wizard body is visible in front of the camera. World.gd flips
+# between them via set_camera_mode() when the render mode changes.
+#
+# 3rd-person tuning notes:
+#   - HEIGHT 0.55 keeps the camera comfortably below the new 1.5-tall walls
+#     (so corridor ceilings don't read as a hard "horizon band").
+#   - FOLLOW_DIST 1.3 stays close enough that the wizard body fills a
+#     useful chunk of frame.
+#   - LOOK_FORWARD 1.1 aims the focal point ahead of the wizard so enemies
+#     in the player's aim cone read clearly.
+# These produce an over-the-shoulder feel (~23° pitch) rather than a
+# tilted top-down. _resolve_camera_position() then raycasts against the
+# wall grid each frame so the camera never sits inside / behind a wall.
+var _camera_mode: String = "first"
+# Tuned 2× pass: camera was 1.3 behind / 0.55 above, which was too close to
+# the wizard (it dominated screen mid) AND too high (read as top-down).
+# New framing pulls way back + drops the angle to a clear over-shoulder
+# stance: camera at y≈0.95 looking at the player roughly horizontally, and
+# the wizard now spans enough SubViewport pixels to be legible through
+# the ASCII post-shader (~10 source pixels per character vs. ~5 before).
+const TP_FOLLOW_DIST: float  = 1.6
+const TP_HEIGHT: float       = 0.55
+const TP_LOOK_FORWARD: float = 1.2
+const TP_MIN_DIST: float     = 0.45   # how close the camera can clamp to player when a wall pinches in
+const TP_WALL_PAD: float     = 0.18   # back-off from the wall hit so camera doesn't clip the surface
+
+# Render layers — walls/floor/ceiling on bit 0 (mask 1), entity Label3Ds
+# (player, enemies, projectiles, HP bars) on bit 1 (mask 2). The main
+# camera renders only the environment so the ASCII post-shader can stylize
+# the walls. The entity camera renders only the Label3Ds without a shader,
+# so enemy ASCII art stays crisp while still perspective-scaling and being
+# occluded by walls via the per-frame raycast.
+const LAYER_ENV: int = 1
+const LAYER_ENT: int = 2
+
+# Vertical spacing multiplier between rows of multi-line ASCII art. 1.0
+# packs rows at exactly font height; a little above 1.0 opens up the
+# silhouette so stacked glyphs (e.g. the wizard) read more clearly.
+const ROW_SPACING: float = 1.18
+
+var _viewport_ent: SubViewport = null   # entity-only viewport (no shader)
+var _camera_ent: Camera3D = null         # mirrors _camera each frame
+var _ent_world3d: Node3D = null          # root inside _viewport_ent's world
+
+# In 3rd-person mode the player needs a Label3D so they're actually visible
+# in front of the camera. Tracked here so we can register on entry to
+# 3rd-person and unregister on exit (first-person should not show a
+# floating wizard at the camera position).
+
 var _viewport: SubViewport = null
 var _world3d: Node3D       = null
 var _camera: Camera3D      = null
@@ -73,7 +124,7 @@ var _interact_label: Label = null
 # placed above the enemy's head inside the SubViewport, so the ASCII
 # post-shader pixelates the bar text along with everything else (instead
 # of the bar sitting crisp on the CanvasLayer above the ASCII view).
-var _hp_bars: Dictionary = {}     # enemy_id -> Label3D
+var _hp_bars: Dictionary = {}     # enemy_id -> Label3D (LAYER_ENT)
 
 # Camera shake — added on top of the normal cam_pos each frame and decays
 # linearly. Driven by `shake(duration, intensity)` from gameplay events the
@@ -87,7 +138,52 @@ func _ready() -> void:
 	visible = false
 	_build_scene()
 
+# Called by World when the render mode flips. "first" puts the camera at
+# the player's eyes; "third" lifts + pulls back so the wizard Label3D sits
+# in front of the camera. Player registration happens at the World level
+# (with wizard art + purple tint + fp_multiline meta) so the Label3D is
+# always present; this just toggles whether _process draws it.
+func set_camera_mode(mode: String) -> void:
+	if mode != "first" and mode != "third":
+		return
+	_camera_mode = mode
+
+# Walks a ray (in tile coords) from `from` toward `to`, returning the
+# point just before the first wall cell. Used by 3rd-person to keep the
+# camera in front of any wall behind the player. Steps in ~0.1-tile
+# increments since walls are 1×1 tiles — coarse enough to be cheap, fine
+# enough to never overshoot. Returns `to` if nothing's in the way.
+func _raycast_to_grid(from: Vector2, to: Vector2) -> Vector2:
+	if _grid.is_empty() or _grid_w == 0 or _grid_h == 0:
+		return to
+	var diff: Vector2 = to - from
+	var dist: float = diff.length()
+	if dist < 0.001:
+		return to
+	var dir: Vector2 = diff / dist
+	const STEP: float = 0.10
+	var traveled: float = 0.0
+	var prev_clear: Vector2 = from
+	while traveled < dist:
+		traveled += STEP
+		var t: float = minf(traveled, dist)
+		var pt: Vector2 = from + dir * t
+		var gx: int = int(floor(pt.x))
+		var gy: int = int(floor(pt.y))
+		if gx < 0 or gy < 0 or gx >= _grid_w or gy >= _grid_h:
+			# Out of bounds — treat like a wall so the camera doesn't escape.
+			return prev_clear
+		var row: Array = _grid[gy]
+		if int(row[gx]) == 1:
+			# Back off slightly along the ray so we sit in front of the wall.
+			var safe_t: float = maxf(0.0, t - TP_WALL_PAD)
+			return from + dir * safe_t
+		prev_clear = pt
+	return to
+
 func _build_scene() -> void:
+	# Environment viewport — walls/floor/ceiling, processed by the ASCII
+	# post-shader. Camera_env renders only LAYER_ENV.
 	var container := SubViewportContainer.new()
 	container.stretch = true
 	container.anchor_right = 1.0
@@ -114,20 +210,65 @@ func _build_scene() -> void:
 	_viewport.add_child(_world3d)
 
 	_camera = Camera3D.new()
-	_camera.fov = 75.0
+	_camera.fov = 82.0
 	_camera.near = 0.05
 	_camera.far = 120.0
 	_camera.position = Vector3(0, 0.5, 0)
 	_world3d.add_child(_camera)
 	_camera.make_current()
 
+	# Entity viewport — same 3D world, second camera, only renders Label3Ds
+	# (cull_mask=LAYER_ENT). Transparent bg so the env container shows
+	# through. No shader on this container — entity ASCII art renders crisp
+	# at SubViewport resolution. Added AFTER container so it sits above
+	# the shader-filtered environment.
+	var container_ent := SubViewportContainer.new()
+	container_ent.stretch = true
+	container_ent.anchor_right = 1.0
+	container_ent.anchor_bottom = 1.0
+	container_ent.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(container_ent)
+
+	_viewport_ent = SubViewport.new()
+	_viewport_ent.size = Vector2i(VIEWPORT_W, VIEWPORT_H)
+	_viewport_ent.transparent_bg = true
+	_viewport_ent.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	_viewport_ent.handle_input_locally = false
+	_viewport_ent.snap_2d_transforms_to_pixel = true
+	# Separate World3D — entity Label3Ds register their visual reps with
+	# this viewport's scenario, and camera_ent renders only this scenario.
+	# Two completely independent rendering worlds avoids the cross-viewport
+	# world-sharing pitfalls.
+	_viewport_ent.own_world_3d = true
+	container_ent.add_child(_viewport_ent)
+
+	_ent_world3d = Node3D.new()
+	_viewport_ent.add_child(_ent_world3d)
+
+	_camera_ent = Camera3D.new()
+	_camera_ent.fov = 82.0
+	_camera_ent.near = 0.05
+	_camera_ent.far = 120.0
+	_ent_world3d.add_child(_camera_ent)
+	_camera_ent.make_current()
+
+	# Entity Label3Ds live here — register_entity() adds children to this
+	# node, so they end up in the entity viewport's world (renders without
+	# the post-shader).
+	_entity_root = Node3D.new()
+	_ent_world3d.add_child(_entity_root)
+
 	var env := WorldEnvironment.new()
 	var environment := Environment.new()
 	environment.background_mode = Environment.BG_COLOR
 	environment.background_color = Color(0.02, 0.02, 0.04)
 	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	environment.ambient_light_color = Color(0.18, 0.18, 0.22)
-	environment.ambient_light_energy = 0.6
+	# Theme F — lift dark corners. Bumped energy 0.6→0.95 and the color
+	# itself slightly so far walls catch enough light to be readable while
+	# still keeping the moody, dim-dungeon feel (the OmniLight player
+	# torch is still the primary lighting that makes nearby detail pop).
+	environment.ambient_light_color = Color(0.22, 0.22, 0.26)
+	environment.ambient_light_energy = 0.95
 	env.environment = environment
 	_world3d.add_child(env)
 
@@ -136,9 +277,6 @@ func _build_scene() -> void:
 	_player_light.omni_range = 14.0
 	_player_light.light_color = Color(1.0, 0.92, 0.78)
 	_world3d.add_child(_player_light)
-
-	_entity_root = Node3D.new()
-	_world3d.add_child(_entity_root)
 
 	# Crosshair stays as a 2D Label on the CanvasLayer (it's always at
 	# screen-center regardless of camera).
@@ -172,13 +310,20 @@ func rebuild_walls() -> void:
 	if _wall_mm != null and is_instance_valid(_wall_mm):
 		_wall_mm.queue_free()
 	var positions: Array[Vector3] = []
+	# Theme F — walls raised 1.0→1.5 tall to lift their tops well above the
+	# 0.5 eye line. At full 1.0 height the wall ceiling sat exactly at the
+	# camera's Y, which gave the horizon a flat "ceiling band" that swallowed
+	# distant enemies. With taller walls the player's torch fades cleanly into
+	# darkness above, distant entities stay below the ceiling line, and the
+	# corridors feel more mazey. Mesh is centered, so position y = height/2.
+	const _WALL_H := 1.5
 	for y in _grid_h:
 		var row: Array = _grid[y]
 		for x in _grid_w:
 			if int(row[x]) == 1:
-				positions.append(Vector3(float(x) + 0.5, 0.5, float(y) + 0.5))
+				positions.append(Vector3(float(x) + 0.5, _WALL_H * 0.5, float(y) + 0.5))
 	var box := BoxMesh.new()
-	box.size = Vector3(1.0, 1.0, 1.0)
+	box.size = Vector3(1.0, _WALL_H, 1.0)
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.78, 0.74, 0.70)
 	mat.roughness = 1.0
@@ -191,13 +336,19 @@ func rebuild_walls() -> void:
 		mm.set_instance_transform(i, Transform3D(Basis(), positions[i]))
 	_wall_mm = MultiMeshInstance3D.new()
 	_wall_mm.multimesh = mm
+	_wall_mm.layers = LAYER_ENV
 	_world3d.add_child(_wall_mm)
 	_build_floor_ceiling()
 
 func _build_floor_ceiling() -> void:
+	# Ceiling matches the wall top (1.5) so the camera never floats above
+	# it. The original 1.0 ceiling was below the new 1.5 walls, which the
+	# 3rd-person camera (y≈1.05) sat *above* — making the dark ceiling
+	# plane render as a giant black billboard covering most of the lower
+	# half of the screen.
 	for kv in [
 		{"y": 0.0,  "color": Color(0.15, 0.13, 0.10)},
-		{"y": 1.0,  "color": Color(0.05, 0.05, 0.08)},
+		{"y": 1.5,  "color": Color(0.05, 0.05, 0.08)},
 	]:
 		var plane := PlaneMesh.new()
 		plane.size = Vector2(float(_grid_w) * 2.0, float(_grid_h) * 2.0)
@@ -208,6 +359,7 @@ func _build_floor_ceiling() -> void:
 		var inst := MeshInstance3D.new()
 		inst.mesh = plane
 		inst.position = Vector3(float(_grid_w) * 0.5, kv["y"], float(_grid_h) * 0.5)
+		inst.layers = LAYER_ENV
 		_world3d.add_child(inst)
 
 # Pixel size (world units per font pixel) baseline by kind. Projectiles are
@@ -248,41 +400,114 @@ func register_entity(body: Node2D, glyph: String = "X", color: Color = Color(0.9
 	# needs a smaller pixel_size so the billboard fits within the corridor.
 	if body.has_meta("fp_pixel_size"):
 		pixel_size = float(body.get_meta("fp_pixel_size"))
-	var lbl := Label3D.new()
-	lbl.text = glyph
-	lbl.font = MonoFont.get_font()
-	lbl.font_size = 64
-	lbl.outline_size = 12
-	lbl.pixel_size = pixel_size
-	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	lbl.no_depth_test = false   # walls occlude entities naturally
-	lbl.shaded = false           # full self-light so the post-shader sees it crisp
-	lbl.double_sided = true
-	lbl.modulate = color
-	lbl.outline_modulate = Color(0, 0, 0, 1)
-	lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
-	# Park at the body's spawn position so the very first frame already
-	# has it placed (avoids a 1-frame flicker at origin).
+	# Outline rules:
+	#  - Projectiles get NO outline — they're small, fast-moving glyphs and
+	#    a thick black border just thickens them visually without adding
+	#    legibility.
+	#  - Bodies default to 12 px so the silhouette reads against the
+	#    shader-rendered environment.
+	#  - Per-entity `fp_outline_size` meta overrides either.
+	var outline_size: int = 12
+	if kind == "projectile" or kind == "projectile_substantial":
+		outline_size = 0
+	if body.has_meta("fp_outline_size"):
+		outline_size = int(body.get_meta("fp_outline_size"))
+
 	var bp: Vector2 = body.global_position
-	lbl.position = Vector3(bp.x / TILE_PX, 0.5, bp.y / TILE_PX)
+	var anchor_pos := Vector3(bp.x / TILE_PX, 0.5, bp.y / TILE_PX)
+	var raw_lines: Array = glyph.split("\n")
+	var is_multiline: bool = raw_lines.size() > 1
+	# Floor decals lie FLAT on the floor (rotated -90° about X so the text
+	# plane faces up) with billboarding disabled, instead of the upright
+	# camera-facing default. Used by floor hazards (traps, lava, etc).
+	var is_floor_decal: bool = body.has_meta("fp_floor_decal") and bool(body.get_meta("fp_floor_decal"))
+	# entry["label"] is the rendered Node3D — for multi-line it's a parent
+	# Node3D whose children are per-row Label3Ds; for single-line it's the
+	# Label3D itself. Other code can read .position / .visible / .modulate
+	# without caring which (Node3D + Label3D both expose .position / .visible;
+	# modulate is per-Label3D, handled by the _process loop for multi-line).
+	var lbl: Node3D = null
+	var line_labels: Array[Label3D] = []
+	if is_multiline:
+		lbl = Node3D.new()
+		# Scale per-row pixel_size so the whole multi-line entity fits in
+		# the same vertical envelope as a single-line entity (mirrors the
+		# pixel_size / line_count auto-scale the old single-Label3D path
+		# used). Without this, each row renders at the base size and a
+		# 5-row wizard towers 5x taller than it should.
+		var line_count: int = raw_lines.size()
+		var row_ps: float = pixel_size / float(maxi(1, line_count))
+		var line_h: float = 64.0 * row_ps * ROW_SPACING
+		var mid_row: float = float(line_count - 1) * 0.5
+		# Per-row x offset (in CHARS) for fine-tuning rows that the
+		# even-char-count CENTER alignment lands a half-char off. Body
+		# may expose `fp_line_x_offsets` as an Array[float], one entry
+		# per row; missing entries default to 0.
+		var x_offsets: Array = []
+		if body.has_meta("fp_line_x_offsets"):
+			var xv: Variant = body.get_meta("fp_line_x_offsets")
+			if xv is Array:
+				x_offsets = xv
+		# 1 char in world units ≈ font_size * row_ps * advance_ratio.
+		const CHAR_ADVANCE_RATIO: float = 0.55
+		var char_world: float = 64.0 * row_ps * CHAR_ADVANCE_RATIO
+		for i in line_count:
+			# Strip leading AND trailing whitespace so each row's visible
+			# content centers around the parent X position.
+			var row_text: String = (raw_lines[i] as String).strip_edges()
+			var row_lbl := Label3D.new()
+			row_lbl.text = row_text
+			row_lbl.font = MonoFont.get_font()
+			row_lbl.font_size = 64
+			row_lbl.outline_size = outline_size
+			row_lbl.pixel_size = row_ps
+			row_lbl.billboard = BaseMaterial3D.BILLBOARD_DISABLED if is_floor_decal else BaseMaterial3D.BILLBOARD_ENABLED
+			row_lbl.no_depth_test = false
+			row_lbl.shaded = false
+			row_lbl.double_sided = true
+			row_lbl.modulate = color
+			row_lbl.outline_modulate = Color(0, 0, 0, 1)
+			row_lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
+			row_lbl.layers = LAYER_ENT
+			var row_x_off: float = 0.0
+			if i < x_offsets.size():
+				row_x_off = float(x_offsets[i]) * char_world
+			row_lbl.position = Vector3(row_x_off, (mid_row - float(i)) * line_h, 0.0)
+			lbl.add_child(row_lbl)
+			line_labels.append(row_lbl)
+	else:
+		var sl := Label3D.new()
+		sl.text = glyph
+		sl.font = MonoFont.get_font()
+		sl.font_size = 64
+		sl.outline_size = outline_size
+		sl.pixel_size = pixel_size
+		sl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		sl.no_depth_test = false
+		sl.shaded = false
+		sl.double_sided = true
+		sl.modulate = color
+		sl.outline_modulate = Color(0, 0, 0, 1)
+		sl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
+		sl.layers = LAYER_ENT
+		if body.has_meta("fp_rotation_z") or is_floor_decal:
+			sl.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+		lbl = sl
+	lbl.position = anchor_pos
+	# Lay floor decals flat on the floor — text plane faces up (+Y).
+	if is_floor_decal:
+		lbl.rotation = Vector3(-PI / 2.0, 0.0, 0.0)
 	_entity_root.add_child(lbl)
-	# Optional in-plane rotation. BILLBOARD_ENABLED is a FULL billboard that
-	# rebuilds the basis each frame, wiping any local rotation. BILLBOARD_FIXED_Y
-	# only billboards around Y, leaving rotation.z (in-plane spin) intact —
-	# which is what we need for the pierce projectile's rotated ")".
-	# GDScript Vector3 is value-type: read, mutate, write back, don't assign
-	# to lbl.rotation.z directly.
-	if body.has_meta("fp_rotation_z"):
-		lbl.billboard = BaseMaterial3D.BILLBOARD_FIXED_Y
-		var rot: Vector3 = lbl.rotation
-		rot.z = float(body.get_meta("fp_rotation_z"))
-		lbl.rotation = rot
 	_entities[key] = {
 		"body": body,
 		"label": lbl,
+		"line_labels": line_labels,
 		"stored_glyph": glyph,
 		"stored_color": color,
 		"kind": kind,
+		"is_multiline": is_multiline,
+		"is_floor_decal": is_floor_decal,
+		"registered_rows": raw_lines.size() if is_multiline else 1,
 	}
 
 # Updates an already-registered entity's stored_glyph and stored_color.
@@ -333,7 +558,40 @@ func _process(delta: float) -> void:
 	var aim: Vector2 = Vector2.RIGHT
 	if player.has_method("get_aim_direction"):
 		aim = player.get_aim_direction()
-	var cam_pos := Vector3(pp.x / TILE_PX, 0.5, pp.y / TILE_PX)
+	# player_pos_3d is always where the wizard body is. cam_pos is where the
+	# camera renders from — same as player in first-person, behind/above in
+	# 3rd-person. Player light and shake reference still anchor to the
+	# player's body so the torchlight follows the wizard, not the camera.
+	var player_pos_3d := Vector3(pp.x / TILE_PX, 0.5, pp.y / TILE_PX)
+	var aim_3d := Vector3(aim.x, 0.0, aim.y)
+	if aim_3d.length() < 0.001:
+		aim_3d = Vector3.FORWARD
+	else:
+		aim_3d = aim_3d.normalized()
+	var cam_pos: Vector3
+	var look_target: Vector3
+	if _camera_mode == "third":
+		# Desired camera spot is FOLLOW_DIST behind player along the aim axis.
+		# Raycast against the wall grid so walls behind the player pull the
+		# camera in instead of swallowing it. Height layered on after the
+		# raycast since walls are uniform-height in this rig.
+		var pp_tile := Vector2(player_pos_3d.x, player_pos_3d.z)
+		var desired_tile := pp_tile - Vector2(aim_3d.x, aim_3d.z) * TP_FOLLOW_DIST
+		var safe_tile: Vector2 = _raycast_to_grid(pp_tile, desired_tile)
+		# Clamp to a sensible minimum so a flush-against-wall camera doesn't
+		# pop directly on top of the player (which would re-trigger the
+		# near-cull and hide the wizard).
+		# No MIN_DIST rescale here — extending back along the wall normal
+		# would push the camera INTO the wall again. Just use the raycast
+		# result directly. If the wall pinches the camera right up against
+		# the player, the existing < 0.55 near-cull will hide the wizard
+		# Label3D so it doesn't engulf the view (effectively first-person
+		# fallback in that pinch).
+		cam_pos = Vector3(safe_tile.x, player_pos_3d.y + TP_HEIGHT, safe_tile.y)
+		look_target = player_pos_3d + aim_3d * TP_LOOK_FORWARD
+	else:
+		cam_pos = player_pos_3d
+		look_target = player_pos_3d + aim_3d
 	# Camera shake — random per-frame offset that decays linearly over the
 	# shake's duration. Tweens to zero so the rest of the frame uses the
 	# clean cam_pos for look_at and the player light.
@@ -343,8 +601,14 @@ func _process(delta: float) -> void:
 		var amp: float = _shake_intensity * (_shake_t / maxf(_shake_total, 0.001))
 		shake_offset = Vector3(randf_range(-amp, amp), 0.0, randf_range(-amp, amp))
 	_camera.position = cam_pos + shake_offset
-	_camera.look_at(cam_pos + Vector3(aim.x, 0.0, aim.y), Vector3.UP)
-	_player_light.position = cam_pos
+	_camera.look_at(look_target, Vector3.UP)
+	# Mirror the entity camera so both viewports render from the same POV.
+	# Both cameras share the same World3D — they just have different
+	# cull_masks, so the env camera sees walls and the ent camera sees
+	# entity Label3Ds.
+	if _camera_ent != null and is_instance_valid(_camera_ent):
+		_camera_ent.global_transform = _camera.global_transform
+	_player_light.position = player_pos_3d
 
 	# Auto-register any enemy that's in the "enemy" group but missing from
 	# _entities — about half the enemy scripts (Wizard, all 5 bosses, the
@@ -375,9 +639,15 @@ func _process(delta: float) -> void:
 		if not is_instance_valid(lbl_v):
 			stale.append(key)
 			continue
-		var lbl: Label3D = lbl_v as Label3D
-		if body == player2d:
-			# Don't render the player's own glyph — the camera is them.
+		# entry["label"] is a Node3D parent for multi-line entities, or a
+		# Label3D for single-line. Both expose .position / .visible so most
+		# of this loop treats them uniformly. The per-line text writes at
+		# the bottom of the loop branch on entry["is_multiline"].
+		var lbl: Node3D = lbl_v as Node3D
+		var is_multiline: bool = bool(entry.get("is_multiline", false))
+		var is_floor_decal: bool = bool(entry.get("is_floor_decal", false))
+		if body == player2d and _camera_mode != "third":
+			# First-person: the camera IS the player; suppress the glyph.
 			lbl.visible = false
 			continue
 		var bp: Vector2 = body.global_position
@@ -392,8 +662,25 @@ func _process(delta: float) -> void:
 		if cam_pos.distance_to(ent_3d) < 0.55:
 			lbl.visible = false
 			continue
+		# Wall occlusion — entity Label3Ds render in the no-shader viewport
+		# which doesn't include the wall meshes, so walls can't occlude
+		# them by depth. Raycast the wall grid; if blocked, hide the label.
+		var cam_tile := Vector2(_camera.global_position.x, _camera.global_position.z)
+		var ent_tile := Vector2(ent_3d.x, ent_3d.z)
+		var ray_hit_e: Vector2 = _raycast_to_grid(cam_tile, ent_tile)
+		if ray_hit_e.distance_to(ent_tile) > 0.05:
+			lbl.visible = false
+			continue
 		lbl.visible = true
 		lbl.position = ent_3d
+		# Manual camera-facing orientation for entities that need an
+		# in-plane Z rotation that Godot's shader-billboard would wipe.
+		# Used by the pierce projectile (")" rotated +PI/2 reads as ⌒).
+		if body.has_meta("fp_rotation_z"):
+			var to_cam_e: Vector3 = cam_pos - lbl.position
+			if to_cam_e.length() > 0.001:
+				lbl.look_at(lbl.position - to_cam_e, Vector3.UP)
+				lbl.rotate_object_local(Vector3(0, 0, 1), float(body.get_meta("fp_rotation_z")))
 		# Live glyph + modulate from body's AsciiChar.
 		var stored_glyph: String = entry["stored_glyph"]
 		var stored_color: Color = entry["stored_color"]
@@ -495,21 +782,92 @@ func _process(delta: float) -> void:
 					status_modulate = electric_child.modulate
 				elif poison_child != null:
 					status_modulate = poison_child.modulate
-		lbl.text = live_text
-		if has_status:
-			lbl.modulate = status_modulate
-		else:
-			lbl.modulate = stored_color * live_modulate
-		# Auto-scale pixel_size when text is multi-line so a tall ice block
-		# or status stack doesn't tower past the wall height. Single-line
-		# stays at the registered base size.
-		var line_count: int = live_text.count("\n") + 1
+		var final_modulate: Color = status_modulate if has_status else stored_color * live_modulate
 		var base_ps: float
 		if body.has_meta("fp_pixel_size"):
 			base_ps = float(body.get_meta("fp_pixel_size"))
 		else:
 			base_ps = _pixel_size_for(entry.get("kind", "body"))
-		lbl.pixel_size = base_ps if line_count <= 1 else base_ps / float(line_count)
+		if is_multiline:
+			# Per-row Label3D rendering. Each child centers its own line
+			# independently — no per-line drift from a shared multi-line
+			# bbox. Dynamic resize: status overlays (ice block, burn/shock
+			# stack) can grow the line count past the registered art.
+			var live_lines_arr: Array = live_text.split("\n")
+			var row_labels: Array = entry.get("line_labels", [])
+			# Per-row pixel_size = base / row_count so the whole stack fits
+			# in roughly the same vertical envelope as a single-line entity.
+			# A 5-row wizard at base 0.014 gets each row at 0.0028.
+			var ps_now: float = base_ps / float(maxi(1, live_lines_arr.size()))
+			# Grow children if we have more lines than labels.
+			while row_labels.size() < live_lines_arr.size():
+				var new_row := Label3D.new()
+				new_row.font = MonoFont.get_font()
+				new_row.font_size = 64
+				new_row.outline_size = (row_labels[0] as Label3D).outline_size if row_labels.size() > 0 else 12
+				new_row.pixel_size = ps_now
+				new_row.billboard = BaseMaterial3D.BILLBOARD_DISABLED if is_floor_decal else BaseMaterial3D.BILLBOARD_ENABLED
+				new_row.no_depth_test = false
+				new_row.shaded = false
+				new_row.double_sided = true
+				new_row.outline_modulate = Color(0, 0, 0, 1)
+				new_row.alpha_cut = Label3D.ALPHA_CUT_DISCARD
+				new_row.layers = LAYER_ENT
+				lbl.add_child(new_row)
+				row_labels.append(new_row)
+			entry["line_labels"] = row_labels
+			# Position + text + modulate per row. Hide leftover rows.
+			var line_h: float = 64.0 * ps_now * ROW_SPACING
+			var mid_row: float = float(live_lines_arr.size() - 1) * 0.5
+			var x_offsets2: Array = []
+			if body.has_meta("fp_line_x_offsets"):
+				var xv2: Variant = body.get_meta("fp_line_x_offsets")
+				if xv2 is Array:
+					x_offsets2 = xv2
+			const CHAR_ADVANCE_RATIO_2: float = 0.55
+			var char_world2: float = 64.0 * ps_now * CHAR_ADVANCE_RATIO_2
+			# Limb drift — each row is its own billboard, so an x offset
+			# fixed in WORLD space parallax-swings relative to the body as
+			# the camera orbits (the rows "float" loosely). Default OFF:
+			# the offset is applied along the camera's horizontal RIGHT
+			# vector so it always reads as a consistent screen-space shift
+			# (rows stay locked to the body). Opt in via the `fp_limb_drift`
+			# meta for the floaty effect.
+			var limb_drift: bool = bool(body.get_meta("fp_limb_drift", false))
+			var cam_right := _camera.global_transform.basis.x
+			cam_right.y = 0.0
+			cam_right = cam_right.normalized() if cam_right.length() > 0.001 else Vector3.RIGHT
+			for i in row_labels.size():
+				var row_lbl: Label3D = row_labels[i] as Label3D
+				if i < live_lines_arr.size():
+					row_lbl.visible = true
+					row_lbl.text = (live_lines_arr[i] as String).strip_edges()
+					row_lbl.modulate = final_modulate
+					row_lbl.pixel_size = ps_now
+					var row_x_off2: float = 0.0
+					if i < x_offsets2.size():
+						row_x_off2 = float(x_offsets2[i]) * char_world2
+					var row_y: float = (mid_row - float(i)) * line_h
+					if is_floor_decal:
+						# Parent is rotated flat; keep rows in plain local
+						# space (local Y → world Z spreads them across the
+						# floor). cam_right logic assumes an unrotated parent.
+						row_lbl.position = Vector3(row_x_off2, row_y, 0.0)
+					elif limb_drift:
+						row_lbl.position = Vector3(row_x_off2, row_y, 0.0)
+					else:
+						# Screen-relative offset (parent has no rotation, so
+						# the camera-right world vector IS the local offset).
+						row_lbl.position = Vector3(cam_right.x * row_x_off2, row_y, cam_right.z * row_x_off2)
+				else:
+					row_lbl.visible = false
+		else:
+			# Single-line path — write directly to the Label3D.
+			var sl: Label3D = lbl as Label3D
+			sl.text = live_text
+			sl.modulate = final_modulate
+			var line_count: int = live_text.count("\n") + 1
+			sl.pixel_size = base_ps if line_count <= 1 else base_ps / float(line_count)
 	for key in stale:
 		var entry2: Dictionary = _entities[key]
 		var lbl_v2: Variant = entry2["label"]
@@ -1003,13 +1361,18 @@ func _refresh_lock_label() -> void:
 		add_child(_lock_label)
 	_lock_label.visible = true
 
-# Place a Label3D above each damaged enemy's head with a 10-cell bar made of
-# = (filled) and - (empty) chars. Lives inside _world3d so the ASCII post-
-# shader pixelates it along with everything else, giving the bar the same
-# look as the rest of the FP view.
+# Place a Label3D above each damaged enemy's head with a 10-cell bar made
+# of = (filled) and - (empty) chars. Lives on LAYER_ENT so it renders
+# through camera_ent (no shader), staying crisp like the rest of the
+# entity ASCII art. Wall occlusion via raycast (camera_ent has no walls
+# to provide depth-based occlusion).
 const _HP_BAR_CELLS: int = 10
 func _update_enemy_hp_bars() -> void:
-	if _world3d == null or not is_instance_valid(_world3d):
+	# HP bars live in _ent_world3d (entity viewport, no shader) alongside
+	# the entity Label3Ds so they read crisp like the enemy art.
+	if _ent_world3d == null or not is_instance_valid(_ent_world3d):
+		return
+	if _camera == null or not is_instance_valid(_camera):
 		return
 	var alive_keys: Dictionary = {}
 	var tree := get_tree()
@@ -1024,7 +1387,6 @@ func _update_enemy_hp_bars() -> void:
 		if not (max_hp_v is int) or not (hp_v is int) or int(max_hp_v) <= 0:
 			continue
 		var ratio: float = clampf(float(hp_v) / float(max_hp_v), 0.0, 1.0)
-		# Hide full-HP bars — only show once the player has dealt damage.
 		if ratio >= 0.999:
 			continue
 		var filled: int = clampi(int(round(float(_HP_BAR_CELLS) * ratio)), 0, _HP_BAR_CELLS)
@@ -1044,18 +1406,23 @@ func _update_enemy_hp_bars() -> void:
 			lbl.double_sided = true
 			lbl.outline_modulate = Color(0, 0, 0, 1)
 			lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
-			_world3d.add_child(lbl)
+			_ent_world3d.add_child(lbl)
 			_hp_bars[key] = lbl
-		lbl.text = bar_text
-		# Sit above the enemy's head — entities default to y=0.55 chest
-		# height, so 1.05 puts the bar clearly above the silhouette without
-		# clipping the ceiling at y=1.0.
-		lbl.position = Vector3(
+		# Position above the entity. Wall occlusion via raycast since
+		# camera_ent has no walls.
+		var anchor_pos := Vector3(
 			enemy_2d.global_position.x / TILE_PX,
 			1.05,
-			enemy_2d.global_position.y / TILE_PX
-		)
-		# Green → yellow → red as HP drops.
+			enemy_2d.global_position.y / TILE_PX)
+		var cam_tile_hp := Vector2(_camera.global_position.x, _camera.global_position.z)
+		var ent_tile_hp := Vector2(anchor_pos.x, anchor_pos.z)
+		var ray_hp: Vector2 = _raycast_to_grid(cam_tile_hp, ent_tile_hp)
+		if ray_hp.distance_to(ent_tile_hp) > 0.05:
+			lbl.visible = false
+			continue
+		lbl.visible = true
+		lbl.text = bar_text
+		lbl.position = anchor_pos
 		if ratio > 0.6:
 			lbl.modulate = Color(0.30, 1.0, 0.30)
 		elif ratio > 0.3:

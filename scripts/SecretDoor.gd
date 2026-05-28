@@ -1,54 +1,63 @@
 extends StaticBody2D
 
+# A secret wall segment — looks like ordinary wall, but it's destructible.
+# There's no "?" marker and no [E] prompt: the player discovers it by
+# noticing wand-hit feedback on what looks like a normal wall ("for those
+# paying attention"), then breaks through to claim the hidden room's loot
+# (and, on a rare roll, an ambush boss). Routes through the same
+# `breakable_wall` damage path that Projectile.gd already handles, so no
+# HP bar — just the hit burst.
+
 const LOOT_BAG_SCENE = preload("res://scenes/LootBag.tscn")
 
 var wall_color: Color = Color(0.12, 0.10, 0.18)
 var loot_world_pos: Vector2 = Vector2.ZERO
 var loot_items: Array = []
-# When >= 0, spawn the matching biome boss inside the secret room when
-# the player opens the door. Set by World._place_secret_doors on a 5%
-# roll so the rare-but-juicy "secret boss" surprise costs the player a
-# fight to claim the loot. -1 = no boss (default).
+# When >= 0, spawn the matching biome boss inside the secret room when the
+# wall is broken. World stamps this on a 5% roll.
 var spawn_boss_biome: int = -1
-var _player_nearby: bool = false
-var _hint: Label = null
+# A touch tankier than a plain BreakableWall (3) so cracking a secret open
+# feels earned once it's been found.
+var _health: int = 6
 
 func _ready() -> void:
 	add_to_group("secret_door")
-	# Tint the visual to match the current wall colour
+	add_to_group("breakable_wall")   # Projectile.gd routes wand damage here
+	# Blend into the surrounding wall surface in 2D.
 	var vis := get_node_or_null("Visual")
 	if vis:
 		vis.color = wall_color
-	GameState.attach_fp_visual(self, "?", Color(0.65, 0.65, 0.55), 0.55)
+	# Drop the legacy "?" mark + proximity detector if the scene still ships
+	# them (kept the .tscn lean, but guard in case).
+	var mark := get_node_or_null("Mark")
+	if mark:
+		mark.queue_free()
+	var detect := get_node_or_null("DetectArea")
+	if detect:
+		detect.queue_free()
+	# FP: a wall-like "#" tinted to the biome wall colour at wall height, so
+	# the segment reads as part of the wall rather than a floating marker.
+	GameState.attach_fp_visual(self, "#", wall_color.lightened(0.30), 0.50)
 
-	_hint = Label.new()
-	_hint.text = "[E] Open"
-	_hint.position = Vector2(-28.0, -28.0)
-	_hint.visible = false
-	_hint.add_theme_font_size_override("font_size", 11)
-	_hint.add_theme_color_override("font_color", Color(1.0, 0.95, 0.3))
-	_hint.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0))
-	_hint.add_theme_constant_override("outline_size", 2)
-	add_child(_hint)
+func take_damage(amount: int) -> void:
+	_health -= amount
+	# Wand-hit feedback (burst) fires on every hit so an attentive player
+	# notices this "wall" reacts. Full break-open happens at <= 0.
+	_hit_spark()
+	if _health <= 0:
+		_break_open()
 
-	$DetectArea.body_entered.connect(_on_detect_entered)
-	$DetectArea.body_exited.connect(_on_detect_exited)
-
-func _process(_delta: float) -> void:
-	if _player_nearby and Input.is_action_just_pressed("interact"):
-		_trigger_open()
-
-func _trigger_open() -> void:
+func _break_open() -> void:
 	FloatingText.spawn_str(global_position, "SECRET FOUND!",
 		Color(1.0, 0.9, 0.2), get_tree().current_scene)
+	_rubble_burst()
 	if not loot_items.is_empty():
 		var bag := LOOT_BAG_SCENE.instantiate()
 		bag.position = loot_world_pos
 		bag.set("items", loot_items)
 		get_tree().current_scene.add_child(bag)
-	# Surprise boss — World stamps spawn_boss_biome on a 5 % roll. Pulls the
-	# biome boss factory off the active World scene since SecretDoor doesn't
-	# preload the boss scenes itself.
+	# Ambush boss — World stamps spawn_boss_biome on a 5 % roll. Pulls the
+	# biome boss factory off the active World scene.
 	if spawn_boss_biome >= 0:
 		var world := get_tree().current_scene
 		if world != null and world.has_method("_instantiate_biome_boss"):
@@ -63,22 +72,46 @@ func _trigger_open() -> void:
 					world.add_child(boss)
 				FloatingText.spawn_str(loot_world_pos + Vector2(0.0, -40.0),
 					"AMBUSH!", Color(1.0, 0.35, 0.35), world)
+	# queue_free takes the child cover ColorRect with it, revealing the room.
 	queue_free()
 
-func _on_detect_entered(body: Node2D) -> void:
-	if body.is_in_group("player"):
-		_player_nearby = true
-		_hint.visible = true
-		# Autoplay auto-triggers so it doesn't get hung up on the door body.
-		# After the trigger we nudge the bot to invalidate its A* cache —
-		# the door tile was weighted 4.0 in the prior build, so cached paths
-		# may take an unnecessary detour around the now-clear entrance.
-		if body.get("_autoplay") == true:
-			_trigger_open()
-			if body.has_method("_autoplay_invalidate_path"):
-				body._autoplay_invalidate_path()
+# Small per-hit spark so the destructible wall "answers" each shot.
+func _hit_spark() -> void:
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_burst_2d"):
+		GameState.active_rig.spawn_burst_2d(global_position, "#",
+			wall_color.lightened(0.5), 1, 0.5, 0.22, Vector2.ZERO, TAU, 0.010, 0.50)
+	var c := Label.new()
+	c.text = "#"
+	c.add_theme_color_override("font_color", wall_color.lightened(0.5))
+	c.add_theme_font_size_override("font_size", 11)
+	c.position = global_position + Vector2(randf_range(-6.0, 6.0), randf_range(-10.0, 10.0))
+	get_tree().current_scene.add_child(c)
+	var tw := c.create_tween()
+	tw.tween_property(c, "modulate:a", 0.0, 0.22)
+	tw.tween_callback(c.queue_free)
 
-func _on_detect_exited(body: Node2D) -> void:
-	if body.is_in_group("player"):
-		_player_nearby = false
-		_hint.visible = false
+# Full collapse burst on break — mirrors BreakableWall's rubble scatter.
+func _rubble_burst() -> void:
+	var gpos := global_position
+	var chars := ["#", "+", "*", "x"]
+	for i in 8:
+		var c := Label.new()
+		c.text = chars[i % 4]
+		c.add_theme_color_override("font_color", wall_color.lightened(0.5))
+		c.add_theme_font_size_override("font_size", 11)
+		var angle := (TAU / 8.0) * float(i) + randf_range(-0.3, 0.3)
+		var dist := randf_range(14.0, 30.0)
+		c.position = gpos + Vector2(cos(angle), sin(angle)) * dist * 0.3
+		get_tree().current_scene.add_child(c)
+		var tw := c.create_tween()
+		tw.tween_property(c, "position", gpos + Vector2(cos(angle), sin(angle)) * dist, 0.35)
+		tw.parallel().tween_property(c, "modulate:a", 0.0, 0.35)
+		tw.tween_callback(c.queue_free)
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_burst_2d"):
+		var fp_col := wall_color.lightened(0.5)
+		GameState.active_rig.spawn_burst_2d(gpos, "#", fp_col, 2, 0.65, 0.35, Vector2.ZERO, TAU, 0.010, 0.50)
+		GameState.active_rig.spawn_burst_2d(gpos, "+", fp_col, 2, 0.65, 0.35, Vector2.ZERO, TAU, 0.010, 0.50)
+	if SoundManager:
+		SoundManager.play("explosion", randf_range(0.85, 1.0))
