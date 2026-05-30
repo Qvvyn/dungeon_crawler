@@ -67,7 +67,7 @@ func _break_open() -> void:
 		var bag := LOOT_BAG_SCENE.instantiate()
 		bag.position = loot_world_pos
 		bag.set("items", loot_items)
-		get_tree().current_scene.add_child(bag)
+		get_tree().current_scene.call_deferred("add_child", bag)
 	# Ambush boss — World stamps spawn_boss_biome on a 5 % roll. Pulls the
 	# biome boss factory off the active World scene.
 	if spawn_boss_biome >= 0:
@@ -78,9 +78,9 @@ func _break_open() -> void:
 				boss.position = loot_world_pos
 				var enemies_node := world.get_node_or_null("Enemies")
 				if enemies_node != null:
-					enemies_node.add_child(boss)
+					enemies_node.call_deferred("add_child", boss)
 				else:
-					world.add_child(boss)
+					world.call_deferred("add_child", boss)
 				FloatingText.spawn_str(loot_world_pos + Vector2(0.0, -40.0),
 					"AMBUSH!", Color(1.0, 0.35, 0.35), world)
 	# queue_free takes the child cover ColorRect with it, revealing the room.

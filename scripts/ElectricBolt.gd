@@ -13,8 +13,8 @@ extends Label
 
 const PULSE_TIME := 0.35
 const GAP_TIME   := 0.40
-const BOLT_F0    := "~Z~"
-const BOLT_F1    := "Z~Z"
+const BOLT_F0    := "*Z*"
+const BOLT_F1    := "~Z~"
 
 # Owner-side state — kept on the overlay node so the host doesn't need
 # any new fields to participate.
@@ -100,3 +100,14 @@ func _process(delta: float) -> void:
 		modulate.a = 1.0
 		if is_instance_valid(_host):
 			_host.set("_stun_timer", maxf(float(_host.get("_stun_timer")), PULSE_TIME))
+		_fire_fp_pulse()
+
+func _fire_fp_pulse() -> void:
+	if not is_instance_valid(_host) or not (_host is Node2D):
+		return
+	var rig := GameState.active_rig
+	if rig == null or not is_instance_valid(rig) or not rig.has_method("spawn_burst_2d"):
+		return
+	rig.spawn_burst_2d((_host as Node2D).global_position, "z",
+			Color(1.0, 0.92, 0.20), 3, 0.28, 0.18,
+			Vector2.ZERO, TAU, 0.009, 0.55)

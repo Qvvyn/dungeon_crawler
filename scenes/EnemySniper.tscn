@@ -3,7 +3,7 @@
 [ext_resource type="Script" path="res://scripts/EnemySniper.gd" id="1_sniper"]
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_1"]
-size = Vector2(40, 40)
+size = Vector2(24, 24)
 
 [node name="EnemySniper" type="CharacterBody2D" groups=["enemy"]]
 script = ExtResource("1_sniper")

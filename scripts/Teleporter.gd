@@ -13,7 +13,7 @@ func setup(pos: Vector2) -> void:
 	collision_layer = 0
 	collision_mask  = 1
 	# "O" matches the 2D ring label below — FP previously diverged with "T".
-	GameState.attach_fp_visual(self, "O", Color(0.55, 1.0, 0.85), 0.45)
+	GameState.attach_fp_visual(self, "O", Color(0.30, 0.65, 1.0), 0.45)
 	# Drive the FP size oscillation by updating this meta per-frame; the rig
 	# re-reads fp_pixel_size every frame for single-line entities.
 	set_meta("fp_pixel_size", BASE_FP_PS)
@@ -29,7 +29,7 @@ func setup(pos: Vector2) -> void:
 	# letting the glow pulse below reach first-person.
 	_lbl.name = "AsciiChar"
 	_lbl.text = "O"
-	_lbl.add_theme_color_override("font_color", Color(0.3, 0.8, 1.0))
+	_lbl.add_theme_color_override("font_color", Color(0.25, 0.55, 1.0))
 	_lbl.add_theme_font_size_override("font_size", 14)
 	_lbl.position = Vector2(-5.0, -10.0)
 	add_child(_lbl)

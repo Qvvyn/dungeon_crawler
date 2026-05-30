@@ -301,11 +301,13 @@ func _launch_attack(dir: Vector2) -> void:
 	_hitbox.set_deferred("monitoring", true)
 	var vis := _hitbox.get_node_or_null("Visual")
 	if vis: vis.visible = true
-	get_tree().create_timer(ATTACK_DURATION).timeout.connect(func() -> void:
-		if not is_instance_valid(self): return
-		_hitbox.set_deferred("monitoring", false)
-		if vis: vis.visible = false
-	)
+	get_tree().create_timer(ATTACK_DURATION).timeout.connect(_end_attack)
+
+func _end_attack() -> void:
+	_hitbox.set_deferred("monitoring", false)
+	var vis := _hitbox.get_node_or_null("Visual")
+	if vis:
+		vis.visible = false
 
 func _on_melee_hit(body: Node2D) -> void:
 	if body.is_in_group("player") and body.has_method("take_damage"):
@@ -459,6 +461,8 @@ func take_damage(amount: int) -> void:
 		else:
 			if elite_modifier == 2 and _split_scene != null:
 				_do_split()
+			if elite_modifier == 5:
+				EnemyBase.volatile_explosion(global_position, max_health, _player, get_tree().current_scene)
 			_maybe_drop_bag()
 		EffectFx.spawn_death_pop(global_position, get_tree().current_scene)
 		queue_free()

@@ -293,7 +293,7 @@ func _chase(delta: float) -> void:
 	# Separation: cached every ~0.1s, staggered per enemy so recomputes don't pile up
 	_sep_timer -= delta
 	if _sep_timer <= 0.0:
-		_sep_timer = randf_range(0.18, 0.28)
+		_sep_timer = randf_range(0.50, 0.70)
 		_sep_force = Vector2.ZERO
 		for other in get_tree().get_nodes_in_group("enemy"):
 			if other == self or not is_instance_valid(other):
@@ -425,18 +425,20 @@ func _launch_attack(dir: Vector2) -> void:
 	# so the physics server applies it on the next frame boundary.
 	_hitbox.set_deferred("monitoring", true)
 	_hitbox.get_node("Visual").visible = true
-	get_tree().create_timer(ATTACK_DURATION).timeout.connect(func() -> void:
-		if not is_instance_valid(self):
-			return
-		_hitbox.set_deferred("monitoring", false)
-		_hitbox.get_node("Visual").visible = false
-	)
+	get_tree().create_timer(ATTACK_DURATION).timeout.connect(_end_attack)
+
+func _end_attack() -> void:
+	_hitbox.set_deferred("monitoring", false)
+	_hitbox.get_node("Visual").visible = false
 
 func _on_melee_hit(body: Node2D) -> void:
 	if body.is_in_group("player") and body.has_method("take_damage"):
 		body.take_damage(1)
 		if SoundManager:
 			SoundManager.play("thud", randf_range(0.92, 1.10))
+		if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+				and GameState.active_rig.has_method("flash_melee"):
+			GameState.active_rig.flash_melee(global_position, Color(1.0, 0.3, 0.1))
 
 # ── Shared ────────────────────────────────────────────────────────────────────
 
@@ -485,6 +487,8 @@ func take_damage(amount: int) -> void:
 		else:
 			if elite_modifier == 2 and _split_scene != null:
 				_do_split()
+			if elite_modifier == 5:
+				EnemyBase.volatile_explosion(global_position, max_health, _player, get_tree().current_scene)
 			_maybe_drop_bag()
 		EffectFx.spawn_death_pop(global_position, get_tree().current_scene)
 		queue_free()
@@ -522,7 +526,10 @@ func _drop_gold_pickup() -> void:
 func _maybe_drop_bag() -> void:
 	if GameState.test_mode:
 		return
-	if (is_elite and randi() % 100 < 50) or randi() % 100 < 8:
+	var diff_extra: float = maxf(0.0, GameState.difficulty - 1.0)
+	var elite_chance: int = clampi(25 - int(diff_extra * 1.5), 8, 25)
+	var reg_chance: int   = clampi(5  - int(diff_extra * 0.3), 2,  5)
+	if (is_elite and randi() % 100 < elite_chance) or randi() % 100 < reg_chance:
 		var bag := LOOT_BAG_SCENE.instantiate()
 		bag.global_position = global_position + Vector2(randf_range(-20, 20), randf_range(-20, 20))
 		get_tree().current_scene.call_deferred("add_child", bag)

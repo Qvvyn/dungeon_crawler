@@ -291,8 +291,9 @@ var _aim_reticle: Label = null   # `+` glyph at cursor — non-autoplay only
 # Canonical wizard art. Used in both 2D and FP — the FP rig now renders
 # each row as its own Label3D, so leading spaces position the visible
 # content directly without per-line CENTER drift.
-const WIZARD_F0 := "   ^\n__/_\\__\n (*-*)\n /)V(\\|\n /___\\|"
-const WIZARD_F1 := "   ^\n__/_\\__\n (*3*)\n /)V(\\|\n /___\\|"
+const WIZARD_F0    := "   ^\n__/_\\__\n (*-*)\n /)V(\\|\n /___\\|"
+const WIZARD_F1    := "   ^\n__/_\\__\n (*3*)\n /)V(\\|\n /___\\|"
+const WIZARD_SHOOT := "   ^\n__/_\\__\n (*^*)\n /)~(\\|\n /___\\|"
 var _ascii_label: Label   = null
 var _anim_timer: float    = 0.0
 var _anim_frame: int      = 0
@@ -1055,8 +1056,10 @@ func _build_settings_panel() -> void:
 	_settings_root.add_child(title)
 
 	_add_crt_toggle(Vector2(640, 360), _settings_root)
+	_add_limb_drift_toggle(Vector2(640, 398), _settings_root)
+	_add_low_res_toggle(Vector2(640, 436), _settings_root)
 	_add_flash_toggle(Vector2(640, 562), _settings_root)
-	_add_volume_slider(420, _settings_root)
+	_add_volume_slider(422, _settings_root)
 	_add_difficulty_slider(496, _settings_root)
 	_add_wizard_color_field(Vector2(632, 608), _settings_root)
 
@@ -1194,6 +1197,70 @@ func _add_crt_toggle(pos: Vector2, parent: Node = null) -> void:
 		var scene := get_tree().current_scene
 		if scene.has_method("_apply_crt_state"):
 			scene._apply_crt_state())
+	parent.add_child(btn)
+
+func _add_low_res_toggle(pos: Vector2, parent: Node = null) -> void:
+	if parent == null:
+		parent = _pause_menu
+	var col_on  := Color(0.55, 1.0, 0.55)
+	var col_off := Color(0.45, 0.45, 0.55)
+	var lbl := Label.new()
+	lbl.text = "[ FP LOW-RES: %s ]" % ("ON" if GameState.fp_low_res else "OFF")
+	lbl.position = pos
+	lbl.size = Vector2(320, 32)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.add_theme_font_size_override("font_size", 17)
+	lbl.add_theme_color_override("font_color", col_on if GameState.fp_low_res else col_off)
+	parent.add_child(lbl)
+	var note := Label.new()
+	note.text = "takes effect next floor"
+	note.position = pos + Vector2(0.0, 22.0)
+	note.size = Vector2(320, 16)
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	note.add_theme_font_size_override("font_size", 11)
+	note.add_theme_color_override("font_color", Color(0.45, 0.45, 0.55))
+	parent.add_child(note)
+	var btn := Button.new()
+	btn.flat = true
+	btn.position = pos - Vector2(4, 2)
+	btn.size = Vector2(328, 36)
+	btn.mouse_entered.connect(func() -> void:
+		lbl.add_theme_color_override("font_color", lbl.get_theme_color("font_color").lightened(0.3)))
+	btn.mouse_exited.connect(func() -> void:
+		lbl.add_theme_color_override("font_color", col_on if GameState.fp_low_res else col_off))
+	btn.pressed.connect(func() -> void:
+		GameState.fp_low_res = not GameState.fp_low_res
+		GameState.save_settings()
+		lbl.text = "[ FP LOW-RES: %s ]" % ("ON" if GameState.fp_low_res else "OFF")
+		lbl.add_theme_color_override("font_color", col_on if GameState.fp_low_res else col_off))
+	parent.add_child(btn)
+
+func _add_limb_drift_toggle(pos: Vector2, parent: Node = null) -> void:
+	if parent == null:
+		parent = _pause_menu
+	var col_on  := Color(0.55, 1.0, 0.55)
+	var col_off := Color(0.45, 0.45, 0.55)
+	var lbl := Label.new()
+	lbl.text = "[ LIMB DRIFT: %s ]" % ("ON" if GameState.fp_limb_drift else "OFF")
+	lbl.position = pos
+	lbl.size = Vector2(320, 32)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.add_theme_font_size_override("font_size", 17)
+	lbl.add_theme_color_override("font_color", col_on if GameState.fp_limb_drift else col_off)
+	parent.add_child(lbl)
+	var btn := Button.new()
+	btn.flat = true
+	btn.position = pos - Vector2(4, 2)
+	btn.size = Vector2(328, 36)
+	btn.mouse_entered.connect(func() -> void:
+		lbl.add_theme_color_override("font_color", lbl.get_theme_color("font_color").lightened(0.3)))
+	btn.mouse_exited.connect(func() -> void:
+		lbl.add_theme_color_override("font_color", col_on if GameState.fp_limb_drift else col_off))
+	btn.pressed.connect(func() -> void:
+		GameState.fp_limb_drift = not GameState.fp_limb_drift
+		GameState.save_settings()
+		lbl.text = "[ LIMB DRIFT: %s ]" % ("ON" if GameState.fp_limb_drift else "OFF")
+		lbl.add_theme_color_override("font_color", col_on if GameState.fp_limb_drift else col_off))
 	parent.add_child(btn)
 
 func _add_volume_slider(y: float, parent: Node = null) -> void:
@@ -2550,6 +2617,12 @@ func _input(event: InputEvent) -> void:
 					"SPRINT: " + ("ON" if _autoplay_sprint else "OFF"),
 					Color(0.6, 1.0, 0.4), get_tree().current_scene)
 				get_viewport().set_input_as_handled()
+		KEY_H:             # H  →  toggle hitbox debug overlay
+			GameState.show_hitboxes = not GameState.show_hitboxes
+			FloatingText.spawn_str(global_position + Vector2(0.0, -32.0),
+				"HITBOXES: " + ("ON" if GameState.show_hitboxes else "OFF"),
+				Color(1.0, 1.0, 0.2), get_tree().current_scene)
+			get_viewport().set_input_as_handled()
 		KEY_D:             # Shift+D  →  toggle FP limb-drift for all entities
 			# Master switch for the loose per-row "drift" on multi-line ASCII
 			# entities in FP. Off = every entity renders as one rigid plane.
@@ -2623,8 +2696,15 @@ func _physics_process(delta: float) -> void:
 func _tick_wizard_anim(delta: float) -> void:
 	if _ascii_label == null:
 		return
-	# Animate when moving or recently shot
-	var is_active := velocity.length_squared() > 100.0 or _shoot_cooldown > 0.0
+	var is_shooting := _shoot_cooldown > 0.0
+	var is_moving   := velocity.length_squared() > 100.0
+	# Shoot-only (standing still firing): show wand-raised frame
+	if is_shooting and not is_moving:
+		_anim_frame = 0
+		_anim_timer = 0.0
+		_ascii_label.text = WIZARD_SHOOT
+		return
+	var is_active := is_moving or is_shooting
 	if is_active:
 		_anim_timer += delta
 		if _anim_timer >= 0.22:
@@ -2870,6 +2950,7 @@ func _start_dash() -> void:
 	_is_invincible = true
 	modulate        = Color(0.5, 0.8, 1.0, 0.6)
 	_spawn_dash_afterimages()
+	_spawn_dash_fp_effect()
 	# Pass through enemies physically during invincibility
 	for enemy in get_tree().get_nodes_in_group("enemy"):
 		if is_instance_valid(enemy):
@@ -2877,16 +2958,39 @@ func _start_dash() -> void:
 
 func _spawn_dash_afterimages() -> void:
 	var scene_root := get_tree().current_scene
+	var art: String = _ascii_label.text if _ascii_label != null else WIZARD_F0
 	for i in 3:
-		var ghost := ColorRect.new()
-		ghost.size = Vector2(18.0, 30.0)
-		ghost.color = Color(0.45, 0.78, 1.0, 0.38 - float(i) * 0.08)
-		ghost.position = global_position - Vector2(9.0, 16.0) - _dash_dir * float(i + 1) * 7.0
-		ghost.z_index = -1
+		var ghost := Label.new()
+		ghost.text = art
+		ghost.add_theme_font_override("font", MonoFont.get_font())
+		ghost.add_theme_font_size_override("font_size", 22)
+		ghost.add_theme_constant_override("line_separation", -4)
+		ghost.add_theme_color_override("font_color",
+			Color(0.45, 0.78, 1.0, 0.45 - float(i) * 0.10))
+		ghost.add_theme_color_override("font_outline_color", Color(0.0, 0.2, 0.5, 0.5))
+		ghost.add_theme_constant_override("outline_size", 2)
+		ghost.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		ghost.vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
+		ghost.size = Vector2(80.0, 90.0)
+		ghost.global_position = global_position - Vector2(40.0, 55.0) \
+			- _dash_dir * float(i + 1) * 14.0
+		ghost.z_index = z_index - 1
+		ghost.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		scene_root.add_child(ghost)
 		var tw := ghost.create_tween()
-		tw.tween_property(ghost, "modulate:a", 0.0, 0.18 + float(i) * 0.04)
+		tw.tween_property(ghost, "modulate:a", 0.0, 0.22 + float(i) * 0.05)
 		tw.tween_callback(ghost.queue_free)
+
+func _spawn_dash_fp_effect() -> void:
+	var rig := GameState.active_rig
+	if rig == null or not is_instance_valid(rig):
+		return
+	var pos := global_position
+	var col := Color(0.45, 0.78, 1.0)
+	if rig.has_method("spawn_ring_2d"):
+		rig.spawn_ring_2d(pos, "=", col, 0.0, 2.0, 12, 0.20, 0.009, 0.28)
+	if rig.has_method("spawn_streak_2d"):
+		rig.spawn_streak_2d(pos, _dash_dir, "-", col, 8, 1.5, 0.18, 0.007, 0.28)
 
 func apply_knockback(force: Vector2) -> void:
 	if _is_invincible or _is_dead:

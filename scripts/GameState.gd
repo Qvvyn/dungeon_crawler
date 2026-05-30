@@ -181,11 +181,17 @@ var disable_flashing: bool = false
 # false the whole entity renders as one rigid camera-facing plane (rows'
 # billboarding disabled, parent Y-billboards toward the camera) so multi-line
 # art reads solid with no inter-row wobble.
-var fp_limb_drift: bool = true
+var fp_limb_drift: bool = false
 # Debug / playtest toggle — when true, _spend_mana_or_hp short-circuits to
 # success so wand shots, nova, shield, levitate, etc. cost nothing. The
 # only thing that still gates is wand_charges (limited-use wands).
 var infinite_mana: bool = false
+var show_hitboxes: bool = false
+# FP render resolution — when true, the SubViewport renders at half size
+# (with proportionally smaller cell_px) so the GPU processes 75% fewer
+# pixels. Same number of ASCII characters on screen; slightly softer look.
+# Takes effect the next time a dungeon floor loads.
+var fp_low_res: bool = false
 # Player wizard tint — applied to the wizard's 2D glyph + FP/3rd-person body.
 # Customizable via the pause-menu hex field. Default is the classic purple.
 var wizard_color: Color = Color(0.85, 0.55, 1.0)
@@ -256,6 +262,7 @@ func save_settings() -> void:
 		"wizard_color":        wizard_color.to_html(false),
 		"render_mode":         render_mode,
 		"infinite_mana":       infinite_mana,
+		"fp_low_res":          fp_low_res,
 	}))
 	f.close()
 
@@ -282,6 +289,7 @@ func _load_settings() -> void:
 		render_mode         = clampi(int(result.get("render_mode", RenderMode.TOPDOWN)),
 									 0, RenderMode.size() - 1)
 		infinite_mana       = bool(result.get("infinite_mana", false))
+		fp_low_res          = bool(result.get("fp_low_res",   false))
 		# Mirror the loaded difficulty into the active run value so the title
 		# screen's slider starts where the player last left it.
 		difficulty = starting_difficulty

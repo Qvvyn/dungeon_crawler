@@ -83,9 +83,10 @@ func _enemy_tick(delta: float) -> void:
 func _swing(dir: Vector2) -> void:
 	_hitbox.position = dir * HITBOX_REACH
 	_hitbox.set_deferred("monitoring", true)
-	get_tree().create_timer(ATTACK_DURATION).timeout.connect(func() -> void:
-		if not is_instance_valid(self): return
-		_hitbox.set_deferred("monitoring", false))
+	get_tree().create_timer(ATTACK_DURATION).timeout.connect(_end_attack)
+
+func _end_attack() -> void:
+	_hitbox.set_deferred("monitoring", false)
 
 func _on_melee_hit(body: Node2D) -> void:
 	if body.is_in_group("player") and body.has_method("take_damage"):

@@ -59,12 +59,12 @@ static func roll_drop_tier() -> int:
 # Tier → stat magnitude multiplier. Same curve shape as the old
 # diff_mult so a T5 piece feels roughly equivalent to a diff-5 drop
 # under the previous system.
-#   T1  → 1.00×    T5  → 2.60×
-#   T10 → 5.73×    T20 → 16.85×
-#   T50 → 75.7×
+#   T1  → 1.00×    T5  → 2.08×
+#   T10 → 3.66×    T20 → 7.56×
+#   T50 → 25.3×
 static func tier_mult(t: int) -> float:
 	var x: float = float(maxi(0, t - 1))
-	return 1.0 + x * 0.30 + x * x * 0.025
+	return 1.0 + x * 0.25 + x * x * 0.005
 
 # Stamps a drop tier on a fixed-stat item that didn't roll one during
 # generation (everything from all_items / legendary_items / boss
@@ -81,9 +81,9 @@ static func _apply_drop_tier(item: Item) -> Item:
 # stats; we want depth scaling without exploding past procedural rolls.
 # Formula: 1.0 + (tier_mult(t) - 1.0) * 0.5
 #   T1   → 1.00× (no change)
-#   T10  → 3.36×
-#   T20  → 8.93×
-#   T50  → 38.35×
+#   T10  → 2.33×
+#   T20  → 4.28×
+#   T50  → 13.1×
 static func _curated_tier_scale(t: int) -> float:
 	if t <= 1:
 		return 1.0
@@ -861,7 +861,7 @@ static func generate_wand(rarity: int = Item.RARITY_COMMON) -> Item:
 		# old curves were diff-driven, now they're tier-driven for
 		# parity with the magnitude curve.
 		var t_extra: float = float(t - 1)
-		item.wand_fire_rate = maxf(0.04, item.wand_fire_rate * (1.0 - t_extra * 0.04))
+		item.wand_fire_rate = maxf(0.08, item.wand_fire_rate * (1.0 - t_extra * 0.010))
 		item.wand_proj_speed = item.wand_proj_speed * (1.0 + t_extra * 0.05)
 		# Stacks/pierce/ricochet creep up too at higher tiers
 		if item.wand_pierce > 0:

@@ -128,7 +128,7 @@ func _build_shop(pos: Vector2) -> void:
 
 func _build_descend(pos: Vector2) -> void:
 	_make_building_area("DESCEND",
-		"Return to the Dungeon", Color(0.85, 0.40, 0.60), pos, DESCEND_SCRIPT, 90.0)
+		"Return to the Dungeon", Color(0.85, 0.40, 0.60), pos, DESCEND_SCRIPT, 40.0)
 
 func _build_hearth(pos: Vector2) -> void:
 	_make_building_area("HEARTH",
@@ -147,7 +147,7 @@ func _build_reroller(pos: Vector2) -> void:
 # set BEFORE the node enters the tree so its _ready (which connects the
 # body_entered/exited signals) actually fires.
 func _make_building_area(title: String, subtitle: String, col: Color,
-		pos: Vector2, area_script: Script, radius: float = 70.0) -> Area2D:
+		pos: Vector2, area_script: Script, radius: float = 32.0) -> Area2D:
 	var area := Area2D.new()
 	area.set_script(area_script)
 	area.position = pos

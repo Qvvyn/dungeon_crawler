@@ -324,6 +324,17 @@ func _trigger_electrified() -> void:
 	# managed by the ElectricBolt overlay. Shows lightning art on each
 	# pulse so the debuff has a clear visual beat.
 	ElectricBolt.trigger(self)
+	# FP: radial burst + expanding ring so the proc reads as a dramatic
+	# electrical explosion in first-person.
+	var rig := GameState.active_rig
+	if rig != null and is_instance_valid(rig):
+		var pos: Vector2 = global_position
+		if rig.has_method("spawn_burst_2d"):
+			rig.spawn_burst_2d(pos, "~", Color(1.0, 0.95, 0.2), 8, 0.5,
+					0.30, Vector2.ZERO, TAU, 0.012, 0.55)
+		if rig.has_method("spawn_ring_2d"):
+			rig.spawn_ring_2d(pos, "~", Color(0.8, 1.0, 0.3),
+					0.2, 1.2, 12, 0.28, 0.010, 0.55)
 
 func _trigger_poisoned() -> void:
 	FloatingText.spawn_str(global_position, "POISONED!", Color(0.2, 1.0, 0.35), get_tree().current_scene)
@@ -399,6 +410,8 @@ func take_damage(amount: int) -> void:
 			else:
 				if elite_modifier == 2 and _split_scene != null:
 					_do_split()
+				if elite_modifier == 5:
+					_do_volatile()
 				_maybe_drop_bag()
 		# Catacombs biome mechanic — 25 % of regular non-boss / non-champion
 		# deaths roll a delayed zombie reanimation 5 s later at the corpse
@@ -413,7 +426,7 @@ func take_damage(amount: int) -> void:
 # died. Uses get_tree().create_timer so the host can be freed safely;
 # the captured `pos` is value-typed (Vector2), no dangling reference.
 func _schedule_catacombs_reanimation(pos: Vector2) -> void:
-	if randf() >= 0.25:
+	if randf() >= 0.10:
 		return
 	var tree := get_tree()
 	if tree == null:
@@ -441,6 +454,27 @@ func _schedule_catacombs_reanimation(pos: Vector2) -> void:
 		# Set as metadata so we don't need a real property on the script.
 		z.set_meta("is_zombie_revive", true)
 		enemies.add_child(z))
+
+func _do_volatile() -> void:
+	FloatingText.spawn_str(global_position, "BOOM!", Color(1.0, 0.55, 0.0), get_tree().current_scene)
+	var dmg := int(max_health / 3)
+	damage_player_in_radius(dmg, 90.0)
+	var fp := FIRE_PATCH_SCRIPT.new()
+	if fp is Node2D:
+		(fp as Node2D).position = global_position
+	get_tree().current_scene.call_deferred("add_child", fp)
+
+static func volatile_explosion(pos: Vector2, hp: int, player: Node, scene: Node) -> void:
+	FloatingText.spawn_str(pos, "BOOM!", Color(1.0, 0.55, 0.0), scene)
+	var dmg := int(hp / 3)
+	if is_instance_valid(player) and player.has_method("take_damage"):
+		if pos.distance_to(player.global_position) <= 90.0:
+			player.take_damage(dmg)
+	const FP := preload("res://scripts/FirePatch.gd")
+	var fp: Node = FP.new()
+	if fp is Node2D:
+		(fp as Node2D).position = pos
+	scene.call_deferred("add_child", fp)
 
 func _do_split() -> void:
 	FloatingText.spawn_str(global_position, "SPLIT!", Color(0.9, 0.4, 1.0), get_tree().current_scene)
@@ -492,16 +526,15 @@ func _drop_gold_pickup() -> void:
 	gold.value = int(randi_range(1, 5) * (3 if is_elite else 1) * GameState.loot_multiplier)
 	get_tree().current_scene.call_deferred("add_child", gold)
 
-# Probabilistic bag drop for non-champion enemies. Chance scales with
-# difficulty so the gear pipeline keeps pace with the +HP / +density
-# scaling. Base 8 % regular / 50 % elite, +3 % / +5 % per +1 difficulty
-# above 1, capped at 25 / 80 respectively.
+# Probabilistic bag drop for non-champion enemies. Rates fall with difficulty:
+# more enemies spawn at higher tiers, so per-kill odds must drop to keep total
+# floor loot manageable. Elite 25%→8%, regular 5%→2% across diff 1→11+.
 func _maybe_drop_bag() -> void:
 	if GameState.test_mode:
 		return
 	var diff_extra: float = maxf(0.0, GameState.difficulty - 1.0)
-	var elite_chance: int = clampi(50 + int(diff_extra * 5.0), 50, 80)
-	var reg_chance: int   = clampi(8 + int(diff_extra * 3.0), 8, 25)
+	var elite_chance: int = clampi(25 - int(diff_extra * 1.5), 8, 25)
+	var reg_chance: int   = clampi(5  - int(diff_extra * 0.3), 2,  5)
 	if (is_elite and randi() % 100 < elite_chance) or randi() % 100 < reg_chance:
 		var bag := LOOT_BAG_SCENE.instantiate()
 		bag.global_position = global_position + Vector2(randf_range(-20, 20), randf_range(-20, 20))

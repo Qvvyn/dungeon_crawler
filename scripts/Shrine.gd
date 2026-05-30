@@ -31,7 +31,9 @@ static var _shared_font: Font = null
 func _ready() -> void:
 	add_to_group("shrine")
 	add_to_group("interactable")   # bullets pass through (Projectile group check)
-	GameState.attach_fp_visual(self, "&", Color(0.75, 0.95, 1.0), 0.55)
+	set_meta("fp_multiline", true)
+	set_meta("fp_pixel_size", 0.009)
+	GameState.attach_fp_visual(self, F_ACTIVE, Color(0.75, 0.95, 1.0), 0.55)
 	body_entered.connect(_on_body_entered)
 	if _shared_font == null:
 		_shared_font = MonoFont.get_font()
@@ -174,6 +176,7 @@ func _consume() -> void:
 	if _label:
 		_label.text = F_USED
 		_label.add_theme_color_override("font_color", Color(0.35, 0.30, 0.40, 0.6))
+	GameState.update_fp_visual(self, F_USED, Color(0.35, 0.30, 0.40, 0.6))
 	if SoundManager:
 		SoundManager.play("room_clear")
 

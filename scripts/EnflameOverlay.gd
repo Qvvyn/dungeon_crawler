@@ -9,10 +9,8 @@ extends Label
 # for the "fire hit on already-enflamed target = refresh + AoE" flare
 # behavior via the static refresh_pulse() entry point.
 
-const FLAME_F0 := " ( "
-const FLAME_F1 := "((("
-const FLAME_F2 := ") ("
-const FLAME_F3 := "(*)"
+const FLAME_F0 := " ))\n((("
+const FLAME_F1 := " ((\n)))"
 
 const FIRE_PATCH_SCRIPT := preload("res://scripts/FirePatch.gd")
 
@@ -135,18 +133,17 @@ func _ready() -> void:
 	if _shared_font == null:
 		_shared_font = MonoFont.get_font()
 	add_theme_font_override("font", _shared_font)
-	add_theme_font_size_override("font_size", 14)
+	add_theme_font_size_override("font_size", 10)
+	add_theme_constant_override("line_separation", -2)
 	add_theme_color_override("font_color", Color(1.0, 0.45, 0.05))
 	add_theme_color_override("font_outline_color", Color(0.45, 0.05, 0.0))
 	add_theme_constant_override("outline_size", 2)
 	horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
-	# Sit above the entity's head — same vertical band the ElectricBolt
-	# overlay uses, so the stack of "what's afflicting this thing" reads
-	# in a consistent place.
-	offset_left   = -22.0
-	offset_top    = -42.0
-	offset_right  =  22.0
+	# Two-line compact flame sits just above the enemy's head.
+	offset_left   = -18.0
+	offset_top    = -48.0
+	offset_right  =  18.0
 	offset_bottom = -16.0
 	text = FLAME_F0
 	z_index = 3
@@ -154,15 +151,9 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_anim_t += delta
-	if _anim_t >= 0.10:
+	if _anim_t >= 0.14:
 		_anim_t = 0.0
-		_frame = (_frame + 1) % 4
-		match _frame:
-			0: text = FLAME_F0
-			1: text = FLAME_F1
-			2: text = FLAME_F2
-			3: text = FLAME_F3
-	# Flicker — quick brightness oscillation on the orange channel so the
-	# flames feel alive rather than a static decal.
+		_frame = 1 - _frame
+		text = FLAME_F0 if _frame == 0 else FLAME_F1
 	var flicker := sin(Time.get_ticks_msec() * 0.025) * 0.12 + 0.88
 	modulate = Color(1.0, flicker * 0.7, 0.05)

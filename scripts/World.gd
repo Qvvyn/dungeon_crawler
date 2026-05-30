@@ -127,13 +127,13 @@ const BIOME_FLOOR_TINTS: Array[Color] = [
 	Color(0.80, 0.88, 1.00),   # Ice Cavern
 	Color(1.00, 0.82, 0.76),   # Lava Rift
 ]
-# Dark per-biome floor color for the FP ground plane (the 2D floor uses a
-# shader + the tint above; FP needs a concrete albedo per zone).
+# Per-biome floor color for the FP ground plane — brightened so biome shifts
+# are visible under dungeon lighting (original values were too close to grey).
 const BIOME_FP_FLOOR_COLORS: Array[Color] = [
-	Color(0.16, 0.13, 0.11),   # Dungeon
-	Color(0.11, 0.16, 0.11),   # Catacombs
-	Color(0.11, 0.14, 0.20),   # Ice Cavern
-	Color(0.20, 0.11, 0.08),   # Lava Rift
+	Color(0.28, 0.22, 0.18),   # Dungeon   — warm brown stone
+	Color(0.18, 0.28, 0.16),   # Catacombs — mossy green
+	Color(0.16, 0.22, 0.36),   # Ice Cavern — steel blue
+	Color(0.36, 0.16, 0.10),   # Lava Rift  — burnt orange
 ]
 
 # ── Floor modifiers ───────────────────────────────────────────────────────────
@@ -172,7 +172,7 @@ const DUNGEON_SPAWN_BURST_DURATION: float = 1.5
 # frame. Themed-room spawns + summoner minions sit on top of this cap so
 # the live count can briefly exceed it, but the bulk regular spawn is
 # clipped here.
-const MAX_DUNGEON_ENEMIES: int = 50
+const MAX_DUNGEON_ENEMIES: int = 35
 # How many enemies to spawn synchronously inside _spawn_enemies, before any
 # frame ticks at all. Avoids the first-frame "empty world" gap; tuned so the
 # nearest few rooms are populated before the player even sees the level.
@@ -248,6 +248,12 @@ func _ready() -> void:
 	# menu held the tree paused, the next floor would load frozen (every enemy
 	# inert). Always start a fresh level running.
 	get_tree().paused = false
+	var _hitbox_canvas := CanvasLayer.new()
+	_hitbox_canvas.layer = 50
+	_hitbox_canvas.follow_viewport_enabled = false
+	var _hitbox_draw: Node2D = preload("res://scripts/HitboxDebugOverlay.gd").new()
+	_hitbox_canvas.add_child(_hitbox_draw)
+	add_child(_hitbox_canvas)
 	_init_grid()
 	# Render-mode plumbing — both rigs sit in the tree, only the active one
 	# is visible. World owns the toggle so it can also push the live grid to
@@ -1718,10 +1724,10 @@ func _spawn_enemies(player_room: Rect2i, skip_room: Rect2i = Rect2i()) -> void:
 		budget = max(0, budget - n_beams)
 		var n_missiles: int   = randi_range(0, min(budget, int(round((1 + int(diff * 0.2)) * w_missile))))
 		budget = max(0, budget - n_missiles)
-		# Spiders come in swarms — but scale with diff and proximity so the
-		# player isn't immediately surrounded near spawn on low difficulties.
+		# Spiders come in swarms — capped by the remaining room budget so they
+		# can't bypass other types and explode in count at high difficulty.
 		var spider_min: int = 0 if diff < 2.0 else 1
-		var spider_max: int = mini(budget + int(diff), 3 + int(diff * 0.6))
+		var spider_max: int = mini(budget, 3 + int(diff * 0.15))
 		spider_max = maxi(spider_min, int(round(float(spider_max) * prox_mult * w_spider)))
 		var n_spiders: int    = randi_range(spider_min, maxi(spider_min, spider_max))
 
@@ -1831,10 +1837,12 @@ func _place_enemy(scene: PackedScene, room: Rect2i, health_mult: float) -> void:
 		if "max_health" in enemy:
 			enemy.max_health = maxi(1, enemy.max_health * 2)
 		if "elite_modifier" in enemy:
-			var mod := randi_range(1, 3)
+			var mod := randi_range(1, 5)
 			enemy.elite_modifier = mod
 			if mod == 2 and "_split_scene" in enemy:
 				enemy._split_scene = scene
+			if mod == 4 and "speed" in enemy:
+				enemy.speed = enemy.speed * 1.6
 		enemy.set_meta("_make_elite_visual", true)
 
 	$Enemies.add_child(enemy)
@@ -1859,12 +1867,18 @@ func _place_enemy(scene: PackedScene, room: Rect2i, health_mult: float) -> void:
 				3:  # Enraged – orange
 					elite_col = Color(1.0, 0.55, 0.0)
 					elite_out = Color(0.5, 0.15, 0.0)
+				4:  # Haste – bright green
+					elite_col = Color(0.3, 1.0, 0.4)
+					elite_out = Color(0.0, 0.35, 0.05)
+				5:  # Volatile – deep orange
+					elite_col = Color(1.0, 0.45, 0.0)
+					elite_out = Color(0.45, 0.10, 0.0)
 				_:
 					elite_col = Color(1.0, 0.75, 0.0)
 					elite_out = Color(0.5, 0.2, 0.0)
 			lbl.add_theme_color_override("font_color", elite_col)
 			lbl.add_theme_color_override("font_outline_color", elite_out)
-			var mod_names := ["", "SHIELDED", "SPLITTING", "ENRAGED"]
+			var mod_names := ["", "SHIELDED", "SPLITTING", "ENRAGED", "HASTE", "VOLATILE"]
 			if mod > 0:
 				FloatingText.spawn_str(enemy.global_position + Vector2(0.0, -24.0), mod_names[mod], elite_col, get_tree().current_scene)
 

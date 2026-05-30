@@ -162,18 +162,14 @@ func _ready() -> void:
 						glyph = "*"
 						color = Color(0.55, 0.92, 1.0)
 					"shock":
-						# "z" head, now yellow (was light blue) and tilted -45°
-						# (the other way from the original +45°).
 						glyph = "z"
 						color = Color(1.0, 0.92, 0.20)
-						set_meta("fp_rotation_z", -PI / 4.0)
+						set_meta("fp_floor_decal", true)
 					"pierce":
-						# ")" rotated +PI/2 around the camera-facing axis
-						# (in-plane). Now light blue (took shock's old color).
 						glyph = ")"
 						color = Color(0.55, 0.85, 1.0)
 						set_meta("fp_pixel_size", 0.018)
-						set_meta("fp_rotation_z", PI / 2.0)
+						set_meta("fp_floor_decal", true)
 					"ricochet":
 						glyph = "o"
 						color = Color(0.20, 1.0, 0.35)
@@ -194,6 +190,7 @@ func _ready() -> void:
 					"homing":
 						glyph = "^"
 						color = Color(1.0, 0.40, 0.80)
+						set_meta("fp_floor_decal", true)
 					"grenade":
 						glyph = "O"
 						color = Color(1.0, 0.45, 0.15)
@@ -226,13 +223,12 @@ func _ready() -> void:
 	# for in-room shots to land + pierce + AoE, but caps reach at ~2 rooms.
 	if shoot_type == "freeze":
 		lifetime = minf(lifetime, 1.2)
-	get_tree().create_timer(lifetime).timeout.connect(
-		func() -> void:
-			if not is_instance_valid(self): return
-			if shoot_type == "grenade":
-				_explode_grenade()
-			queue_free()
-	)
+	get_tree().create_timer(lifetime).timeout.connect(_on_lifetime_expired)
+
+func _on_lifetime_expired() -> void:
+	if shoot_type == "grenade":
+		_explode_grenade()
+	queue_free()
 
 func _unregister_from_rig() -> void:
 	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
@@ -264,11 +260,14 @@ func _apply_visual() -> void:
 			lbl.offset_right  =  18.0
 			lbl.offset_bottom =  18.0
 			lbl.add_theme_color_override("font_color", Color(0.55, 0.85, 1.0))
-			# Bigger collision rect — the visual width should match the hit
-			# area so the arc feels like it actually sweeps a wide arc.
+			# Give pierce its own shape instance rather than mutating the shared
+			# sub-resource (which would bleed 24×24 into every subsequent shot).
+			# Wide perpendicular to travel (24) but shorter forward reach (12).
 			var cshape := get_node_or_null("CollisionShape2D") as CollisionShape2D
-			if cshape != null and cshape.shape is RectangleShape2D:
-				(cshape.shape as RectangleShape2D).size = Vector2(24, 24)
+			if cshape != null:
+				var s := RectangleShape2D.new()
+				s.size = Vector2(12, 24)
+				cshape.shape = s
 		"ricochet":
 			lbl.text = "o"
 			lbl.add_theme_color_override("font_color", Color(0.15, 1.0, 0.28))

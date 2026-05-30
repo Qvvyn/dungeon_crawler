@@ -12,7 +12,7 @@ const FIRE_PATCH_SCRIPT = preload("res://scripts/FirePatch.gd")
 
 @export var move_speed: float         = 110.0
 @export var preferred_distance: float = 300.0
-@export var max_health: int           = 180  # 18 → 35 → 60 → 180 (3× across the board)
+@export var max_health: int           = 55   # 18 → 35 → 60 → 180 → 55 (was too tanky at T1)
 
 # Robe color pool — picked once at spawn so each wizard reads as a distinct
 # rival caster instead of all looking like the player. Avoids the player's

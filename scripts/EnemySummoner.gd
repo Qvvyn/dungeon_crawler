@@ -7,10 +7,10 @@ const FIRE_PATCH_SCRIPT = preload("res://scripts/FirePatch.gd")
 
 @export var move_speed: float      = 55.0
 @export var max_health: int        = 8   # doubled from 4
-@export var summon_interval: float = 6.0
+@export var summon_interval: float = 10.0
 
 const PREFERRED_DIST  := 290.0
-const MAX_MINIONS     := 5
+const MAX_MINIONS     := 3
 const SIGHT_RANGE     := 350.0
 const SIGHT_INTERVAL  := 0.25
 
@@ -305,6 +305,8 @@ func take_damage(amount: int) -> void:
 		else:
 			if elite_modifier == 2 and _split_scene != null:
 				_do_split()
+			if elite_modifier == 5:
+				EnemyBase.volatile_explosion(global_position, max_health, _player, get_tree().current_scene)
 			_maybe_drop_bag()
 		EffectFx.spawn_death_pop(global_position, get_tree().current_scene)
 		queue_free()
@@ -342,7 +344,10 @@ func _drop_gold_pickup() -> void:
 func _maybe_drop_bag() -> void:
 	if GameState.test_mode:
 		return
-	if (is_elite and randi() % 100 < 50) or randi() % 100 < 8:
+	var diff_extra: float = maxf(0.0, GameState.difficulty - 1.0)
+	var elite_chance: int = clampi(25 - int(diff_extra * 1.5), 8, 25)
+	var reg_chance: int   = clampi(5  - int(diff_extra * 0.3), 2,  5)
+	if (is_elite and randi() % 100 < elite_chance) or randi() % 100 < reg_chance:
 		var bag := LOOT_BAG_SCENE.instantiate()
 		bag.global_position = global_position + Vector2(randf_range(-20, 20), randf_range(-20, 20))
 		get_tree().current_scene.call_deferred("add_child", bag)

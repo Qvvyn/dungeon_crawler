@@ -3,7 +3,7 @@
 [ext_resource type="Script" path="res://scripts/Projectile.gd" id="1_proj"]
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_1"]
-size = Vector2(12, 6)
+size = Vector2(8, 4)
 
 [node name="Projectile" type="Area2D" groups=["projectile"]]
 script = ExtResource("1_proj")
@@ -13,10 +13,10 @@ shape = SubResource("RectangleShape2D_1")
 
 [node name="Visual" type="ColorRect" parent="."]
 visible = false
-offset_left = -6.0
-offset_top = -3.0
-offset_right = 6.0
-offset_bottom = 3.0
+offset_left = -4.0
+offset_top = -2.0
+offset_right = 4.0
+offset_bottom = 2.0
 color = Color(0.65, 0.1, 1.0, 1)
 
 [node name="AsciiChar" type="Label" parent="."]

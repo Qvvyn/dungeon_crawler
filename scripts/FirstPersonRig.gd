@@ -89,6 +89,11 @@ var _entity_root: Node3D   = null
 # body InstanceID → {body, label3d (Label3D), stored_glyph, stored_color, base_pixel_size}
 var _entities: Dictionary = {}
 
+# Hitbox wireframe debug mesh — rebuilt each frame when GameState.show_hitboxes
+var _hitbox_mesh: ImmediateMesh      = null
+var _hitbox_mi:   MeshInstance3D     = null
+var _hitbox_mat:  StandardMaterial3D = null
+
 var _grid: Array = []
 var _grid_w: int = 0
 var _grid_h: int = 0
@@ -137,6 +142,11 @@ var _interact_label: Label = null
 # post-shader pixelates the bar text along with everything else (instead
 # of the bar sitting crisp on the CanvasLayer above the ASCII view).
 var _hp_bars: Dictionary = {}     # enemy_id -> Label3D (LAYER_ENT)
+# Per-frame counter used to stagger raycasts across entities.
+var _frame_counter: int = 0
+# Cached wall-occlusion result per entity (key → bool). Recomputed on a
+# rolling 3-frame schedule so each entity raycasts once every 3 frames.
+var _occlusion_cache: Dictionary = {}
 
 # Camera shake — added on top of the normal cam_pos each frame and decays
 # linearly. Driven by `shake(duration, intensity)` from gameplay events the
@@ -202,15 +212,21 @@ func _build_scene() -> void:
 	container.anchor_bottom = 1.0
 	container.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
+	# Low-res mode: halve both viewport dimensions AND cell_px so the ASCII
+	# grid stays the same size on screen but the GPU renders 75% fewer pixels.
+	var vp_w: int   = VIEWPORT_W / 2 if GameState.fp_low_res else VIEWPORT_W
+	var vp_h: int   = VIEWPORT_H / 2 if GameState.fp_low_res else VIEWPORT_H
+	var cell: float = CELL_PX  / 2.0 if GameState.fp_low_res else CELL_PX
+
 	var mat := ShaderMaterial.new()
 	mat.shader = preload("res://shaders/ascii_post.gdshader")
-	mat.set_shader_parameter("cell_px", CELL_PX)
-	mat.set_shader_parameter("viewport_size", Vector2(VIEWPORT_W, VIEWPORT_H))
+	mat.set_shader_parameter("cell_px", cell)
+	mat.set_shader_parameter("viewport_size", Vector2(vp_w, vp_h))
 	container.material = mat
 	add_child(container)
 
 	_viewport = SubViewport.new()
-	_viewport.size = Vector2i(VIEWPORT_W, VIEWPORT_H)
+	_viewport.size = Vector2i(vp_w, vp_h)
 	_viewport.transparent_bg = false
 	_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	_viewport.handle_input_locally = false
@@ -242,7 +258,7 @@ func _build_scene() -> void:
 	add_child(container_ent)
 
 	_viewport_ent = SubViewport.new()
-	_viewport_ent.size = Vector2i(VIEWPORT_W, VIEWPORT_H)
+	_viewport_ent.size = Vector2i(vp_w, vp_h)
 	_viewport_ent.transparent_bg = true
 	_viewport_ent.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	_viewport_ent.handle_input_locally = false
@@ -269,6 +285,17 @@ func _build_scene() -> void:
 	# the post-shader).
 	_entity_root = Node3D.new()
 	_ent_world3d.add_child(_entity_root)
+
+	_hitbox_mesh = ImmediateMesh.new()
+	_hitbox_mat  = StandardMaterial3D.new()
+	_hitbox_mat.shading_mode              = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_hitbox_mat.vertex_color_use_as_albedo = true
+	_hitbox_mat.cull_mode                 = BaseMaterial3D.CULL_DISABLED
+	_hitbox_mi   = MeshInstance3D.new()
+	_hitbox_mi.mesh              = _hitbox_mesh
+	_hitbox_mi.material_override = _hitbox_mat
+	_hitbox_mi.layers            = LAYER_ENT
+	_ent_world3d.add_child(_hitbox_mi)
 
 	var env := WorldEnvironment.new()
 	var environment := Environment.new()
@@ -704,17 +731,35 @@ func _process(delta: float) -> void:
 		if cam_pos.distance_to(ent_3d) < 0.55 and str(body.get("source")) == "player":
 			lbl.visible = false
 			continue
-		# Wall occlusion — entity Label3Ds render in the no-shader viewport
-		# which doesn't include the wall meshes, so walls can't occlude
-		# them by depth. Raycast the wall grid; if blocked, hide the label.
+		# Distance cull — beyond 8 tiles, everything is wall-occluded in a
+		# dungeon anyway; skip the raycast entirely.
+		if cam_pos.distance_to(ent_3d) > 8.0:
+			lbl.visible = false
+			continue
+		# Wall occlusion — throttled to once every 3 frames per entity,
+		# staggered so the cost spreads evenly across frames.
 		var cam_tile := Vector2(_camera.global_position.x, _camera.global_position.z)
 		var ent_tile := Vector2(ent_3d.x, ent_3d.z)
-		var ray_hit_e: Vector2 = _raycast_to_grid(cam_tile, ent_tile)
-		if ray_hit_e.distance_to(ent_tile) > 0.05:
+		var is_occluded: bool = _occlusion_cache.get(key, false)
+		if (_frame_counter + key) % 3 == 0:
+			var ray_hit_e: Vector2 = _raycast_to_grid(cam_tile, ent_tile)
+			is_occluded = ray_hit_e.distance_to(ent_tile) > 0.05
+			_occlusion_cache[key] = is_occluded
+		if is_occluded:
 			lbl.visible = false
 			continue
 		lbl.visible = true
 		lbl.position = ent_3d
+		# Floor-decal entities lie flat (-PI/2 on X). If the body has a
+		# travel direction, rotate around Y so the glyph points along it.
+		if is_floor_decal:
+			var ry: float = 0.0
+			var dir_v: Variant = body.get("direction")
+			if dir_v is Vector2:
+				var d := dir_v as Vector2
+				if d.length_squared() > 0.001:
+					ry = -d.angle()
+			lbl.rotation = Vector3(-PI / 2.0, ry, 0.0)
 		# Manual camera-facing orientation for entities that need an
 		# in-plane Z rotation that Godot's shader-billboard would wipe.
 		# Used by the pierce projectile (")" rotated +PI/2 reads as ⌒).
@@ -892,6 +937,10 @@ func _process(delta: float) -> void:
 					to_cam.y = 0.0
 					if to_cam.length() > 0.001:
 						lbl.rotation = Vector3(0.0, atan2(to_cam.x, to_cam.z), 0.0)
+			else:
+				# Re-apply flat rotation each frame so nothing can accidentally
+				# reset a multi-line floor decal back to upright.
+				lbl.rotation = Vector3(-PI / 2.0, 0.0, 0.0)
 			for i in row_labels.size():
 				var row_lbl: Label3D = row_labels[i] as Label3D
 				if i < live_lines_arr.size():
@@ -933,6 +982,9 @@ func _process(delta: float) -> void:
 		if is_instance_valid(lbl_v2):
 			(lbl_v2 as Node).queue_free()
 		_entities.erase(key)
+		_occlusion_cache.erase(key)
+
+	_update_hitbox_mesh()
 
 	# Melee swoosh decay — auto-hides the punch label after MELEE_LIFE so
 	# the player doesn't see a stuck fist between strikes.
@@ -950,6 +1002,7 @@ func _process(delta: float) -> void:
 	# px (2.5 tiles) of the player whose children include a visible hint
 	# Label (text starts with "[" or matches portal "DEFEAT BOSS" / "DEFEAT
 	# WIZARD" gates). Surface that text on a centered FP CanvasLayer label.
+	_frame_counter += 1
 	_update_interact_hint(pp)
 	# Enemy health bars — project enemy positions to screen and draw a
 	# small bar above each one. Floor is occupied by hazards so bars sit
@@ -958,7 +1011,9 @@ func _process(delta: float) -> void:
 	# Floating damage text — re-projects each active text from its source
 	# world position so the labels stay glued to the enemy when the
 	# camera turns (was tweening screen-space, drifted off).
-	_update_floating_texts(delta)
+	# Updated every other frame — human eye can't tell at these timescales.
+	if _frame_counter % 2 == 0:
+		_update_floating_texts(delta)
 
 # Beam wand — a single blue 3D tube (cylinder) from the muzzle to end_pos2d.
 # Lives on LAYER_ENV so the ASCII post-shader converts it to glyphs (a solid
@@ -1237,97 +1292,53 @@ func spawn_ring_2d(pos_2d: Vector2, glyph: String, color: Color,
 		var end_pos := center + dir3d * end_radius
 		_spawn_fx_label(start_pos, glyph, color, pixel_size, end_pos, lifetime)
 
-# Chain arc — series of `count` glyphs along a jagged path from from_2d to
-# to_2d. Each label fades in place (no drift) so the arc reads as a single
-# lightning strike rather than a stream of particles.
+# Chain arc — jagged chain of Label3D glyphs in 3D world space between two
+# 2D positions. Zigzags through 4 intermediate waypoints with perpendicular
+# and vertical jitter, placing one glyph per waypoint and one at each
+# segment midpoint. Ends with burst impacts at both endpoints.
 func spawn_chain_arc_2d(from_2d: Vector2, to_2d: Vector2, color: Color,
 		_count_unused: int = 0, lifetime: float = 0.35, _jitter_unused: float = 0.0,
 		_pixel_unused: float = 0.0, y: float = 0.45, _glyph_unused: String = "") -> void:
-	# Segmented jagged 3D path — 4 short BoxMesh segments connecting the
-	# two endpoints through 3 jittered midpoint waypoints. Both vertical
-	# and horizontal-perpendicular jitter so the bolt snakes through 3D
-	# space instead of living on a single horizontal plane. The ASCII
-	# post-shader pixelates each segment into a stroke of dense chars;
-	# the assembled path reads as a real lightning bolt.
 	if not visible or _world3d == null or not is_instance_valid(_world3d):
 		return
 	var from_3d := Vector3(from_2d.x / TILE_PX, y, from_2d.y / TILE_PX)
-	var to_3d := Vector3(to_2d.x / TILE_PX, y, to_2d.y / TILE_PX)
-	var delta := to_3d - from_3d
-	var dist := delta.length()
-	if dist <= 0.01:
+	var to_3d   := Vector3(to_2d.x   / TILE_PX, y, to_2d.y   / TILE_PX)
+	var delta   := to_3d - from_3d
+	if delta.length() <= 0.01:
 		return
+	var perp := delta.cross(Vector3.UP)
+	perp = perp.normalized() if perp.length() > 0.0 else Vector3(1.0, 0.0, 0.0)
 
-	# v8 — Line2D inside the SubViewport so the ASCII post-shader pixelates
-	# it along with everything else (the v7 overlay on the CanvasLayer
-	# rendered crisp + clashed with the rest of the FP view's pixelated
-	# aesthetic). Project jagged 3D waypoints to SubViewport-space pixels
-	# via _camera.unproject_position(), then add the Line2D as a child of
-	# the SubViewport — 2D children render after the 3D pass but BEFORE
-	# the SubViewportContainer's shader stage, so the whole image gets
-	# pixelated together.
-	# Each bolt = 2 segments (one midpoint). When the chain hops between
-	# many enemies, N bolts × 4 midpoints used to spray vertical noise
-	# everywhere. One midpoint per bolt is enough to read as "lightning"
-	# without the cluttered zigzag stack.
-	const SEGMENTS: int = 2
-	const VERT_AMP: float = 1.0
-	const PERP_JITTER: float = 0.2
-
-	if _camera == null or not is_instance_valid(_camera):
-		return
-	if _viewport == null or not is_instance_valid(_viewport):
-		return
-
-	var perp := Vector3(-delta.z, 0.0, delta.x)
-	if perp.length() > 0.0:
-		perp = perp.normalized()
-	else:
-		perp = Vector3(1.0, 0.0, 0.0)
-
-	const Y_CEILING: float = 1.4   # cap so the bolt doesn't visibly go to the sky
-	const Y_FLOOR: float = -0.2    # bottom soft-cap; below this is below the floor
+	# Build zigzag waypoints alternating left/right of the straight path.
+	const N_SEGS: int = 4
 	var waypoints: Array[Vector3] = [from_3d]
-	var first_sign: float = 1.0 if randi() % 2 == 0 else -1.0
-	for i in (SEGMENTS - 1):
-		var base_t: float = float(i + 1) / float(SEGMENTS)
-		var t_nudge: float = randf_range(-0.06, 0.06)
-		var t: float = clampf(base_t + t_nudge, 0.10, 0.90)
+	var sign: float = 1.0 if randi() % 2 == 0 else -1.0
+	for i in range(1, N_SEGS):
+		var t: float = clampf(float(i) / float(N_SEGS) + randf_range(-0.04, 0.04), 0.05, 0.95)
 		var pt: Vector3 = from_3d.lerp(to_3d, t)
-		var vert_sign: float = first_sign if i % 2 == 0 else -first_sign
-		var vert_mag: float = VERT_AMP * randf_range(0.65, 1.0)
-		pt += perp * randf_range(-PERP_JITTER, PERP_JITTER)
-		pt += Vector3.UP * (vert_sign * vert_mag)
-		# Clamp y so the bolt's arc stays inside a believable height range —
-		# midpoints used to leap to y > 2.0 (well above ceiling) which read
-		# as the lightning teleporting into space.
-		pt.y = clampf(pt.y, Y_FLOOR, Y_CEILING)
+		pt += perp * (sign * randf_range(0.18, 0.38))
+		pt.y = clampf(pt.y + randf_range(-0.12, 0.22), 0.10, 1.4)
+		sign = -sign
 		waypoints.append(pt)
 	waypoints.append(to_3d)
 
-	var line := Line2D.new()
-	# Thicker line (in SubViewport-pixel space) so the shader's 8-px cells
-	# pick up the bolt as dense bright chars (~1 cell wide).
-	line.width = 2.0
-	line.default_color = color
-	line.antialiased = false
-	line.joint_mode = Line2D.LINE_JOINT_SHARP
-	line.begin_cap_mode = Line2D.LINE_CAP_ROUND
-	line.end_cap_mode = Line2D.LINE_CAP_ROUND
-	for wp in waypoints:
-		if _camera.is_position_behind(wp):
-			continue
-		line.add_point(_camera.unproject_position(wp))
-	if line.get_point_count() < 2:
-		line.queue_free()
-		return
-	# Sibling to _world3d under the SubViewport — the SubViewport renders
-	# all its children, and the post-shader is applied to the final
-	# composited image, so the Line2D gets pixelated alongside the 3D.
-	_viewport.add_child(line)
-	var tw := line.create_tween()
-	tw.tween_property(line, "modulate:a", 0.0, lifetime)
-	tw.tween_callback(line.queue_free)
+	# Place fading Label3Ds at each waypoint + each segment midpoint.
+	var glyphs := ["~", "Z", "z", "~", "Z", "~"]
+	const PS: float = 0.013
+	for i in range(waypoints.size() - 1):
+		var a: Vector3 = waypoints[i]
+		var b: Vector3 = waypoints[i + 1]
+		_spawn_fx_label(a, glyphs[i % glyphs.size()],           color, PS, a, lifetime)
+		_spawn_fx_label(a.lerp(b, 0.5), glyphs[(i + 2) % glyphs.size()], color, PS,
+				a.lerp(b, 0.5), lifetime)
+	_spawn_fx_label(waypoints[waypoints.size() - 1], "Z", color, PS,
+			waypoints[waypoints.size() - 1], lifetime)
+
+	# Burst impacts at both endpoints.
+	spawn_burst_2d(from_2d, "~", color, 4, 0.25, lifetime * 0.65,
+			Vector2.ZERO, TAU, 0.010, y)
+	spawn_burst_2d(to_2d,   "*", color, 5, 0.28, lifetime * 0.80,
+			Vector2.ZERO, TAU, 0.010, y)
 
 # ── Per-emitter persistent warning ring ──────────────────────────────────────
 # Mirrors the grenadier's 2D Polygon2D + Line2D danger zone. Each emitter
@@ -1473,16 +1484,20 @@ func _update_enemy_hp_bars() -> void:
 			lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
 			_ent_world3d.add_child(lbl)
 			_hp_bars[key] = lbl
-		# Position above the entity. Wall occlusion via raycast since
-		# camera_ent has no walls.
+		# Position above the entity. Wall occlusion via throttled raycast
+		# (1/3 of bars per frame, staggered by instance id).
 		var anchor_pos := Vector3(
 			enemy_2d.global_position.x / TILE_PX,
 			1.05,
 			enemy_2d.global_position.y / TILE_PX)
-		var cam_tile_hp := Vector2(_camera.global_position.x, _camera.global_position.z)
-		var ent_tile_hp := Vector2(anchor_pos.x, anchor_pos.z)
-		var ray_hp: Vector2 = _raycast_to_grid(cam_tile_hp, ent_tile_hp)
-		if ray_hp.distance_to(ent_tile_hp) > 0.05:
+		var is_hp_occluded: bool = _occlusion_cache.get(key, false)
+		if (_frame_counter + key) % 3 == 0:
+			var cam_tile_hp := Vector2(_camera.global_position.x, _camera.global_position.z)
+			var ent_tile_hp := Vector2(anchor_pos.x, anchor_pos.z)
+			var ray_hp: Vector2 = _raycast_to_grid(cam_tile_hp, ent_tile_hp)
+			is_hp_occluded = ray_hp.distance_to(ent_tile_hp) > 0.05
+			_occlusion_cache[key] = is_hp_occluded
+		if is_hp_occluded:
 			lbl.visible = false
 			continue
 		lbl.visible = true
@@ -1656,3 +1671,97 @@ func shake(duration: float, intensity_px: float) -> void:
 	_shake_t = duration
 	_shake_total = duration
 	_shake_intensity = new_amp
+
+# ── Hitbox debug wireframes ───────────────────────────────────────────────────
+
+func _update_hitbox_mesh() -> void:
+	_hitbox_mesh.clear_surfaces()
+	if not GameState.show_hitboxes or _entities.is_empty():
+		return
+	_hitbox_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	for entry in _entities.values():
+		var body: Node2D = entry["body"]
+		if not is_instance_valid(body):
+			continue
+		var color := _hitbox_color_for(body)
+		if body.is_in_group("fire_patch") and "_radius" in body:
+			_draw_fire_patch_ring(body, color)
+			continue
+		for child in body.get_children():
+			if child is CollisionShape2D:
+				_draw_hitbox_shape(child as CollisionShape2D, color)
+	_hitbox_mesh.surface_end()
+
+func _hitbox_color_for(body: Node2D) -> Color:
+	if body.is_in_group("player"):     return Color(0.2, 1.0, 0.3)
+	if body.is_in_group("enemy"):      return Color(1.0, 0.25, 0.25)
+	if body.is_in_group("fire_patch"): return Color(1.0, 0.70, 0.05)
+	if body is Area2D:                 return Color(1.0, 0.65, 0.1)
+	return Color(0.5, 0.85, 1.0)
+
+func _draw_hitbox_shape(cs: CollisionShape2D, color: Color) -> void:
+	var shape := cs.shape
+	if shape == null or cs.disabled:
+		return
+	var cx  := cs.global_position.x / TILE_PX
+	var cz  := cs.global_position.y / TILE_PX
+	var rot := cs.global_rotation
+	const Y0 := 0.05
+	const Y1 := 0.95
+	_hitbox_mesh.surface_set_color(color)
+	if shape is RectangleShape2D:
+		var h := (shape as RectangleShape2D).size * 0.5 / TILE_PX
+		var corners: Array[Vector2] = [
+			Vector2(-h.x, -h.y).rotated(rot),
+			Vector2( h.x, -h.y).rotated(rot),
+			Vector2( h.x,  h.y).rotated(rot),
+			Vector2(-h.x,  h.y).rotated(rot),
+		]
+		for i in 4:
+			var a := corners[i]
+			var b := corners[(i + 1) % 4]
+			# bottom edge
+			_hitbox_mesh.surface_add_vertex(Vector3(cx + a.x, Y0, cz + a.y))
+			_hitbox_mesh.surface_add_vertex(Vector3(cx + b.x, Y0, cz + b.y))
+			# top edge
+			_hitbox_mesh.surface_add_vertex(Vector3(cx + a.x, Y1, cz + a.y))
+			_hitbox_mesh.surface_add_vertex(Vector3(cx + b.x, Y1, cz + b.y))
+			# vertical pillar
+			_hitbox_mesh.surface_add_vertex(Vector3(cx + a.x, Y0, cz + a.y))
+			_hitbox_mesh.surface_add_vertex(Vector3(cx + a.x, Y1, cz + a.y))
+	elif shape is CircleShape2D:
+		var r := (shape as CircleShape2D).radius / TILE_PX
+		const N := 16
+		for i in N:
+			var a0 := TAU * float(i)       / N
+			var a1 := TAU * float(i + 1)   / N
+			var p0 := Vector2(cos(a0), sin(a0)) * r
+			var p1 := Vector2(cos(a1), sin(a1)) * r
+			# bottom ring
+			_hitbox_mesh.surface_add_vertex(Vector3(cx + p0.x, Y0, cz + p0.y))
+			_hitbox_mesh.surface_add_vertex(Vector3(cx + p1.x, Y0, cz + p1.y))
+			# top ring
+			_hitbox_mesh.surface_add_vertex(Vector3(cx + p0.x, Y1, cz + p0.y))
+			_hitbox_mesh.surface_add_vertex(Vector3(cx + p1.x, Y1, cz + p1.y))
+		# 4 vertical pillars at cardinal points
+		for i in [0, 4, 8, 12]:
+			var a  := TAU * float(i) / N
+			var px := cx + cos(a) * r
+			var pz := cz + sin(a) * r
+			_hitbox_mesh.surface_add_vertex(Vector3(px, Y0, pz))
+			_hitbox_mesh.surface_add_vertex(Vector3(px, Y1, pz))
+
+func _draw_fire_patch_ring(body: Node2D, color: Color) -> void:
+	var cx := body.global_position.x / TILE_PX
+	var cz := body.global_position.y / TILE_PX
+	var r  := float(body.get("_radius")) / TILE_PX
+	const N    := 24
+	const Y_FL := 0.05
+	_hitbox_mesh.surface_set_color(color)
+	for i in N:
+		var a0 := TAU * float(i)       / N
+		var a1 := TAU * float(i + 1)   / N
+		var p0 := Vector2(cos(a0), sin(a0)) * r
+		var p1 := Vector2(cos(a1), sin(a1)) * r
+		_hitbox_mesh.surface_add_vertex(Vector3(cx + p0.x, Y_FL, cz + p0.y))
+		_hitbox_mesh.surface_add_vertex(Vector3(cx + p1.x, Y_FL, cz + p1.y))

@@ -76,6 +76,7 @@ func _ready() -> void:
 	_patch.modulate = Color(1.0, 1.0, 1.0, 0.85)
 	_patch.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_patch)
+	add_to_group("fire_patch")
 
 func _process(delta: float) -> void:
 	_life -= delta
