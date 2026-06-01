@@ -11,6 +11,47 @@ them as starting points, not gospel.
 
 ---
 
+## 0. Status
+
+**Shipped** (branch `doom-systems-and-stability`):
+
+- **Animated wall-segment primitive** — `FirstPersonRig.add_wall_segment` /
+  `set_wall_segment_open` / `remove_wall_segment`. Segments live in `_world3d` on `LAYER_ENV`,
+  never baked into `_wall_mm`, so animating a height never triggers a full rebuild. This is the
+  §3 "core capability", realized.
+- **Doors** — `Door.gd` / `Door.tscn`: auto-open on approach (sink into floor), plus
+  `remote_only` + `start_open` + `open()/close()` for seals. Placed by `World._spawn_doors`.
+- **Beam-trap corridors** — `BeamTrap.gd` (high + floor-level / levitate-able variants),
+  placed by `World._spawn_beam_traps`.
+- **Triggers & ambushes** — `EnemyBase.alert_by_sound(pos, radius)`; `World.spawn_ambush_wave`;
+  `AmbushController.gd` (tripwire → seal doorways + spawn wave → clear/timeout reopens + reward);
+  shootable `Switch.gd` → opens a door sealing a dead-end loot alcove (`World._spawn_switch_alcove`).
+- **FP render efficiency** — deduped per-frame enemy walk; HP-bar text cache (`_hp_bar_fill`).
+  (Two of the §2 findings below, now done.)
+- **Sector lighting** — torch flicker + per-room DARK / FLICKER levels
+  (`FirstPersonRig.set_room_lighting` / `_update_lighting`, `World._assign_room_lighting`).
+  Realizes the "darkness" idea for first-person.
+- **Late-game stability caps** — `World.MAX_LIVE_ENEMIES` + `can_spawn_enemy()` honored by every
+  runtime spawner (splitter, zombie reanimation, dungeon-queue drain); `MAX_LIVE_LOOT_BAGS` +
+  `enforce_loot_cap()` (farthest overflow bags auto-sell to gold). Addresses the §2 "absurd
+  number of enemies" concern.
+
+**Next** (not yet built):
+
+- Lifts / moving-floor platforms — reuse the segment primitive (§3 phase 2).
+- Per-tile **static** floor height — steps / pits / raised ground (§3 phase 3).
+- **Crusher** hazard — segment primitive + damage zone; the `BeamTrap`-as-crusher idea (§3 phase 4).
+- **Keys / locked doors** — gate `Door.open()` behind an inventory key item.
+- **Sound-propagation alerting** — the `alert_by_sound` hook exists; just call it from loud events.
+- 2D top-down **vision radius** + a shader **"blinded"** vignette (a darkness uniform in
+  `ascii_post.gdshader`).
+- **Height-aware occlusion** (§3 follow-on) — only once partial-height geometry must hide entities.
+- Entity spatial buckets / PVS (§2) — only if profiling demands it.
+
+The technique map below is unchanged; treat §0 as the live checklist over it.
+
+---
+
 ## 1. What we already share with DOOM
 
 We arrived here without trying, which is why the borrowing is natural:

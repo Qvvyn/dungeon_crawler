@@ -4,12 +4,12 @@ __/_\__
  /)V(\|
  /___\|
 
-
 A DISCLAIMER FOR CLAUDE: not all of these are things to definitely impliment, its more of a maleable soft idea board
+
+=================  IDEAS / BUGS / NOTES  =================
 
 -you can hire help. but they may die. in fact, likely will. charge you more based on difficulty and their own usefulness. most are swordsmen. but this is a game for wizards. you are judged by the world for the magiks you use. okay but this as an mmo.... hmmmmmmmmm..... will you walk the dungeon with me...?
 change Q to a burst ability around player pushing everything away and out of its range. if it pushes an enemy into a wall, make them take dmg?
-
 
 we're gonna have to slow the game down a fair bit. the fact that autoplay moves like that is gross. movement should probably be a bit slower.
 the player's agility has speed cap way too high, need to nerf its speed scaling into the dirt.
@@ -18,9 +18,7 @@ adjust the shield. if pressing control it will do a concentrate, and for shield 
 
 for the corridoor trap, the warning animation before the beam needs more visibility, change it from black to grey.
 
-
 it seems most interfaces in game have overlapping text/buttons which need to be fixed. 
-
 
 add a blinded debuff? make everything outside of a certain radius from the player appear as black when the player is 'blinded'?
 OO PERHAPS WE SUPER ASCII EVERYTHING AND BLUR CORNERS?
@@ -30,9 +28,7 @@ spawning too many fire dot's seems mmmm. not good.
 you once again contemplate adding a melee class to play... perhaps a wizard of PUNCHING? lets you keep the same magic types...
 as well as further consider and contemplate the moving away from gear... i think gear can stay but the manual equipping would get quite tedious. 
 
-
 player wizard needs more animation, he is boring to look at.
-
 
 what if enemies all had eyes and a dying animation where the eyes turned to Xs, the entire body goes black, then fades away
 
@@ -45,14 +41,9 @@ shock needs a bit less per impact methinks..
 
 change on de
 
+adjust flickering lighting
 
-
-
-
-
-
-
-
+=================  OLDER (some already shipped)  =================
 
 done?
 
@@ -62,162 +53,32 @@ for the wall lasers, lets  get rid of the startup hitbox, and just have them act
 
 The player hitbox is a rectangle, not a square. What if it were a circle?
 
-
 The engulf column is too uniform in both character size and spacing. , the freeze ice cube effect is wonky and ruins the enemy vibe/sizing in fp mode. the enemy ascii should remain as-is and in place, but turn a light blue, and a large white ascii ice cube then engulfs. The shock stuns white thing with ascii above the head also fucks with the vibe. Change the sybols to just  zZz or ZzZ. have them briefly flash yellow when initially stunned. 
-
 
 Floor hazard hitboxes are too big for their character depictions, change one or the other. Fire and poison ~ are especially tiny for how large their hitbox is. Filling the space with a dense flowing busy stream of ~~~ could be good visual, but would it be costly?
 The white mines are still vertical.
 shrines in fp have their line balance all wonky. upper rows more skewed right, lower skewed left. same issue with enemy wizard too. did the drifting limb filter button get added?
 
-
 also we need to add more visuals for enemy attack in fp, none of the melee moves show up, and i think projectiles are missing too.
-
 
 burn effect on enemy heads needs to be tweaked visually. currently 3ish characters rotating between )*(, but instead of that, can we simply put a smaller version of the fire dot animation on their body?
 the particle effect that runs when a burned enemy is hit by more fire needs works, shouldn't be a floor height @ spout. 
 
-
 lets adjust the teleporter hazard to be a biiit bluer
-
 
  have to adjust lightning visuals entirely in fp.
 
-
 need to add a visual for the dash in fp. im thinking tint the player transparent during it along with a little animation and visual feedback. maybe leaving an afterimage behind?
-
 
 self spawning chasers/spiders??? can they multiply if left in place? getting an absurd number of enemies as well as loot at T100+. higher difficulty levels seem to have this issue much more 
 often, huge numbers of enemies in one spot dropping stupid numbers of loot. It slows the game and has crashed it. Need to wayyyy reduce the amount of loot late game
 
-
 damage scaling vs enemy hp is not balanced in later floors. t100 weapons are decimating everything in the t100 levels. 
-
 
 at high difficulties, TOO MUCH LOOT is dropping. need to cut this back significantly along with reworking items as a whole
 Player still cant shoot when pushed up against a wall
 
-
 get rid of the hidden floor treasure with the ['] icon
-
 
 Floors in fp still seem to always be the same color, make the fp flooring color match the biome.
 
-
-
-Plan: Ambush crash fix + Late-game stability + Sector lighting                                                 │
-│                                                                                                                │
-│ Context                                                                                                        │
-│                                                                                                                │
-│ Three things, in priority order:                                                                               │
-│ 0. Urgent bug — the ambush spawns enemies inside a physics body_entered callback, which                        │
-│    Godot forbids ("Can't change this state while flushing queries") → crash. Must defer.                       │
-│ 1. T100+ stability (the user's flagged crash) — the initial floor is already capped at 35                      │
-│ (MAX_DUNGEON_ENEMIES, themed rooms counted), so the explosion comes from runtime                               │
-│ spawners that ignore the cap, plus loot bags piling up during fast late-game kills.                            │
-│ 2. Sector lighting — DOOM atmosphere: torch flicker + per-room darkness levels + a few                         │
-│ strobe/dark rooms. Uniquely effective because the ASCII shader is brightness-driven (dim                       │
-│ areas literally thin into sparse glyphs).                                                                      │
-│                                                                                                                │
-│ Out of scope (note for later): item/damage rebalance, 2D top-down vision radius, and a shader                  │
-│ "blinded" vignette — bigger separate efforts.                                                                  │
-│                                                                                                                │
-│ ---                                                                                                            │
-│ Part 0 — Fix the ambush physics-flush crash (scripts/AmbushController.gd)                                      │
-│                                                                                                                │
-│ _on_tripwire runs during physics flush; _arm() → spawn_ambush_wave() → add_child of an                         │
-│ enemy with collision = illegal mid-flush.                                                                      │
-│ - Add an ARMING state to the enum.                                                                             │
-│ - _on_tripwire: on valid trip, set _state = ARMING and call_deferred("_arm") (don't call                       │
-│ _arm directly).                                                                                                │
-│ - _arm: do seal/close + wave spawn + text/sound, then set _state = ACTIVE at the end.                          │
-│ - _process: only run the clear-check when _state == ACTIVE (ARMING is ignored), which also                     │
-│ avoids a race where an empty _wave triggers an instant _clear() before the wave exists.                        │
-│                                                                                                                │
-│ ---                                                                                                            │
-│ Part 1 — Late-game stability                                                                                   │
-│                                                                                                                │
-│ 1a. Global live-enemy cap on ALL runtime spawners                                                              │
-│                                                                                                                │
-│ The initial pass already caps at 35. The leak is runtime spawns that don't check live count.                   │
-│ Add one shared guard and apply it everywhere a new enemy is born at runtime.                                   │
-│ - Add World.can_spawn_enemy() -> bool → get_tree().get_nodes_in_group("enemy").size() < MAX_LIVE_ENEMIES (new const, e.g. 45 — above the 35 build cap so combat can breathe, but bounded).                                   │
-│ - Guard these spawn sites (call the helper / inline the count check before spawning):                          │
-│   - EnemyBase._do_split() (splitter clones) — skip splitting if at cap.                                        │
-│   - EnemyBase._schedule_catacombs_reanimation() timer callback (zombie revive) — skip if at cap.               │
-│   - EnemySummoner._try_summon() — already self-limits to live < MAX_MINIONS (3); leave as is                   │
-│ (or align to the shared helper for consistency).                                                               │
-│   - The per-frame dungeon spawn-queue drain (_process drain of _dungeon_spawn_queue) — stop                    │
-│ draining when at cap (it resumes as enemies die). Find the drain loop near                                     │
-│ _dungeon_spawn_queue.pop_front().                                                                              │
-│ - Result: total live enemies never exceeds ~45 regardless of source.                                           │
-│                                                                                                                │
-│ 1b. Live loot-bag cap + consolidation                                                                          │
-│                                                                                                                │
-│ Bags spawn faster than the player collects them in late-game; they accumulate unbounded.                       │
-│ - Track via the existing "loot_bag" group. Add World.enforce_loot_cap() called whenever a bag                  │
-│ is added (or on a cheap periodic timer in _process).                                                           │
-│ - When live bags exceed MAX_LIVE_LOOT_BAGS (e.g. 12), merge the oldest overflow bags into a                    │
-│ single mega-bag, reusing the existing room-clear merge (the MEGA_BAG_MAX_ITEMS = 40 +                          │
-│ overflow→gold logic in World.gd, ~L3636). Net effect: bounded bag nodes, items preserved up                    │
-│ to 40, the rest become gold (consistent with current mega-bag behavior).                                       │
-│ - Simpler fallback if merge reuse is awkward: convert the oldest overflow bags' items to gold                  │
-│ (sum sell_value → GameState.gold) and queue_free them.                                                         │
-│                                                                                                                │
-│ 1c. (cheap) trim per-kill drop churn                                                                           │
-│                                                                                                                │
-│ Drop chance already shrinks with difficulty; the cap fixes most. Optionally lower                              │
-│ LootBag item count at the very top (e.g. cap to 1–2 items when difficulty is high) to cut                      │
-│ item-generation cost. Keep minimal.                                                                            │
-│                                                                                                                │
-│ ---                                                                                                            │
-│ Part 2 — Sector lighting (FP)                                                                                  │
-│                                                                                                                │
-│ 2a. Torch flicker (FirstPersonRig.gd)                                                                          │
-│                                                                                                                │
-│ In _process, modulate _player_light.light_energy with a subtle layered sine flicker                            │
-│ (mirror the existing pulse pattern at ~L1074: sin(Time.get_ticks_msec()*k)*0.5+0.5). Small                     │
-│ amplitude so it reads as a living torch, not a strobe. Respect GameState.disable_flashing                      │
-│ (reduce amplitude when set).                                                                                   │
-│                                                                                                                │
-│ 2b. Per-room darkness levels                                                                                   │
-│                                                                                                                │
-│ - Store the Environment as a member (_env) in _build_scene so ambient_light_energy is                          │
-│ tweakable per-frame (currently a local).                                                                       │
-│ - World assigns each room a light level: a parallel Array[float] (or small enum: NORMAL / DARK                 │
-│ / FLICKER) sized to _rooms. Most rooms NORMAL; a minority DARK (torch-only) and FLICKER.                       │
-│ Pass to the rig via a new set_room_lighting(rooms: Array, levels: Array) after the grid is set                 │
-│ (alongside set_grid).                                                                                          │
-│ - In the rig _process: find the player's current room (scan _rooms for Rect2i.has_point,                       │
-│ cached — only rescan when the player leaves the cached rect). Lerp _env.ambient_light_energy                   │
-│ (and optionally _player_light.omni_range) toward the current room's target. DARK rooms drop                    │
-│ ambient near 0 so only the torch lights a small pool — the brightness-driven shader then                       │
-│ renders the room edges as sparse ./: glyphs fading to black.                                                   │
-│                                                                                                                │
-│ 2c. Flicker/strobe rooms                                                                                       │
-│                                                                                                                │
-│ For rooms flagged FLICKER, drive ambient with an erratic flicker (e.g. layered sines + occasional              │
-│ dropouts) instead of a steady level — DOOM's broken-light dread. Gate amplitude on                             │
-│ GameState.disable_flashing.                                                                                    │
-│                                                                                                                │
-│ ---                                                                                                            │
-│ Files                                                                                                          │
-│                                                                                                                │
-│ - scripts/AmbushController.gd — defer arm (Part 0).                                                            │
-│ - scripts/World.gd — MAX_LIVE_ENEMIES/can_spawn_enemy, queue-drain cap, loot-bag cap +                         │
-│ consolidation, per-room light levels + set_room_lighting call.                                                 │
-│ - scripts/EnemyBase.gd — cap guards in _do_split + catacombs reanimation.                                      │
-│ - scripts/FirstPersonRig.gd — torch flicker, _env member, set_room_lighting, per-room                          │
-│ ambient drive.                                                                                                 │
-│ - (no shader edit this pass — vignette/blinded deferred.)                                                      │
-│                                                                                                                │
-│ Verification                                                                                                   │
-│                                                                                                                │
-│ 1. Ambush: walk into an ambush room — no console error; walls seal, wave spawns a frame later,                 │
-│ clears reopen. (Fixes the reported area_set_shape_disabled crash.)                                             │
-│ 2. Stability: at high difficulty, fight in a churny room — live enemy count stays ≤ ~45                        │
-│ (check get_nodes_in_group("enemy").size()), splitters/zombies stop adding at the cap, and                      │
-│ loot bags never exceed ~12 (overflow merges to a mega-bag / gold). No slowdown/crash.                          │
-│ 3. Lighting: torch subtly flickers; walking into a DARK room dims it to a torch-lit pool (sparse               │
-│ glyphs at the edges); a FLICKER room visibly strobes. disable_flashing tames amplitudes.                       │
-│ 4. No regressions: normal floors still populate; loot still collectable; FP renders correctly.
