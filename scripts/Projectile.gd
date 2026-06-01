@@ -70,6 +70,13 @@ var _did_freeze_aoe: bool    = false
 # still collide normally. Populated on the first physics frame.
 var _spawn_overlap_walls: Dictionary = {}
 var _spawn_overlap_checked: bool = false
+# Monster infighting — enemy shots chip OTHER enemies (DOOM-style), but bounded:
+# half damage, one victim per shot, bosses immune, no AI hijack, and the shooter
+# is skipped via the spawn-overlap set below. Flip ENABLED off to restore the old
+# "enemy shots ignore enemies" behavior.
+const INFIGHTING_ENABLED: bool = true
+const INFIGHT_DAMAGE_MULT: float = 0.5
+var _spawn_overlap_enemies: Dictionary = {}   # write-once: enemies (≈the shooter) this shot ignores
 
 func _ready() -> void:
 	# Homing's "^" glyph natively points up (-Y), so the body needs an
@@ -491,6 +498,33 @@ func _on_body_entered(body: Node2D) -> void:
 	if source == "player" and body.is_in_group("player"):
 		return
 	if source == "enemy" and body.is_in_group("enemy"):
+		# Monster infighting — controlled friendly fire. Enemies still target the
+		# player (take_damage just wakes the victim); shots only chip neighbours.
+		if not INFIGHTING_ENABLED:
+			return
+		var inf_id := body.get_instance_id()
+		# An enemy overlapped at spawn (almost always the shooter) is recorded
+		# once and ignored for this shot's whole life — no self-kills.
+		if _spawn_overlap_enemies.has(inf_id):
+			return
+		if not _spawn_overlap_checked:
+			_spawn_overlap_enemies[inf_id] = true
+			return
+		# Bosses are immune so adds can't trivialize boss fights (shot passes through).
+		if body.is_in_group("boss"):
+			return
+		if inf_id in _hit_entities:
+			return
+		_hit_entities.append(inf_id)
+		var inf_dmg: int = maxi(1, int(round(float(damage) * INFIGHT_DAMAGE_MULT)))
+		if body.has_method("take_damage"):
+			body.set_meta("_infight_victim", true)   # suppresses the loot bag IF this kills it
+			body.take_damage(inf_dmg)
+			# Survived? Clear the mark so a later PLAYER kill still drops loot.
+			if is_instance_valid(body) and not body.is_queued_for_deletion():
+				body.set_meta("_infight_victim", false)
+		# One victim per shot — no mowing down a whole cluster.
+		queue_free()
 		return
 
 	# Wall hit handled by CCD raycast above; fallback for slow projectiles

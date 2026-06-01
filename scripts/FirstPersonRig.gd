@@ -797,12 +797,15 @@ func _process(delta: float) -> void:
 	# damage still work, which is what produced the "healthbars moving toward
 	# me with no sprite" report. The rig's live-glyph sync reads AsciiChar.text
 	# each frame, so any placeholder glyph works at registration time.
-	for e: Node in enemies:
-		if not is_instance_valid(e) or not (e is Node2D):
-			continue
-		if _entities.has(e.get_instance_id()):
-			continue
-		register_entity(e as Node2D, "D", Color(0.95, 0.28, 0.22))
+	# Catching unregistered stragglers only needs to happen "soon", not every
+	# frame — throttle the O(enemies) walk to 1/10 frames (still ~6×/sec).
+	if _frame_counter % 10 == 0:
+		for e: Node in enemies:
+			if not is_instance_valid(e) or not (e is Node2D):
+				continue
+			if _entities.has(e.get_instance_id()):
+				continue
+			register_entity(e as Node2D, "D", Color(0.95, 0.28, 0.22))
 
 	# Entity sync — pull live glyph + status modulate from each body's
 	# AsciiChar each frame so 2-frame animations + status tints carry into FP.
@@ -902,6 +905,7 @@ func _process(delta: float) -> void:
 		# Live glyph + modulate from body's AsciiChar.
 		var stored_glyph: String = entry["stored_glyph"]
 		var stored_color: Color = entry["stored_color"]
+		var kind: String = entry.get("kind", "body")
 		var live_text: String = stored_glyph
 		var live_modulate := Color(1, 1, 1, 1)
 		var ascii_child: Node = body.get_node_or_null("AsciiChar")
@@ -916,7 +920,6 @@ func _process(delta: float) -> void:
 			# (nova swaps + ↔ x). Static-glyph projectiles like pierce keep
 			# their FP-specific stored_glyph instead of being clobbered by
 			# the 2D AsciiChar.text.
-			var kind: String = entry.get("kind", "body")
 			var allow_text_sync: bool = (kind == "body") or bool(body.get_meta("fp_animate", false))
 			if allow_text_sync and al.text != "":
 				var allow_multiline: bool = bool(body.get_meta("fp_multiline", false)) \
@@ -935,7 +938,9 @@ func _process(delta: float) -> void:
 		# their glyph above the entity.
 		var status_modulate := Color(1, 1, 1, 1)
 		var has_status := false
-		var frozen_child := body.get_node_or_null("FrozenBlock") as Label
+		# Status overlays only exist on "body" entities (enemies/player) — skip
+		# the sibling lookups entirely for projectiles, sparks, and floor decals.
+		var frozen_child: Label = (body.get_node_or_null("FrozenBlock") as Label) if kind == "body" else null
 		if frozen_child != null and frozen_child.text != "":
 			# Enemy art stays unchanged -- just apply ice-blue tint.
 			status_modulate = Color(0.72, 0.92, 1.0)
@@ -963,9 +968,9 @@ func _process(delta: float) -> void:
 				if is_instance_valid(_ice_cubes[key]):
 					(_ice_cubes[key] as Node).queue_free()
 				_ice_cubes.erase(key)
-			var enflame_child := body.get_node_or_null("EnflameOverlay") as Label
-			var electric_child := body.get_node_or_null("ElectricBolt") as Label
-			var poison_child := body.get_node_or_null("PoisonOverlay") as Label
+			var enflame_child: Label = (body.get_node_or_null("EnflameOverlay") as Label) if kind == "body" else null
+			var electric_child: Label = (body.get_node_or_null("ElectricBolt") as Label) if kind == "body" else null
+			var poison_child: Label = (body.get_node_or_null("PoisonOverlay") as Label) if kind == "body" else null
 			var status_lines: Array[String] = []
 			if electric_child != null and electric_child.text != "" and electric_child.modulate.a > 0.0:
 				status_lines.append(electric_child.text)
@@ -993,12 +998,21 @@ func _process(delta: float) -> void:
 			base_ps = float(body.get_meta("fp_pixel_size"))
 		else:
 			base_ps = _pixel_size_for(entry.get("kind", "body"))
+		# Cache the newline split — most entities' glyph is identical frame to
+		# frame, so this skips a per-entity allocation + parse every frame.
+		var split_lines: Array
+		if entry.has("_split_src") and entry["_split_src"] == live_text:
+			split_lines = entry["_split_arr"] as Array
+		else:
+			split_lines = Array(live_text.split("\n"))
+			entry["_split_src"] = live_text
+			entry["_split_arr"] = split_lines
 		if is_multiline:
 			# Per-row Label3D rendering. Each child centers its own line
 			# independently — no per-line drift from a shared multi-line
 			# bbox. Dynamic resize: status overlays (ice block, burn/shock
 			# stack) can grow the line count past the registered art.
-			var live_lines_arr: Array = live_text.split("\n")
+			var live_lines_arr: Array = split_lines
 			var row_labels: Array = entry.get("line_labels", [])
 			# Per-row pixel_size = base / row_count so the whole stack fits
 			# in roughly the same vertical envelope as a single-line entity.
@@ -1092,11 +1106,11 @@ func _process(delta: float) -> void:
 			var sl: Label3D = lbl as Label3D
 			sl.text = live_text
 			sl.modulate = final_modulate
-			var line_count: int = live_text.count("\n") + 1
+			var line_count: int = split_lines.size()
 			# Also factor in the width of the widest row so that 5-char-wide
 			# multi-row art doesn't render twice as wide as a single-char enemy.
 			var max_col: int = 1
-			for ln: String in live_text.split("\n"):
+			for ln: String in split_lines:
 				max_col = maxi(max_col, ln.strip_edges().length())
 			var dim_scale: float = maxf(float(line_count), float(max_col))
 			sl.pixel_size = base_ps / dim_scale

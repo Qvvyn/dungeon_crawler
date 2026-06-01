@@ -549,6 +549,10 @@ func _drop_gold_pickup() -> void:
 func _maybe_drop_bag() -> void:
 	if GameState.test_mode:
 		return
+	# Enemies finished off by monster infighting drop no loot bag (XP/gold still
+	# flow) so "let them kill each other" can't be AFK-farmed for items.
+	if get_meta("_infight_victim", false):
+		return
 	var diff_extra: float = maxf(0.0, GameState.difficulty - 1.0)
 	var elite_chance: int = clampi(25 - int(diff_extra * 1.5), 8, 25)
 	var reg_chance: int   = clampi(5  - int(diff_extra * 0.3), 2,  5)
