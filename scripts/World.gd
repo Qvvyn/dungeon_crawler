@@ -225,6 +225,7 @@ var _dungeon_spawn_burst_t: float = 0.0
 # Periodic cleanup of any enemy that drifted into a wall tile
 var _oob_cleanup_t: float = 4.0
 var _loot_cap_t: float = 1.0
+var _room_check_t: float = 0.0   # throttles the per-frame room-clear enemy scan
 var _test_check_timer: float   = 0.0
 var _test_cleanup_timer: float = 0.0
 var _test_arena_room: Rect2i   = Rect2i()
@@ -294,6 +295,9 @@ func _ready() -> void:
 	# menu held the tree paused, the next floor would load frozen (every enemy
 	# inert). Always start a fresh level running.
 	get_tree().paused = false
+	# Reset FloatingText's static active-count — floaters mid-animation when the
+	# previous floor was freed never fired their release callback.
+	FloatingText.reset()
 	var _hitbox_canvas := CanvasLayer.new()
 	_hitbox_canvas.layer = 50
 	_hitbox_canvas.follow_viewport_enabled = false
@@ -3779,14 +3783,20 @@ func _process(delta: float) -> void:
 		_loot_cap_t = 1.0
 		enforce_loot_cap()
 
+	# Room-clear detection — sampled ~4×/sec instead of every frame (the scan
+	# allocates an enemy-group array; clear-detection a quarter-second late is
+	# imperceptible behind the converge animation).
 	if not _room_cleared and not _is_test_mode:
-		var enemy_count := get_tree().get_nodes_in_group("enemy").size()
-		if not _had_enemies:
-			if enemy_count > 0:
-				_had_enemies = true
-		elif enemy_count == 0:
-			_room_cleared = true
-			_on_room_cleared()
+		_room_check_t -= delta
+		if _room_check_t <= 0.0:
+			_room_check_t = 0.25
+			var enemy_count := get_tree().get_nodes_in_group("enemy").size()
+			if not _had_enemies:
+				if enemy_count > 0:
+					_had_enemies = true
+			elif enemy_count == 0:
+				_room_cleared = true
+				_on_room_cleared()
 
 	if _minimap_dot == null:
 		return
