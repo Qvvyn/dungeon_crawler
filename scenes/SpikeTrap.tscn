@@ -2,14 +2,14 @@
 
 [ext_resource type="Script" path="res://scripts/SpikeTrap.gd" id="1_spike"]
 
-[sub_resource type="RectangleShape2D" id="RectangleShape2D_spike"]
-size = Vector2(28, 28)
+[sub_resource type="CircleShape2D" id="CircleShape2D_spike"]
+radius = 12.0
 
 [node name="SpikeTrap" type="Area2D"]
 script = ExtResource("1_spike")
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
-shape = SubResource("RectangleShape2D_spike")
+shape = SubResource("CircleShape2D_spike")
 
 [node name="AsciiChar" type="Label" parent="."]
 z_index = 1
@@ -21,4 +21,4 @@ text = "·"
 horizontal_alignment = 1
 vertical_alignment = 1
 theme_override_font_sizes/font_size = 14
-theme_override_colors/font_color = Color(0.32, 0.26, 0.20, 0.55)
+theme_override_colors/font_color = Color(0.90, 0.90, 0.90, 0.75)

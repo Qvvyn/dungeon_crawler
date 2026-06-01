@@ -13,8 +13,8 @@ extends Label
 
 const PULSE_TIME := 0.35
 const GAP_TIME   := 0.40
-const BOLT_F0    := "*Z*"
-const BOLT_F1    := "~Z~"
+const BOLT_F0    := "zZz"
+const BOLT_F1    := "ZzZ"
 
 # Owner-side state — kept on the overlay node so the host doesn't need
 # any new fields to participate.
@@ -69,6 +69,13 @@ func _ready() -> void:
 	_in_pulse = true
 	if is_instance_valid(_host):
 		_host.set("_stun_timer", maxf(float(_host.get("_stun_timer")), PULSE_TIME))
+	# FP: brief yellow Z burst when stun first lands
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("spawn_burst_2d"):
+		var parent_body := get_parent() as Node2D
+		if is_instance_valid(parent_body):
+			GameState.active_rig.spawn_burst_2d(parent_body.global_position, "Z",
+				Color(1.0, 0.95, 0.15), 4, 0.35, 0.20, Vector2.ZERO, TAU, 0.010, 0.55)
 
 func _process(delta: float) -> void:
 	# Glyph flicker — fast frame swap so the bolt looks alive even during

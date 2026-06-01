@@ -205,7 +205,7 @@ func _arm_puddle(holder: Node2D) -> void:
 		lava.set("lifetime", 4.0)
 		lava.set("burn_damage", 3)
 		lava.set("burn_interval", 0.5)
-		lava.set("tile_radius", 30.0)
+		lava.set("tile_radius", 14.0)
 		tree.current_scene.add_child(lava)
 	# The holder only carried the telegraph ring; the LavaTile is now an
 	# independent node, so the holder can go.

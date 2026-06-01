@@ -366,6 +366,15 @@ func _check_sight() -> void:
 		_has_aggro = true
 		FloatingText.spawn_str(global_position, "!", Color(1.0, 0.9, 0.0), get_tree().current_scene)
 
+# Wake this enemy if a loud event happened within `radius`. Generic "heard you"
+# hook — used by ambush springs now, and sound-propagation alerting later.
+func alert_by_sound(source_pos: Vector2, radius: float) -> void:
+	if passive or _has_aggro:
+		return
+	if global_position.distance_to(source_pos) <= radius:
+		_has_aggro = true
+		FloatingText.spawn_str(global_position, "!", Color(1.0, 0.9, 0.0), get_tree().current_scene)
+
 func take_damage(amount: int) -> void:
 	if _shield_active:
 		_shield_active = false
@@ -418,17 +427,16 @@ func take_damage(amount: int) -> void:
 		# position. Schedule before queue_free; the timer callback does the
 		# spawn via the scene tree, never references self.
 		if GameState.biome == 1 and not is_champion:
-			_schedule_catacombs_reanimation(global_position)
+			_schedule_catacombs_reanimation(global_position, get_tree())
 		EffectFx.spawn_death_pop(global_position, get_tree().current_scene)
 		queue_free()
 
 # Spawns a low-HP EnemyChaser at the given position 5 s after the host
 # died. Uses get_tree().create_timer so the host can be freed safely;
 # the captured `pos` is value-typed (Vector2), no dangling reference.
-func _schedule_catacombs_reanimation(pos: Vector2) -> void:
+static func _schedule_catacombs_reanimation(pos: Vector2, tree: SceneTree) -> void:
 	if randf() >= 0.10:
 		return
-	var tree := get_tree()
 	if tree == null:
 		return
 	var scene_root := tree.current_scene
@@ -442,6 +450,9 @@ func _schedule_catacombs_reanimation(pos: Vector2) -> void:
 			return
 		var enemies := current.get_node_or_null("Enemies")
 		if enemies == null:
+			return
+		# Respect the global live-enemy cap (checked at spawn time, not schedule time).
+		if current.has_method("can_spawn_enemy") and not current.can_spawn_enemy():
 			return
 		# Faint green telegraph at the spawn point so the player knows
 		# something's about to rise.
@@ -477,8 +488,14 @@ static func volatile_explosion(pos: Vector2, hp: int, player: Node, scene: Node)
 	scene.call_deferred("add_child", fp)
 
 func _do_split() -> void:
-	FloatingText.spawn_str(global_position, "SPLIT!", Color(0.9, 0.4, 1.0), get_tree().current_scene)
-	var enemies_node := get_tree().current_scene.get_node_or_null("Enemies")
+	var scene_node := get_tree().current_scene
+	# Respect the global live-enemy cap so splitters can't snowball the count.
+	if scene_node != null and scene_node.has_method("can_spawn_enemy") and not scene_node.can_spawn_enemy():
+		return
+	if scene_node == null:
+		return
+	FloatingText.spawn_str(global_position, "SPLIT!", Color(0.9, 0.4, 1.0), scene_node)
+	var enemies_node := scene_node.get_node_or_null("Enemies")
 	if enemies_node == null: return
 	for _i in 2:
 		var clone: Node = _split_scene.instantiate()

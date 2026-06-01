@@ -91,6 +91,10 @@ func _scene_for_test_key(key: String) -> PackedScene:
 	return null
 const SPIKE_TRAP_SCENE   = preload("res://scenes/SpikeTrap.tscn")
 const SPIN_TRAP_SCENE    = preload("res://scenes/SpinTrap.tscn")
+const BEAM_TRAP_SCENE    = preload("res://scenes/BeamTrap.tscn")
+const DOOR_SCENE         = preload("res://scenes/Door.tscn")
+const AMBUSH_CONTROLLER_SCENE = preload("res://scenes/AmbushController.tscn")
+const SWITCH_SCENE       = preload("res://scenes/Switch.tscn")
 const SHRINE_SCENE       = preload("res://scenes/Shrine.tscn")
 const SECRET_DOOR_SCENE  = preload("res://scenes/SecretDoor.tscn")
 const ENCHANT_TABLE_SCENE= preload("res://scenes/EnchantTable.tscn")
@@ -173,6 +177,46 @@ const DUNGEON_SPAWN_BURST_DURATION: float = 1.5
 # the live count can briefly exceed it, but the bulk regular spawn is
 # clipped here.
 const MAX_DUNGEON_ENEMIES: int = 35
+# Hard ceiling on TOTAL live enemies from ALL sources (initial pass, themed rooms,
+# splitters, zombie reanimation, summoners, queued drain). Above the 35 build cap
+# so combat can breathe, but bounded so late-game runtime spawners can't explode
+# the count and crash the game. Runtime spawners check can_spawn_enemy().
+const MAX_LIVE_ENEMIES: int = 45
+
+# True when there's room for another enemy. Checked by every RUNTIME spawn path.
+func can_spawn_enemy() -> bool:
+	return get_tree().get_nodes_in_group("enemy").size() < MAX_LIVE_ENEMIES
+
+# Ceiling on live loot bags. Late-game kills drop bags faster than the player
+# collects them, so they pile up unbounded and tank performance. When exceeded,
+# the FARTHEST (non-mega) overflow bags are auto-sold to gold so the player keeps
+# the value but the node count stays bounded. Nearby bags are always preserved.
+const MAX_LIVE_LOOT_BAGS: int = 12
+
+func enforce_loot_cap() -> void:
+	var bags := get_tree().get_nodes_in_group("loot_bag")
+	if bags.size() <= MAX_LIVE_LOOT_BAGS:
+		return
+	var player := get_tree().get_first_node_in_group("player")
+	var ppos: Vector2 = (player as Node2D).global_position if player is Node2D else Vector2.ZERO
+	var cull: Array = []
+	for b in bags:
+		if is_instance_valid(b) and b.get("is_mega") != true:
+			cull.append(b)
+	# Farthest-from-player first, so the player's immediate loot is never culled.
+	cull.sort_custom(func(a, c):
+		return (a as Node2D).global_position.distance_squared_to(ppos) \
+			> (c as Node2D).global_position.distance_squared_to(ppos))
+	var to_remove: int = bags.size() - MAX_LIVE_LOOT_BAGS
+	var gold_gained: int = 0
+	for i in mini(to_remove, cull.size()):
+		var b: Node = cull[i]
+		if "items" in b:
+			for it in (b.get("items") as Array):
+				gold_gained += maxi(1, int(it.sell_value))
+		b.queue_free()
+	if gold_gained > 0:
+		GameState.gold += gold_gained
 # How many enemies to spawn synchronously inside _spawn_enemies, before any
 # frame ticks at all. Avoids the first-frame "empty world" gap; tuned so the
 # nearest few rooms are populated before the player even sees the level.
@@ -180,6 +224,7 @@ const DUNGEON_SPAWN_INITIAL_DRAIN: int = 24
 var _dungeon_spawn_burst_t: float = 0.0
 # Periodic cleanup of any enemy that drifted into a wall tile
 var _oob_cleanup_t: float = 4.0
+var _loot_cap_t: float = 1.0
 var _test_check_timer: float   = 0.0
 var _test_cleanup_timer: float = 0.0
 var _test_arena_room: Rect2i   = Rect2i()
@@ -230,6 +275,7 @@ var _gen_mode: GenMode = GenMode.ROOMS
 # ── State ─────────────────────────────────────────────────────────────────────
 var _grid: Array = []   # [y][x] → FLOOR or WALL
 var _rooms: Array = []  # Array of Rect2i (tile coords), order = BSP depth-first
+var _room_light_levels: Array[int] = []  # parallel to _rooms: 0=NORMAL,1=DARK,2=FLICKER
 var _portal_tile: Vector2i = Vector2i.ZERO
 var _floor_seed: int = 0   # captured per-floor RNG seed (shown on the minimap)
 
@@ -378,6 +424,10 @@ func _ready() -> void:
 
 	_roll_floor_modifier()
 	_spawn_traps()
+	_spawn_beam_traps()
+	_spawn_doors()
+	_spawn_ambush()
+	_spawn_switch_alcove()
 	_spawn_lava_tiles()
 	_spawn_shrine(player_room)
 	# Pick themed rooms BEFORE the regular spawn pass — they replace the
@@ -477,6 +527,12 @@ func _apply_render_mode(mode: int) -> void:
 			rig_to_show.set_floor_color(BIOME_FP_FLOOR_COLORS[clampi(GameState.biome, 0, BIOME_FP_FLOOR_COLORS.size() - 1)])
 		if rig_to_show.has_method("set_grid"):
 			rig_to_show.set_grid(_grid, GRID_W, GRID_H)
+		# DOOM-style per-room darkness — assign levels once per floor, reuse on
+		# subsequent render-mode toggles.
+		if rig_to_show.has_method("set_room_lighting"):
+			if _room_light_levels.size() != _rooms.size():
+				_assign_room_lighting()
+			rig_to_show.set_room_lighting(_rooms, _room_light_levels)
 		_register_all_entities_with(rig_to_show)
 
 func _register_all_entities_with(rig: Node) -> void:
@@ -1563,11 +1619,10 @@ func _spawn_eruption_near_player() -> void:
 	# the same script-instantiation pattern the static hazard pass uses.
 	var t := get_tree().create_timer(3.0)
 	t.timeout.connect(func() -> void:
+		if not is_instance_valid(self):
+			return
 		var lava: Node = LAVA_TILE_SCRIPT.new()
 		lava.position = pos
-		# Eruption tiles also time out so the lava rift floor doesn't
-		# permanently fill in. ~10 s gives a few attacks worth of pressure
-		# before clearing.
 		lava.set("lifetime", 10.0)
 		add_child(lava))
 
@@ -1815,7 +1870,7 @@ func _queue_enemy(scene: PackedScene, room: Rect2i, health_mult: float, count: i
 	for _i in count:
 		_dungeon_spawn_queue.append({"scene": scene, "room": room, "hp_mult": health_mult})
 
-func _place_enemy(scene: PackedScene, room: Rect2i, health_mult: float) -> void:
+func _place_enemy(scene: PackedScene, room: Rect2i, health_mult: float) -> Node:
 	var enemy := scene.instantiate()
 	enemy.position = _random_pos_in_room(room)
 	if health_mult != 1.0 and "max_health" in enemy:
@@ -1881,6 +1936,7 @@ func _place_enemy(scene: PackedScene, room: Rect2i, health_mult: float) -> void:
 			var mod_names := ["", "SHIELDED", "SPLITTING", "ENRAGED", "HASTE", "VOLATILE"]
 			if mod > 0:
 				FloatingText.spawn_str(enemy.global_position + Vector2(0.0, -24.0), mod_names[mod], elite_col, get_tree().current_scene)
+	return enemy
 
 # ── Floor modifier roll & application ────────────────────────────────────────
 
@@ -1944,6 +2000,146 @@ func _apply_one_floor_modifier_to_enemy(enemy: Node, mod_name: String) -> void:
 					enemy.max_health = maxi(1, int(round(float(enemy.max_health) * mult)))
 				if "elite_modifier" in enemy:
 					enemy.elite_modifier = randi_range(1, 3)
+
+# Spawns a wave of aggro'd enemies inside `room` for an ambush. Returns the
+# spawned nodes so the controller can watch for "all dead". Reuses _place_enemy.
+func spawn_ambush_wave(room: Rect2i, count: int) -> Array:
+	var pool: Array[PackedScene] = [CHASER_SCENE, SHOOTER_SCENE, ARCHER_SCENE]
+	var hp_mult: float = 1.0 + clampf(maxf(0.0, GameState.difficulty - 1.0) * 0.10, 0.0, 1.0)
+	var spawned: Array = []
+	for i in count:
+		var scene: PackedScene = pool[randi() % pool.size()]
+		var e: Node = _place_enemy(scene, room, hp_mult)
+		if e != null:
+			if "_has_aggro" in e:
+				e.set("_has_aggro", true)
+			spawned.append(e)
+	return spawned
+
+# DOOM-style sector lighting: tag a minority of rooms DARK (torch-only) or
+# FLICKER (broken light). The spawn room (index 0) stays NORMAL so the player
+# isn't dropped into darkness. Assigned once per floor.
+func _assign_room_lighting() -> void:
+	_room_light_levels = []
+	for i in _rooms.size():
+		if i == 0:
+			_room_light_levels.append(0)   # spawn room always lit
+			continue
+		var r := randf()
+		if r < 0.16:
+			_room_light_levels.append(1)   # DARK
+		elif r < 0.24:
+			_room_light_levels.append(2)   # FLICKER
+		else:
+			_room_light_levels.append(0)   # NORMAL
+
+# Doorway tiles for a single room — floor tiles just outside its perimeter where
+# a corridor punches through. Single-room version of _collect_doorway_tiles().
+func _room_doorway_tiles(room: Rect2i) -> Array[Vector2i]:
+	var tiles: Array[Vector2i] = []
+	for x in range(room.position.x, room.position.x + room.size.x):
+		var top_y: int = room.position.y - 1
+		if top_y >= 0 and x >= 0 and x < GRID_W and int((_grid[top_y] as Array)[x]) == FLOOR:
+			tiles.append(Vector2i(x, top_y))
+		var bot_y: int = room.position.y + room.size.y
+		if bot_y < GRID_H and x >= 0 and x < GRID_W and int((_grid[bot_y] as Array)[x]) == FLOOR:
+			tiles.append(Vector2i(x, bot_y))
+	for y in range(room.position.y, room.position.y + room.size.y):
+		var left_x: int = room.position.x - 1
+		if left_x >= 0 and y >= 0 and y < GRID_H and int((_grid[y] as Array)[left_x]) == FLOOR:
+			tiles.append(Vector2i(left_x, y))
+		var right_x: int = room.position.x + room.size.x
+		if right_x < GRID_W and y >= 0 and y < GRID_H and int((_grid[y] as Array)[right_x]) == FLOOR:
+			tiles.append(Vector2i(right_x, y))
+	return tiles
+
+# Places one ambush room per floor (from floor 2): a room with 1-2 doorways that
+# seals + springs a wave when entered, reopening on clear. Graceful skip if none fit.
+func _spawn_ambush() -> void:
+	if GameState.portals_used < 1:
+		return
+	var choices: Array[Rect2i] = []
+	for i in range(1, _rooms.size()):   # skip the player spawn room (index 0)
+		var room: Rect2i = _rooms[i]
+		# Skip tiny sample rooms and huge boss-arena-scale rooms.
+		if room.size.x < 5 or room.size.y < 5 or room.size.x > 16 or room.size.y > 16:
+			continue
+		var dn: int = _room_doorway_tiles(room).size()
+		if dn >= 1 and dn <= 2:
+			choices.append(room)
+	if choices.is_empty():
+		return
+	var pick: Rect2i = choices[randi() % choices.size()]
+	var ambush := AMBUSH_CONTROLLER_SCENE.instantiate()
+	ambush.set("room", pick)
+	ambush.set("seal_tiles", _room_doorway_tiles(pick))
+	ambush.set("wave_count", mini(3 + int(GameState.difficulty * 0.5), 7))
+	ambush.position = _tile_center(pick.get_center())
+	add_child(ambush)
+
+# Places one shootable switch wired to a door sealing a dead-end loot alcove.
+# Optional reward path — never gates the main route. Graceful skip if no dead-end.
+func _spawn_switch_alcove() -> void:
+	if GameState.portals_used < 1:
+		return
+	# Find a dead-end corridor tile: FLOOR with exactly one FLOOR 4-neighbour,
+	# outside any room, away from the player spawn.
+	var spawn_center := _tile_center(_rooms[0].get_center()) if _rooms.size() > 0 else Vector2.ZERO
+	var ends: Array[Vector2i] = []
+	for ty in range(2, GRID_H - 2):
+		for tx in range(2, GRID_W - 2):
+			if _grid[ty][tx] != FLOOR or _in_any_room(tx, ty):
+				continue
+			var nbrs: Array[Vector2i] = []
+			if _grid[ty - 1][tx] == FLOOR: nbrs.append(Vector2i(tx, ty - 1))
+			if _grid[ty + 1][tx] == FLOOR: nbrs.append(Vector2i(tx, ty + 1))
+			if _grid[ty][tx - 1] == FLOOR: nbrs.append(Vector2i(tx - 1, ty))
+			if _grid[ty][tx + 1] == FLOOR: nbrs.append(Vector2i(tx + 1, ty))
+			if nbrs.size() != 1:
+				continue
+			if _tile_center(Vector2i(tx, ty)).distance_to(spawn_center) < 200.0:
+				continue
+			ends.append(Vector2i(tx, ty))
+	if ends.is_empty():
+		return
+	var dead: Vector2i = ends[randi() % ends.size()]
+	# The single neighbour is the mouth of the alcove — seal it with a closed door.
+	var mouth := dead
+	if _grid[dead.y - 1][dead.x] == FLOOR: mouth = Vector2i(dead.x, dead.y - 1)
+	elif _grid[dead.y + 1][dead.x] == FLOOR: mouth = Vector2i(dead.x, dead.y + 1)
+	elif _grid[dead.y][dead.x - 1] == FLOOR: mouth = Vector2i(dead.x - 1, dead.y)
+	elif _grid[dead.y][dead.x + 1] == FLOOR: mouth = Vector2i(dead.x + 1, dead.y)
+
+	# The switch must sit on a reachable FLOOR tile past the mouth, else the loot
+	# would be sealed forever. Require it before committing the alcove.
+	var dir := mouth - dead
+	var back := mouth + dir * 2
+	if not _is_floor_in_bounds(back):
+		back = mouth + dir
+	if not _is_floor_in_bounds(back) or back == mouth:
+		return   # no valid switch spot — skip this alcove
+
+	# Loot in the dead-end.
+	var bag := LOOT_BAG_SCENE.instantiate()
+	bag.global_position = _tile_center(dead)
+	add_child(bag)
+	# Closed remote-only door at the mouth.
+	var door := DOOR_SCENE.instantiate()
+	var ct: Array[Vector2i] = [mouth]
+	door.set("cover_tiles", ct)
+	door.set("corridor_axis", 0)
+	door.set("remote_only", true)
+	door.position = _tile_center(mouth)
+	add_child(door)
+	# Switch in the open corridor, wired to the alcove door.
+	var sw := SWITCH_SCENE.instantiate()
+	sw.set("_target", door)
+	sw.position = _tile_center(back)
+	add_child(sw)
+
+func _is_floor_in_bounds(t: Vector2i) -> bool:
+	return t.x >= 0 and t.x < GRID_W and t.y >= 0 and t.y < GRID_H \
+		and int((_grid[t.y] as Array)[t.x]) == FLOOR
 
 func _show_modifier_banner() -> void:
 	if GameState.floor_modifiers.is_empty():
@@ -3025,6 +3221,138 @@ func _spawn_traps() -> void:
 				tried += 1
 				break
 
+# ── Breakable walls ───────────────────────────────────────────────────────────
+
+# Called by BreakableWall on destruction. Clears the covered tiles from the
+# shared grid so the FP rig's occlusion raycast and wall mesh both update.
+func notify_wall_destroyed(tiles: Array[Vector2i]) -> void:
+	for t in tiles:
+		if t.y >= 0 and t.y < GRID_H and t.x >= 0 and t.x < GRID_W:
+			(_grid[t.y] as Array)[t.x] = FLOOR
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("rebuild_walls"):
+		GameState.active_rig.rebuild_walls()
+
+# ── Beam traps ────────────────────────────────────────────────────────────────
+
+func _in_any_room(tx: int, ty: int) -> bool:
+	for r in _rooms:
+		var room: Rect2i = r
+		if room.has_point(Vector2i(tx, ty)):
+			return true
+	return false
+
+func _spawn_beam_traps() -> void:
+	# Only place beam traps from floor 2 onward so players learn controls first.
+	if GameState.portals_used < 1:
+		return
+	var beam_count: int = mini(1 + int(GameState.difficulty * 0.4), 3)
+	var candidates: Array[Dictionary] = []
+
+	for ty in range(3, GRID_H - 3):
+		for tx in range(3, GRID_W - 3):
+			if _grid[ty][tx] != FLOOR:
+				continue
+			if _in_any_room(tx, ty):
+				continue
+
+			# N-S beam in E-W corridor: walls at ty±2, floors at ty±1 and tx±1
+			if _grid[ty - 1][tx] == FLOOR and _grid[ty + 1][tx] == FLOOR \
+					and _grid[ty - 2][tx] == WALL and _grid[ty + 2][tx] == WALL \
+					and _grid[ty][tx - 1] == FLOOR and _grid[ty][tx + 1] == FLOOR:
+				candidates.append({"tx": tx, "ty": ty, "axis": 0})
+
+			# E-W beam in N-S corridor: walls at tx±2, floors at tx±1 and ty±1
+			elif _grid[ty][tx - 1] == FLOOR and _grid[ty][tx + 1] == FLOOR \
+					and _grid[ty][tx - 2] == WALL and _grid[ty][tx + 2] == WALL \
+					and _grid[ty - 1][tx] == FLOOR and _grid[ty + 1][tx] == FLOOR:
+				candidates.append({"tx": tx, "ty": ty, "axis": 1})
+
+	candidates.shuffle()
+	var placed: Array[Vector2i] = []
+	for c in candidates:
+		if placed.size() >= beam_count:
+			break
+		var tx: int = int(c["tx"])
+		var ty: int = int(c["ty"])
+		# Enforce minimum spacing between beam traps.
+		var too_close := false
+		for prev: Vector2i in placed:
+			if abs(prev.x - tx) + abs(prev.y - ty) < 6:
+				too_close = true
+				break
+		if too_close:
+			continue
+
+		var trap := BEAM_TRAP_SCENE.instantiate()
+		trap.set("beam_axis", int(c["axis"]))
+		trap.set("beam_half_width", 48.0)
+		trap.set("low_beam", randf() < 0.30)
+		trap.position = _tile_center(Vector2i(tx, ty))
+		add_child(trap)
+		placed.append(Vector2i(tx, ty))
+
+# ── Doors ─────────────────────────────────────────────────────────────────────
+# Auto-opening doors that span a 3-wide corridor cross-section. Reuses the same
+# corridor-detection as beam traps. First use of the FP rig's animated
+# wall-segment primitive (see DOOM_DESIGN.md).
+func _spawn_doors() -> void:
+	var door_count: int = mini(1 + int(GameState.difficulty * 0.3), 2)
+	var candidates: Array[Dictionary] = []
+	for ty in range(3, GRID_H - 3):
+		for tx in range(3, GRID_W - 3):
+			if _grid[ty][tx] != FLOOR or _in_any_room(tx, ty):
+				continue
+			# N-S beam / E-W corridor: 3-wide in Y, walls at ty±2.
+			if _grid[ty - 1][tx] == FLOOR and _grid[ty + 1][tx] == FLOOR \
+					and _grid[ty - 2][tx] == WALL and _grid[ty + 2][tx] == WALL \
+					and _grid[ty][tx - 1] == FLOOR and _grid[ty][tx + 1] == FLOOR:
+				candidates.append({"tx": tx, "ty": ty, "axis": 0})
+			# E-W beam / N-S corridor: 3-wide in X, walls at tx±2.
+			elif _grid[ty][tx - 1] == FLOOR and _grid[ty][tx + 1] == FLOOR \
+					and _grid[ty][tx - 2] == WALL and _grid[ty][tx + 2] == WALL \
+					and _grid[ty - 1][tx] == FLOOR and _grid[ty + 1][tx] == FLOOR:
+				candidates.append({"tx": tx, "ty": ty, "axis": 1})
+
+	candidates.shuffle()
+	var placed: Array[Vector2i] = []
+	for c in candidates:
+		if placed.size() >= door_count:
+			break
+		var tx: int = int(c["tx"])
+		var ty: int = int(c["ty"])
+		var axis: int = int(c["axis"])
+		# Door-to-door spacing.
+		var too_close := false
+		for prev: Vector2i in placed:
+			if abs(prev.x - tx) + abs(prev.y - ty) < 8:
+				too_close = true
+				break
+		if too_close:
+			continue
+		# Keep doors clear of existing hazards (beam/spike/spin traps).
+		var center := _tile_center(Vector2i(tx, ty))
+		for hz in get_tree().get_nodes_in_group("trap"):
+			if is_instance_valid(hz) and (hz as Node2D).global_position.distance_to(center) < 96.0:
+				too_close = true
+				break
+		if too_close:
+			continue
+
+		# Cover tiles = the 3 corridor cross-section tiles, perpendicular to travel.
+		var cover: Array[Vector2i] = []
+		if axis == 0:
+			cover = [Vector2i(tx, ty - 1), Vector2i(tx, ty), Vector2i(tx, ty + 1)]
+		else:
+			cover = [Vector2i(tx - 1, ty), Vector2i(tx, ty), Vector2i(tx + 1, ty)]
+
+		var door := DOOR_SCENE.instantiate()
+		door.set("cover_tiles", cover)
+		door.set("corridor_axis", axis)
+		door.position = center
+		add_child(door)
+		placed.append(Vector2i(tx, ty))
+
 # ── Secret rooms ──────────────────────────────────────────────────────────────
 
 func _try_secret_rooms() -> void:
@@ -3427,7 +3755,7 @@ func _process(delta: float) -> void:
 	# the previous frame was already heavy so we don't compound bad frames.
 	if _dungeon_spawn_burst_t > 0.0:
 		_dungeon_spawn_burst_t -= delta
-	if not _dungeon_spawn_queue.is_empty():
+	if not _dungeon_spawn_queue.is_empty() and can_spawn_enemy():
 		var per_frame: int
 		if delta >= 0.025:
 			per_frame = DUNGEON_SPAWN_PER_SLOW
@@ -3445,6 +3773,11 @@ func _process(delta: float) -> void:
 	if _oob_cleanup_t <= 0.0:
 		_oob_cleanup_t = 4.0
 		_cleanup_oob_enemies()
+	# Periodic loot-bag cap — keeps the live bag count bounded during fast kills.
+	_loot_cap_t -= delta
+	if _loot_cap_t <= 0.0:
+		_loot_cap_t = 1.0
+		enforce_loot_cap()
 
 	if not _room_cleared and not _is_test_mode:
 		var enemy_count := get_tree().get_nodes_in_group("enemy").size()

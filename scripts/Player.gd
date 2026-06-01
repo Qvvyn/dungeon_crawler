@@ -5230,8 +5230,8 @@ func _fire(wand: Item = null) -> void:
 				bProj.set("apply_burn",   st == "fire")
 				bProj.set("apply_shock",  st == "shock")
 				bProj.set("status_stacks", maxi(1, wand.wand_status_stacks))
-				bProj.set("pierce_remaining",   wand.wand_pierce)
-				bProj.set("ricochet_remaining", wand.wand_ricochet)
+				bProj.set("pierce_remaining",   wand.wand_pierce if st == "pierce" else 0)
+				bProj.set("ricochet_remaining", wand.wand_ricochet if st == "ricochet" else 0)
 				var bSpd: float = wand.wand_proj_speed * (1.0 + randf_range(-BURST_SPEED_JIT, BURST_SPEED_JIT))
 				if "slow_shots" in wand.wand_flaws:
 					bSpd *= 0.5
@@ -5273,8 +5273,8 @@ func _fire(wand: Item = null) -> void:
 		proj.direction = base_dir
 		proj.set("source", "player")
 		proj.set("damage", int(round(float(wand.wand_damage + _str_bonus) * dmg_mult)))
-		proj.set("pierce_remaining", wand.wand_pierce)
-		proj.set("ricochet_remaining", wand.wand_ricochet)
+		proj.set("pierce_remaining", wand.wand_pierce if wand.wand_shoot_type == "pierce" else 0)
+		proj.set("ricochet_remaining", wand.wand_ricochet if wand.wand_shoot_type == "ricochet" else 0)
 		proj.set("shoot_type", wand.wand_shoot_type)
 		proj.set("apply_freeze", wand.wand_shoot_type == "freeze")
 		proj.set("apply_burn", wand.wand_shoot_type == "fire")

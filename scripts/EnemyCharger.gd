@@ -1,7 +1,9 @@
 extends EnemyBase
 
-const F0 := "  ^^ \n>>X<<\n /||\\"
-const F1 := "  ^^ \n>>X<<\n // \\\\"
+const F0  := "  ^^ \n>>X<<\n /|\\"
+const F1  := "  ^^ \n>>X<<\n // \\\\"
+const FT0 := " /!\\ \n>>X<<\n /!\\ "
+const FT1 := " \\!/ \n>>X<<\n \\!/ "
 
 const MOVE_SPEED       := 95.0
 const TELEGRAPH_TIME   := 0.7
@@ -118,6 +120,10 @@ func _enemy_anim_update(delta: float) -> void:
 	if _anim_t >= rate:
 		_anim_t = 0.0
 		_anim_f = 1 - _anim_f
-	var t := F0 if _anim_f == 0 else F1
+	var t: String
+	if _state == State.TELEGRAPH:
+		t = FT0 if _anim_f == 0 else FT1
+	else:
+		t = F0 if _anim_f == 0 else F1
 	if _lbl.text != t:
 		_lbl.text = t

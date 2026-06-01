@@ -4,7 +4,7 @@ extends Area2D
 # spawns a bigger, harder-hitting puddle that reuses this same tile).
 var burn_interval: float = 0.65
 var burn_damage: int     = 1
-var tile_radius: float   = 12.0
+var tile_radius: float   = 7.0
 
 var _player_inside: bool = false
 var _burn_timer: float   = 0.0
@@ -22,10 +22,15 @@ func _ready() -> void:
 	# lava tile reads as a puddle on the ground, not a chest-high glyph.
 	# Unified orange "~" so lava tiles and the Magma boss puddle read as
 	# the same hazard.
-	set_meta("fp_pixel_size", 0.006)
+	# Larger boss puddles get a double-row ~~ glyph and bigger pixel_size
+	# so they read as visibly more dangerous than the small biome tiles.
+	var fp_glyph: String = "~~\n~~" if tile_radius > 10.0 else "~"
+	var fp_ps: float     = 0.008    if tile_radius > 10.0 else 0.006
+	set_meta("fp_pixel_size", fp_ps)
+	set_meta("fp_multiline", tile_radius > 10.0)
 	set_meta("fp_floor_decal", true)   # lie flat on the floor in FP
 	set_meta("fp_outline_size", 3)     # thin glyph outline
-	GameState.attach_fp_visual(self, "~", Color(1.0, 0.45, 0.05), 0.04)
+	GameState.attach_fp_visual(self, fp_glyph, Color(1.0, 0.45, 0.05), 0.04)
 	var cshape := CollisionShape2D.new()
 	var shape  := CircleShape2D.new()
 	shape.radius = tile_radius

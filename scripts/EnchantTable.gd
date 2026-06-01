@@ -75,15 +75,18 @@ const AFFIX_POOL := [
 # rule holds regardless of which call site does the application.
 func _random_compatible_affix(wand: Item) -> Dictionary:
 	var pool: Array = AFFIX_POOL
-	if wand != null and wand.rarity < Item.RARITY_LEGENDARY:
-		if wand.wand_pierce > 0:
-			# Wand already has pierce → ricochet affix is off the table.
+	if wand != null:
+		var st: String = wand.wand_shoot_type
+		if st != "pierce" and st != "ricochet":
 			pool = AFFIX_POOL.filter(func(a: Dictionary) -> bool:
-				return a["stat"] != "wand_ricochet")
-		elif wand.wand_ricochet > 0:
-			# Wand already has ricochet → pierce affix is off the table.
-			pool = AFFIX_POOL.filter(func(a: Dictionary) -> bool:
-				return a["stat"] != "wand_pierce")
+				return a["stat"] != "wand_pierce" and a["stat"] != "wand_ricochet")
+		elif wand.rarity < Item.RARITY_LEGENDARY:
+			if wand.wand_pierce > 0:
+				pool = pool.filter(func(a: Dictionary) -> bool:
+					return a["stat"] != "wand_ricochet")
+			elif wand.wand_ricochet > 0:
+				pool = pool.filter(func(a: Dictionary) -> bool:
+					return a["stat"] != "wand_pierce")
 	return pool[randi() % pool.size()]
 
 # Value ranges for rerolling each stat

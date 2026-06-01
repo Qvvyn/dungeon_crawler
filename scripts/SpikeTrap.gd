@@ -20,11 +20,9 @@ func _ready() -> void:
 	body_entered.connect(_on_body_entered)
 	_label = $AsciiChar
 	_set_idle()
-	# Spike stands UPRIGHT so the "^" point aims at the ceiling (not a flat
-	# floor decal). White tint. Thin FP glyph outline so the hazard reads
-	# crisp rather than wrapped in a heavy black border.
 	set_meta("fp_outline_size", 3)
-	GameState.attach_fp_visual(self, "^", Color(1.0, 1.0, 1.0), 0.14)
+	set_meta("fp_floor_decal", true)
+	GameState.attach_fp_visual(self, "^", Color(1.0, 1.0, 1.0), 0.04)
 
 func _physics_process(delta: float) -> void:
 	match _state:
@@ -76,5 +74,4 @@ func _set_idle() -> void:
 	_state = State.IDLE
 	_label.text = "·"
 	_label.add_theme_font_size_override("font_size", 14)
-	# Very dim — blends into the floor
-	_label.add_theme_color_override("font_color", Color(0.32, 0.26, 0.20, 0.55))
+	_label.add_theme_color_override("font_color", Color(0.90, 0.90, 0.90, 0.75))

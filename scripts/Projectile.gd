@@ -165,6 +165,7 @@ func _ready() -> void:
 						glyph = "z"
 						color = Color(1.0, 0.92, 0.20)
 						set_meta("fp_floor_decal", true)
+						set_meta("fp_floor_rotation_offset", PI / 4.0)
 					"pierce":
 						glyph = ")"
 						color = Color(0.55, 0.85, 1.0)
@@ -191,6 +192,7 @@ func _ready() -> void:
 						glyph = "^"
 						color = Color(1.0, 0.40, 0.80)
 						set_meta("fp_floor_decal", true)
+						set_meta("fp_floor_rotation_offset", -PI / 2.0)
 					"grenade":
 						glyph = "O"
 						color = Color(1.0, 0.45, 0.15)
@@ -483,7 +485,6 @@ func _physics_process(delta: float) -> void:
 	_trail_timer -= delta
 	if _trail_timer <= 0.0:
 		_trail_timer = 0.045
-		_spawn_trail_marker()
 
 func _on_body_entered(body: Node2D) -> void:
 	# Source-group self-collision guard
@@ -939,13 +940,23 @@ func _fp_ring(pos: Vector2, glyph: String, color: Color,
 
 func _fp_chain(from_2d: Vector2, to_2d: Vector2, color: Color,
 		lifetime: float = 0.35) -> void:
-	# The rig now draws chain arcs as a 3D box stretched between the two
-	# points (the ASCII post-shader pixelates it into a line). Only color
-	# + lifetime matter at the wrapper layer; segment/glyph args are
-	# vestigial and left out for clarity.
 	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
 			and GameState.active_rig.has_method("spawn_chain_arc_2d"):
 		GameState.active_rig.spawn_chain_arc_2d(from_2d, to_2d, color, 0, lifetime)
+
+# Engulf — spawns crunch bursts at 4 vertical heights to cover an enemy top-to-
+# bottom in FP instead of all effects concentrating at one y-level.
+func _fp_engulf(pos: Vector2, glyph: String, color: Color, count: int,
+		spread: float = 0.45, lifetime: float = 0.24,
+		pixel_size: float = 0.007) -> void:
+	# Bottom level: wider spread, bigger glyphs, more count
+	_fp_burst(pos, glyph, color, count + 1, spread * 1.2,  lifetime, Vector2.ZERO, TAU, pixel_size * 1.25, 0.08)
+	# Mid-low
+	_fp_burst(pos, glyph, color, count,     spread,         lifetime, Vector2.ZERO, TAU, pixel_size,        0.30)
+	# Mid-high: tighter, slightly smaller
+	_fp_burst(pos, glyph, color, count,     spread * 0.85, lifetime, Vector2.ZERO, TAU, pixel_size * 0.85, 0.58)
+	# Top: narrowest, smallest, sparsest
+	_fp_burst(pos, glyph, color, maxi(1, count - 1), spread * 0.65, lifetime, Vector2.ZERO, TAU, pixel_size * 0.70, 0.82)
 
 # Canonical per-shoot-type color. SINGLE source of truth shared by the 2D
 # glyph (_apply_visual), the FP billboard (registration), and the trail/impact
@@ -998,7 +1009,7 @@ func _spawn_trail_marker() -> void:
 			var trail_y: float = 0.22 if source == "player" else 0.50
 			GameState.active_rig.spawn_burst_2d(global_position, ".",
 				Color(col.r, col.g, col.b, 0.55), 1, 0.0, fade,
-				Vector2.ZERO, TAU, 0.006, trail_y)
+				Vector2.ZERO, TAU, 0.010, trail_y)
 
 func _spawn_impact_burst(pos: Vector2) -> void:
 	if not is_inside_tree():
@@ -1044,8 +1055,8 @@ func _impact_pierce(pos: Vector2) -> void:
 		tw.tween_property(streak, "position", target, 0.18)
 		tw.parallel().tween_property(streak, "modulate:a", 0.0, 0.18)
 		tw.tween_callback(streak.queue_free)
-	# FP streak glyph matches the pierce projectile ")".
-	_fp_streak(pos, direction, ")", col, 2, 0.9, 0.18, 0.008, 0.10)
+	_fp_streak(pos, direction, ")", col, 2, 0.9, 0.18, 0.008, 0.45)
+	_fp_burst(pos, "-", col, 3, 0.4, 0.18, direction, PI * 0.5, 0.007, 0.45)
 
 func _impact_ricochet(pos: Vector2) -> void:
 	var col := Color(0.35, 1.0, 0.50)
@@ -1061,7 +1072,7 @@ func _impact_ricochet(pos: Vector2) -> void:
 		tw.tween_property(c, "position", target, 0.22)
 		tw.parallel().tween_property(c, "modulate:a", 0.0, 0.22)
 		tw.tween_callback(c.queue_free)
-	_fp_burst(pos, "o", col, 2, 0.7, 0.20, Vector2.ZERO, TAU, 0.008, 0.30)
+	_fp_burst(pos, "o", col, 4, 0.5, 0.22, Vector2.ZERO, TAU, 0.008, 0.45)
 
 func _impact_freeze(pos: Vector2) -> void:
 	var col := Color(0.65, 0.92, 1.0)
@@ -1079,7 +1090,7 @@ func _impact_freeze(pos: Vector2) -> void:
 		tw.tween_property(lbl, "position", target, 0.28)
 		tw.parallel().tween_property(lbl, "modulate:a", 0.0, 0.28)
 		tw.tween_callback(lbl.queue_free)
-	_fp_burst(pos, "*", col, 2, 0.75, 0.24, Vector2.ZERO, TAU, 0.008, 0.30)
+	_fp_engulf(pos, "*", col, 2)
 
 func _impact_fire(pos: Vector2) -> void:
 	# 2D: brief flame frame on the enemy (was 3 scattered chars). FP: a
@@ -1100,10 +1111,7 @@ func _impact_fire(pos: Vector2) -> void:
 	var flame_tw := flame_lbl.create_tween()
 	flame_tw.tween_property(flame_lbl, "modulate:a", 0.0, 0.30)
 	flame_tw.tween_callback(flame_lbl.queue_free)
-	# Glyph matches the fire projectile (@) so all fire feedback reads
-	# consistently. Was "(((". One label per impact + smaller pixel_size
-	# keeps the visual subtle when many shots land in quick succession.
-	_fp_burst(pos, "@", col, 1, 0.0, 0.26, Vector2.ZERO, TAU, 0.009, 0.40)
+	_fp_engulf(pos, "!", col, 2)
 
 func _impact_shock(pos: Vector2) -> void:
 	# Lightning fork — 2 jagged arcs (was 3) branching out. Yellow to match
@@ -1128,6 +1136,7 @@ func _impact_shock(pos: Vector2) -> void:
 		tw.tween_property(arc, "modulate:a", 0.0, 0.22)
 		tw.tween_callback(arc.queue_free)
 		_fp_chain(pos, end_pt, fp_col)
+	_fp_engulf(pos, "z", fp_col, 2)
 
 func _impact_shotgun(pos: Vector2) -> void:
 	var col := Color(1.0, 0.85, 0.10)
@@ -1143,7 +1152,7 @@ func _impact_shotgun(pos: Vector2) -> void:
 		tw.tween_property(c, "position", target, 0.18)
 		tw.parallel().tween_property(c, "modulate:a", 0.0, 0.18)
 		tw.tween_callback(c.queue_free)
-	_fp_burst(pos, "#", col, 2, 0.85, 0.16, direction, deg_to_rad(80.0), 0.008, 0.20)
+	_fp_burst(pos, "#", col, 5, 0.6, 0.20, direction, deg_to_rad(80.0), 0.008, 0.45)
 
 func _impact_homing(pos: Vector2) -> void:
 	# Pulse ring — expanding circle outline. Updated palette: homing is hot
@@ -1164,8 +1173,8 @@ func _impact_homing(pos: Vector2) -> void:
 	tw.tween_property(holder, "scale", Vector2(3.2, 3.2), 0.28)
 	tw.parallel().tween_property(ring, "modulate:a", 0.0, 0.28)
 	tw.tween_callback(holder.queue_free)
-	# Homing's projectile glyph is "^"; mirror it on impact.
-	_fp_ring(pos, "^", col, 0.20, 0.6, 10, 0.24, 0.008, 0.20)
+	_fp_ring(pos, "^", col, 0.20, 0.6, 10, 0.24, 0.008, 0.45)
+	_fp_burst(pos, "^", col, 4, 0.4, 0.22, Vector2.ZERO, TAU, 0.008, 0.45)
 
 func _impact_nova(pos: Vector2) -> void:
 	# 4-directional sparks (halved from 8 for perf). 2D only — FP skips the

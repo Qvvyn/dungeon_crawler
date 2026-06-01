@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://beamtrap_scene"]
+
+[ext_resource type="Script" path="res://scripts/BeamTrap.gd" id="1_beamtrap"]
+
+[node name="BeamTrap" type="Node2D"]
+script = ExtResource("1_beamtrap")

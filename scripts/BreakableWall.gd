@@ -2,10 +2,20 @@ extends StaticBody2D
 
 var _health: int = 3
 var _col: Color = Color(0.25, 0.15, 0.10)
+var _tiles_covered: Array[Vector2i] = []
 
 func setup(pos: Vector2, size: Vector2, col: Color) -> void:
 	position = pos
 	_col = col
+	# Record which grid tiles this wall occupies so we can clear them on death.
+	const _TILE: int = 32
+	var left := int((pos.x - size.x * 0.5) / _TILE)
+	var top  := int((pos.y - size.y * 0.5) / _TILE)
+	var cols := int(size.x / _TILE)
+	var rows := int(size.y / _TILE)
+	for gy in range(top, top + rows):
+		for gx in range(left, left + cols):
+			_tiles_covered.append(Vector2i(gx, gy))
 	add_to_group("breakable_wall")
 	z_index = -5
 	GameState.attach_fp_visual(self, "#", Color(0.60, 0.55, 0.50), 0.50)
@@ -38,6 +48,11 @@ func take_damage(amount: int) -> void:
 		queue_free()
 
 func _burst() -> void:
+	# Clear the covered tiles from the shared world grid and rebuild the FP wall
+	# mesh so the destroyed segment becomes transparent in first-person mode.
+	var world := get_tree().current_scene
+	if is_instance_valid(world) and world.has_method("notify_wall_destroyed"):
+		world.notify_wall_destroyed(_tiles_covered)
 	var gpos := global_position
 	var chars := ["#", "+", "*", "x"]
 	for i in 6:

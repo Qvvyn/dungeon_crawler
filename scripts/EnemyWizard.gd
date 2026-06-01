@@ -70,8 +70,8 @@ const SIGHT_CHECK_INTERVAL := 0.15
 # face, and robes — across two mouth frames for a subtle blink animation.
 # The only readable distinction is the randomized non-glowing robe color
 # picked from ROBE_COLORS at spawn time.
-const WIZARD_F0 := "   ^\n__/_\\__\n (*-*)\n /)V(\\|\n /___\\|"
-const WIZARD_F1 := "   ^\n__/_\\__\n (*3*)\n /)V(\\|\n /___\\|"
+const WIZARD_F0 := "   >\n__/_\\__\n (*-*)\n /)V(\\|\n /___\\|"
+const WIZARD_F1 := "   >\n__/_\\__\n (*3*)\n /)V(\\|\n /___\\|"
 
 var _anim_t: float = 0.0
 var _anim_frame: int = 0
@@ -407,8 +407,8 @@ func _spawn_proj(dir: Vector2, shoot_type: String) -> void:
 	p.set("source", "enemy")
 	p.set("shoot_type", shoot_type)
 	p.set("damage", maxi(1, equipped_wand.wand_damage))
-	p.set("pierce_remaining", equipped_wand.wand_pierce)
-	p.set("ricochet_remaining", equipped_wand.wand_ricochet)
+	p.set("pierce_remaining", equipped_wand.wand_pierce if shoot_type == "pierce" else 0)
+	p.set("ricochet_remaining", equipped_wand.wand_ricochet if shoot_type == "ricochet" else 0)
 	p.set("apply_freeze", shoot_type == "freeze")
 	p.set("apply_burn",   shoot_type == "fire")
 	p.set("apply_shock",  shoot_type == "shock")

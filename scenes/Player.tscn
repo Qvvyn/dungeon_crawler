@@ -2,15 +2,15 @@
 
 [ext_resource type="Script" path="res://scripts/Player.gd" id="1_player"]
 
-[sub_resource type="RectangleShape2D" id="RectangleShape2D_1"]
-size = Vector2(20, 14)
+[sub_resource type="CircleShape2D" id="CircleShape2D_1"]
+radius = 8.0
 
 [node name="Player" type="CharacterBody2D" groups=["player"]]
 script = ExtResource("1_player")
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
 position = Vector2(0, 0)
-shape = SubResource("RectangleShape2D_1")
+shape = SubResource("CircleShape2D_1")
 
 [node name="Visual" type="ColorRect" parent="."]
 visible = false

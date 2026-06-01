@@ -32,15 +32,6 @@ var _tick_dmg: int = TICK_DMG_BASE
 static var _shared_font: Font = null
 
 func _ready() -> void:
-	# FP rig opt-ins must be set BEFORE attach_fp_visual so register_entity
-	# picks up the multi-line allowance + shrinks the billboard so the 5-row
-	# flame patch sits flat on the ground instead of towering up the wall.
-	set_meta("fp_multiline", true)
-	set_meta("fp_pixel_size", 0.018)
-	set_meta("fp_outline_size", 3)   # thin glyph outline
-	# Flames stand UPRIGHT (vertical) so they read as fire rising off the
-	# ground rather than a flat floor decal.
-	GameState.attach_fp_visual(self, FLAME_F0, Color(1.0, 0.45, 0.05), 0.30)
 	# Scale radius with player level (mirrors Player._fire intelligence calc).
 	# Tightened — was `28 + INT*5` (33→68 px) which sprayed across most of
 	# a tile cluster; now `18 + INT*3` (21→42 px) so the patch reads as a
@@ -92,11 +83,32 @@ func _process(delta: float) -> void:
 		_anim_t = 0.0
 		_anim_f = 1 - _anim_f
 		_patch.text = FLAME_F0 if _anim_f == 0 else FLAME_F1
+		_fire_fp_pulse()
 	# Damage tick
 	_tick_t -= delta
 	if _tick_t <= 0.0:
 		_tick_t = TICK_RATE
 		_do_damage()
+
+func _fire_fp_pulse() -> void:
+	if GameState.active_rig == null or not is_instance_valid(GameState.active_rig):
+		return
+	if not GameState.active_rig.has_method("spawn_burst_2d"):
+		return
+	var col := Color(1.0, 0.42, 0.08)
+	var pos  := global_position
+	# Base spread scales with the patch's physical radius so the FP flame
+	# fills the same footprint as the 2D art. 6 y-levels match the original
+	# 5-row flame art's vertical reach; smaller pixel_size keeps glyphs crisp.
+	var sp: float = _radius / 32.0 * 0.75
+	GameState.active_rig.spawn_burst_2d(pos, "(", col, 4, sp,        0.22, Vector2.ZERO, TAU, 0.008, 0.04)
+	GameState.active_rig.spawn_burst_2d(pos, ")", col, 4, sp,        0.22, Vector2.ZERO, TAU, 0.008, 0.04)
+	GameState.active_rig.spawn_burst_2d(pos, "(", col, 3, sp * 0.85, 0.22, Vector2.ZERO, TAU, 0.009, 0.20)
+	GameState.active_rig.spawn_burst_2d(pos, "~", col, 3, sp * 0.85, 0.22, Vector2.ZERO, TAU, 0.009, 0.20)
+	GameState.active_rig.spawn_burst_2d(pos, ")", col, 3, sp * 0.70, 0.22, Vector2.ZERO, TAU, 0.009, 0.38)
+	GameState.active_rig.spawn_burst_2d(pos, "(", col, 2, sp * 0.55, 0.22, Vector2.ZERO, TAU, 0.008, 0.58)
+	GameState.active_rig.spawn_burst_2d(pos, "~", col, 2, sp * 0.40, 0.22, Vector2.ZERO, TAU, 0.008, 0.75)
+	GameState.active_rig.spawn_burst_2d(pos, ")", col, 1, sp * 0.22, 0.22, Vector2.ZERO, TAU, 0.007, 0.90)
 
 func _do_damage() -> void:
 	for enemy in get_tree().get_nodes_in_group("enemy"):

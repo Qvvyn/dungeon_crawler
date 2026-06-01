@@ -55,6 +55,10 @@ const TP_WALL_PAD: float     = 0.18   # back-off from the wall hit so camera doe
 const LAYER_ENV: int = 1
 const LAYER_ENT: int = 2
 
+# Wall height (world units). Boxes are centered, so a wall's center y = _WALL_H/2.
+# Shared by the static wall mesh (rebuild_walls) and animated wall segments.
+const _WALL_H: float = 1.5
+
 # Vertical spacing multiplier between rows of multi-line ASCII art. 1.0
 # packs rows at exactly font height; a little above 1.0 opens up the
 # silhouette so stacked glyphs (e.g. the wizard) read more clearly.
@@ -84,10 +88,23 @@ var _wall_mm: MultiMeshInstance3D = null
 # again mid-floor when a secret passage opens) frees the old ones instead of
 # stacking duplicate planes that z-fight.
 var _floor_ceiling: Array[MeshInstance3D] = []
+# Animated wall segments (doors / lifts / crushers). Separate MeshInstance3D
+# nodes in _world3d so animating a height never triggers a full rebuild_walls().
+var _wall_segments: Dictionary = {}   # id -> MeshInstance3D
+var _next_segment_id: int = 1
 var _player_light: OmniLight3D = null
+# ── Sector lighting (DOOM-style per-room darkness + torch flicker) ─────────────
+var _env: Environment = null          # stored so ambient_light_energy is drivable
+var _light_rooms: Array = []          # Array[Rect2i], parallel to _light_levels
+var _light_levels: Array = []         # 0=NORMAL, 1=DARK, 2=FLICKER
+var _cur_room_idx: int = -1           # cached room the player is in
+const _AMBIENT_NORMAL: float = 0.95   # matches the base ambient in _build_scene
+const _AMBIENT_DARK: float = 0.12     # torch-only pool; shader thins to sparse glyphs
+const _TORCH_BASE_ENERGY: float = 4.0
 var _entity_root: Node3D   = null
 # body InstanceID → {body, label3d (Label3D), stored_glyph, stored_color, base_pixel_size}
 var _entities: Dictionary = {}
+var _ice_cubes: Dictionary = {}  # body instance_id → persistent ice-cube Label3D in _world3d
 
 # Hitbox wireframe debug mesh — rebuilt each frame when GameState.show_hitboxes
 var _hitbox_mesh: ImmediateMesh      = null
@@ -142,6 +159,7 @@ var _interact_label: Label = null
 # post-shader pixelates the bar text along with everything else (instead
 # of the bar sitting crisp on the CanvasLayer above the ASCII view).
 var _hp_bars: Dictionary = {}     # enemy_id -> Label3D (LAYER_ENT)
+var _hp_bar_fill: Dictionary = {} # enemy_id -> last filled-cell count (text-rebuild cache)
 # Per-frame counter used to stagger raycasts across entities.
 var _frame_counter: int = 0
 # Cached wall-occlusion result per entity (key → bool). Recomputed on a
@@ -307,9 +325,10 @@ func _build_scene() -> void:
 	# still keeping the moody, dim-dungeon feel (the OmniLight player
 	# torch is still the primary lighting that makes nearby detail pop).
 	environment.ambient_light_color = Color(0.22, 0.22, 0.26)
-	environment.ambient_light_energy = 0.95
+	environment.ambient_light_energy = _AMBIENT_NORMAL
 	env.environment = environment
 	_world3d.add_child(env)
+	_env = environment   # kept so per-room darkness can drive ambient each frame
 
 	_player_light = OmniLight3D.new()
 	_player_light.light_energy = 4.0
@@ -343,6 +362,54 @@ func set_wall_color(col: Color) -> void:
 	if _wall_mm != null and is_instance_valid(_wall_mm) and not _grid.is_empty():
 		rebuild_walls()
 
+# Biome wall albedo (already lightened the same way the baked walls are) so
+# animated segments can match the surrounding wall color.
+func get_wall_color() -> Color:
+	return _wall_albedo.lightened(0.15)
+
+# ── Sector lighting ───────────────────────────────────────────────────────────
+# World passes per-room light levels (0=NORMAL, 1=DARK, 2=FLICKER) parallel to
+# the room rects. _update_lighting (per frame) drives ambient + torch from these.
+func set_room_lighting(rooms: Array, levels: Array) -> void:
+	_light_rooms = rooms
+	_light_levels = levels
+	_cur_room_idx = -1
+
+func _update_lighting(delta: float, pp: Vector2) -> void:
+	if _env == null or not is_instance_valid(_player_light):
+		return
+	var amp_scale: float = 0.35 if GameState.disable_flashing else 1.0
+	var t: float = Time.get_ticks_msec() * 0.001
+	# Which room is the player in? Use the cached one if still inside; else rescan.
+	var level: int = 0
+	if not _light_rooms.is_empty() and _light_rooms.size() == _light_levels.size():
+		var ptile := Vector2i(int(pp.x / TILE_PX), int(pp.y / TILE_PX))
+		if _cur_room_idx >= 0 and _cur_room_idx < _light_rooms.size() \
+				and (_light_rooms[_cur_room_idx] as Rect2i).has_point(ptile):
+			level = int(_light_levels[_cur_room_idx])
+		else:
+			_cur_room_idx = -1
+			for i in _light_rooms.size():
+				if (_light_rooms[i] as Rect2i).has_point(ptile):
+					_cur_room_idx = i
+					level = int(_light_levels[i])
+					break
+	# Ambient target by level. FLICKER strobes directly; others ease.
+	if level == 2 and not GameState.disable_flashing:
+		var flick: float = clampf(sin(t * 12.0) * sin(t * 3.3) + 0.25, 0.0, 1.0)
+		_env.ambient_light_energy = lerpf(_AMBIENT_DARK, _AMBIENT_NORMAL, flick)
+	else:
+		var target: float = _AMBIENT_NORMAL
+		if level == 1:
+			target = _AMBIENT_DARK
+		elif level == 2:
+			target = (_AMBIENT_DARK + _AMBIENT_NORMAL) * 0.5   # reduce-flashing: steady mid
+		_env.ambient_light_energy = lerpf(_env.ambient_light_energy, target, clampf(delta * 3.0, 0.0, 1.0))
+	# Torch flicker — subtle layered sine so the torch reads as alive.
+	var tf: float = (sin(t * 9.0) * 0.5 + 0.5) * 0.6 + (sin(t * 23.0 + 2.1) * 0.5 + 0.5) * 0.4
+	var torch_amp: float = 0.12 * amp_scale
+	_player_light.light_energy = _TORCH_BASE_ENERGY * (1.0 - torch_amp + torch_amp * tf)
+
 func set_floor_color(col: Color) -> void:
 	_floor_albedo = col
 	# Rebuild so the floor plane picks up the new biome color.
@@ -367,7 +434,6 @@ func rebuild_walls() -> void:
 	# distant enemies. With taller walls the player's torch fades cleanly into
 	# darkness above, distant entities stay below the ceiling line, and the
 	# corridors feel more mazey. Mesh is centered, so position y = height/2.
-	const _WALL_H := 1.5
 	for y in _grid_h:
 		var row: Array = _grid[y]
 		for x in _grid_w:
@@ -421,6 +487,45 @@ func _build_floor_ceiling() -> void:
 		inst.layers = LAYER_ENV
 		_world3d.add_child(inst)
 		_floor_ceiling.append(inst)
+
+# ── Animated wall segments (doors / lifts / crushers) ─────────────────────────
+# A wall-shaped box that a caller (e.g. Door.gd) animates independently of the
+# baked wall mesh. Lives in _world3d on LAYER_ENV so it reads exactly like a
+# real wall through the ASCII post-shader. Returns an id for later control.
+func add_wall_segment(pos_2d: Vector2, color: Color) -> int:
+	if _world3d == null or not is_instance_valid(_world3d):
+		return -1
+	var box := BoxMesh.new()
+	box.size = Vector3(1.0, _WALL_H, 1.0)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.roughness = 1.0
+	box.material = mat
+	var seg := MeshInstance3D.new()
+	seg.mesh = box
+	seg.position = Vector3(pos_2d.x / TILE_PX, _WALL_H * 0.5, pos_2d.y / TILE_PX)
+	seg.layers = LAYER_ENV
+	_world3d.add_child(seg)
+	var id := _next_segment_id
+	_next_segment_id += 1
+	_wall_segments[id] = seg
+	return id
+
+# t in [0,1]: 0 = closed (full height), 1 = open (sunk fully into the floor).
+func set_wall_segment_open(id: int, t: float) -> void:
+	var seg: MeshInstance3D = _wall_segments.get(id) as MeshInstance3D
+	if seg == null or not is_instance_valid(seg):
+		return
+	var amt: float = clampf(t, 0.0, 1.0)
+	seg.scale.y = maxf(0.001, 1.0 - amt)
+	# Keep the base on the floor while the top sinks: center y = remaining/2.
+	seg.position.y = _WALL_H * (1.0 - amt) * 0.5
+
+func remove_wall_segment(id: int) -> void:
+	var seg: MeshInstance3D = _wall_segments.get(id) as MeshInstance3D
+	if seg != null and is_instance_valid(seg):
+		seg.queue_free()
+	_wall_segments.erase(id)
 
 # Pixel size (world units per font pixel) baseline by kind. Projectiles are
 # kept small and uniform so they read as fast-moving sparks rather than
@@ -596,6 +701,10 @@ func unregister_entity(body: Node2D) -> void:
 	if is_instance_valid(lbl_v):
 		(lbl_v as Node).queue_free()
 	_entities.erase(key)
+	if _ice_cubes.has(key):
+		if is_instance_valid(_ice_cubes[key]):
+			(_ice_cubes[key] as Node).queue_free()
+		_ice_cubes.erase(key)
 
 func clear_entities() -> void:
 	for key in _entities.keys():
@@ -604,6 +713,12 @@ func clear_entities() -> void:
 		if is_instance_valid(lbl_v):
 			(lbl_v as Node).queue_free()
 	_entities.clear()
+	# Free any animated wall segments (doors etc.) so they don't leak across floors.
+	for sid in _wall_segments.keys():
+		var seg_v: Variant = _wall_segments[sid]
+		if is_instance_valid(seg_v):
+			(seg_v as Node).queue_free()
+	_wall_segments.clear()
 
 func _process(delta: float) -> void:
 	if not visible:
@@ -613,6 +728,9 @@ func _process(delta: float) -> void:
 		return
 	var player2d: Node2D = player as Node2D
 	var pp: Vector2 = player2d.global_position
+	# Fetch the enemy group ONCE this frame — reused by the auto-register loop
+	# below and by _update_enemy_hp_bars(), instead of allocating the array twice.
+	var enemies: Array = get_tree().get_nodes_in_group("enemy")
 
 	# Camera sync.
 	var aim: Vector2 = Vector2.RIGHT
@@ -669,6 +787,7 @@ func _process(delta: float) -> void:
 	if _camera_ent != null and is_instance_valid(_camera_ent):
 		_camera_ent.global_transform = _camera.global_transform
 	_player_light.position = player_pos_3d
+	_update_lighting(delta, pp)
 
 	# Auto-register any enemy that's in the "enemy" group but missing from
 	# _entities — about half the enemy scripts (Wizard, all 5 bosses, the
@@ -678,7 +797,7 @@ func _process(delta: float) -> void:
 	# damage still work, which is what produced the "healthbars moving toward
 	# me with no sprite" report. The rig's live-glyph sync reads AsciiChar.text
 	# each frame, so any placeholder glyph works at registration time.
-	for e: Node in get_tree().get_nodes_in_group("enemy"):
+	for e: Node in enemies:
 		if not is_instance_valid(e) or not (e is Node2D):
 			continue
 		if _entities.has(e.get_instance_id()):
@@ -759,15 +878,27 @@ func _process(delta: float) -> void:
 				var d := dir_v as Vector2
 				if d.length_squared() > 0.001:
 					ry = -d.angle()
+			if body.has_meta("fp_floor_rotation_offset"):
+				ry += float(body.get_meta("fp_floor_rotation_offset"))
 			lbl.rotation = Vector3(-PI / 2.0, ry, 0.0)
 		# Manual camera-facing orientation for entities that need an
 		# in-plane Z rotation that Godot's shader-billboard would wipe.
 		# Used by the pierce projectile (")" rotated +PI/2 reads as ⌒).
+		# fp_rotation_from_direction: Z rotation is derived from the body's
+		# live direction vector each frame (fp_rotation_z acts as an offset),
+		# so the glyph tip tracks the projectile's travel direction.
 		if body.has_meta("fp_rotation_z"):
 			var to_cam_e: Vector3 = cam_pos - lbl.position
 			if to_cam_e.length() > 0.001:
 				lbl.look_at(lbl.position - to_cam_e, Vector3.UP)
-				lbl.rotate_object_local(Vector3(0, 0, 1), float(body.get_meta("fp_rotation_z")))
+				var z_rot: float = float(body.get_meta("fp_rotation_z"))
+				if body.get_meta("fp_rotation_from_direction", false):
+					var dir_v2: Variant = body.get("direction")
+					if dir_v2 is Vector2:
+						var d2: Vector2 = dir_v2 as Vector2
+						if d2.length_squared() > 0.001:
+							z_rot = -d2.angle() + z_rot
+				lbl.rotate_object_local(Vector3(0, 0, 1), z_rot)
 		# Live glyph + modulate from body's AsciiChar.
 		var stored_glyph: String = entry["stored_glyph"]
 		var stored_color: Color = entry["stored_color"]
@@ -799,53 +930,39 @@ func _process(delta: float) -> void:
 			live_modulate = al.modulate
 		# Status overlay sync — read FrozenBlock / EnflameOverlay / ElectricBolt
 		# siblings off the body so debuffs read in FP the same way they do in
-		# top-down. Frozen replaces the entity entirely (ice block covers it);
-		# burn and shock prepend their glyph above the entity so the player
-		# can see "this thing is on fire AND electrified".
+		# top-down. Frozen tints the enemy ice-blue and spawns a persistent ice-cube
+		# Label3D in _world3d (through the ASCII shader); burn and shock prepend
+		# their glyph above the entity.
 		var status_modulate := Color(1, 1, 1, 1)
 		var has_status := false
 		var frozen_child := body.get_node_or_null("FrozenBlock") as Label
 		if frozen_child != null and frozen_child.text != "":
-			# Wrap the enemy's FULL multi-line glyph inside an ice frame
-			# so the player can still read what they froze. The ice frame
-			# now has 5 inner rows so even the tallest enemy silhouettes
-			# (5-row wizard, 3-row shooter, etc) fit cleanly. Each inner
-			# line of the enemy glyph is centered + padded to the frame
-			# width (8 chars between the | side walls).
-			var enemy_lines: PackedStringArray = live_text.split("\n")
-			# Drop trailing empty lines so padding lands consistently.
-			while enemy_lines.size() > 0 and enemy_lines[enemy_lines.size() - 1].strip_edges() == "":
-				enemy_lines.remove_at(enemy_lines.size() - 1)
-			if enemy_lines.size() == 0:
-				enemy_lines = PackedStringArray([stored_glyph])
-			const ICE_INNER_WIDTH: int = 8
-			const ICE_INNER_HEIGHT: int = 5
-			var padded: Array[String] = []
-			for raw_line in enemy_lines:
-				var l: String = String(raw_line)
-				if l.length() > ICE_INNER_WIDTH:
-					l = l.substr(0, ICE_INNER_WIDTH)
-				var pad_each: int = (ICE_INNER_WIDTH - l.length()) / 2
-				var left_pad: String = " ".repeat(maxi(0, pad_each))
-				var right_pad: String = " ".repeat(maxi(0, ICE_INNER_WIDTH - l.length() - pad_each))
-				padded.append("|" + left_pad + l + right_pad + "|")
-			# Top-pad with empty rows so the enemy is vertically centered
-			# inside the 5-row inner space.
-			while padded.size() < ICE_INNER_HEIGHT:
-				var blank: String = "|" + " ".repeat(ICE_INNER_WIDTH) + "|"
-				if padded.size() % 2 == 0:
-					padded.append(blank)
-				else:
-					padded.insert(0, blank)
-			# Trim if the enemy glyph was taller than the inner space.
-			while padded.size() > ICE_INNER_HEIGHT:
-				padded.remove_at(padded.size() - 1)
-			var top_border: String = "." + "=".repeat(ICE_INNER_WIDTH) + "."
-			var bot_border: String = "'" + "=".repeat(ICE_INNER_WIDTH) + "'"
-			live_text = top_border + "\n" + "\n".join(padded) + "\n" + bot_border
-			status_modulate = frozen_child.modulate
+			# Enemy art stays unchanged -- just apply ice-blue tint.
+			status_modulate = Color(0.72, 0.92, 1.0)
 			has_status = true
+			# Create or reposition the persistent crunched ice-cube Label3D in _world3d.
+			if not _ice_cubes.has(key):
+				var ice := Label3D.new()
+				ice.text = ".========.\n|        |\n|        |\n|        |\n|        |\n|        |\n'========'"
+				ice.font = MonoFont.get_font()
+				ice.font_size = 64
+				ice.outline_size = 0
+				ice.pixel_size = 0.003
+				ice.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+				ice.no_depth_test = false
+				ice.shaded = false
+				ice.double_sided = true
+				ice.modulate = Color(0.90, 0.97, 1.0, 0.85)
+				ice.outline_modulate = Color(0, 0, 0, 1)
+				ice.alpha_cut = Label3D.ALPHA_CUT_DISCARD
+				_world3d.add_child(ice)
+				_ice_cubes[key] = ice
+			(_ice_cubes[key] as Label3D).position = ent_3d
 		else:
+			if _ice_cubes.has(key):
+				if is_instance_valid(_ice_cubes[key]):
+					(_ice_cubes[key] as Node).queue_free()
+				_ice_cubes.erase(key)
 			var enflame_child := body.get_node_or_null("EnflameOverlay") as Label
 			var electric_child := body.get_node_or_null("ElectricBolt") as Label
 			var poison_child := body.get_node_or_null("PoisonOverlay") as Label
@@ -858,7 +975,8 @@ func _process(delta: float) -> void:
 				status_lines.append(poison_child.text)
 			if not status_lines.is_empty():
 				status_lines.append(live_text)
-				live_text = "\n".join(status_lines)
+				live_text = "
+".join(status_lines)
 				has_status = true
 				# Priority for the tint when multiple effects stack: burn >
 				# shock > poison. Each picks the overlay's own modulate so
@@ -975,7 +1093,13 @@ func _process(delta: float) -> void:
 			sl.text = live_text
 			sl.modulate = final_modulate
 			var line_count: int = live_text.count("\n") + 1
-			sl.pixel_size = base_ps if line_count <= 1 else base_ps / float(line_count)
+			# Also factor in the width of the widest row so that 5-char-wide
+			# multi-row art doesn't render twice as wide as a single-char enemy.
+			var max_col: int = 1
+			for ln: String in live_text.split("\n"):
+				max_col = maxi(max_col, ln.strip_edges().length())
+			var dim_scale: float = maxf(float(line_count), float(max_col))
+			sl.pixel_size = base_ps / dim_scale
 	for key in stale:
 		var entry2: Dictionary = _entities[key]
 		var lbl_v2: Variant = entry2["label"]
@@ -983,6 +1107,10 @@ func _process(delta: float) -> void:
 			(lbl_v2 as Node).queue_free()
 		_entities.erase(key)
 		_occlusion_cache.erase(key)
+		if _ice_cubes.has(key):
+			if is_instance_valid(_ice_cubes[key]):
+				(_ice_cubes[key] as Node).queue_free()
+			_ice_cubes.erase(key)
 
 	_update_hitbox_mesh()
 
@@ -1007,7 +1135,7 @@ func _process(delta: float) -> void:
 	# Enemy health bars — project enemy positions to screen and draw a
 	# small bar above each one. Floor is occupied by hazards so bars sit
 	# above the head.
-	_update_enemy_hp_bars()
+	_update_enemy_hp_bars(enemies)
 	# Floating damage text — re-projects each active text from its source
 	# world position so the labels stay glued to the enemy when the
 	# camera turns (was tweening screen-space, drifted off).
@@ -1102,15 +1230,15 @@ func flash_melee(hit_pos2d: Vector2, color: Color) -> void:
 # 3D world. is_telegraph swaps the glyph to a faint "·" so the windup reads
 # distinctly from the actual sweep. Each emitter has its own pooled label
 # array so concurrent beam enemies don't fight over the same dots.
-func set_enemy_beam(emitter: Node, start_pos2d: Vector2, end_pos2d: Vector2, color: Color, is_telegraph: bool = false) -> void:
+func set_enemy_beam(emitter: Node, start_pos2d: Vector2, end_pos2d: Vector2, color: Color, is_telegraph: bool = false, y: float = 0.45) -> void:
 	if not visible or _world3d == null or not is_instance_valid(_world3d):
 		return
 	if not is_instance_valid(emitter):
 		return
 	var key := emitter.get_instance_id()
 	var pool: Array = _enemy_beam_pools.get(key, []) as Array
-	var start_3d := Vector3(start_pos2d.x / TILE_PX, 0.45, start_pos2d.y / TILE_PX)
-	var end_3d   := Vector3(end_pos2d.x / TILE_PX, 0.45, end_pos2d.y / TILE_PX)
+	var start_3d := Vector3(start_pos2d.x / TILE_PX, y, start_pos2d.y / TILE_PX)
+	var end_3d   := Vector3(end_pos2d.x / TILE_PX, y, end_pos2d.y / TILE_PX)
 	var dist := start_3d.distance_to(end_3d)
 	var step := 0.35
 	var count: int = maxi(0, int(dist / step))
@@ -1218,7 +1346,7 @@ func _spawn_fx_label(pos: Vector3, text: String, color: Color, pixel_size: float
 	lbl.text = text
 	lbl.font = MonoFont.get_font()
 	lbl.font_size = 48
-	lbl.outline_size = 6
+	lbl.outline_size = 0
 	lbl.pixel_size = pixel_size
 	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	lbl.no_depth_test = false
@@ -1334,10 +1462,8 @@ func spawn_chain_arc_2d(from_2d: Vector2, to_2d: Vector2, color: Color,
 	_spawn_fx_label(waypoints[waypoints.size() - 1], "Z", color, PS,
 			waypoints[waypoints.size() - 1], lifetime)
 
-	# Burst impacts at both endpoints.
+	# Burst impact at the origin endpoint only — * removed per design.
 	spawn_burst_2d(from_2d, "~", color, 4, 0.25, lifetime * 0.65,
-			Vector2.ZERO, TAU, 0.010, y)
-	spawn_burst_2d(to_2d,   "*", color, 5, 0.28, lifetime * 0.80,
 			Vector2.ZERO, TAU, 0.010, y)
 
 # ── Per-emitter persistent warning ring ──────────────────────────────────────
@@ -1443,7 +1569,7 @@ func _refresh_lock_label() -> void:
 # entity ASCII art. Wall occlusion via raycast (camera_ent has no walls
 # to provide depth-based occlusion).
 const _HP_BAR_CELLS: int = 10
-func _update_enemy_hp_bars() -> void:
+func _update_enemy_hp_bars(enemies: Array) -> void:
 	# HP bars live in _ent_world3d (entity viewport, no shader) alongside
 	# the entity Label3Ds so they read crisp like the enemy art.
 	if _ent_world3d == null or not is_instance_valid(_ent_world3d):
@@ -1451,10 +1577,7 @@ func _update_enemy_hp_bars() -> void:
 	if _camera == null or not is_instance_valid(_camera):
 		return
 	var alive_keys: Dictionary = {}
-	var tree := get_tree()
-	if tree == null:
-		return
-	for e: Node in tree.get_nodes_in_group("enemy"):
+	for e: Node in enemies:
 		if not is_instance_valid(e) or not (e is Node2D):
 			continue
 		var enemy_2d: Node2D = e as Node2D
@@ -1466,7 +1589,6 @@ func _update_enemy_hp_bars() -> void:
 		if ratio >= 0.999:
 			continue
 		var filled: int = clampi(int(round(float(_HP_BAR_CELLS) * ratio)), 0, _HP_BAR_CELLS)
-		var bar_text: String = "=".repeat(filled) + "-".repeat(_HP_BAR_CELLS - filled)
 		var key := enemy_2d.get_instance_id()
 		alive_keys[key] = true
 		var lbl: Label3D = _hp_bars.get(key) as Label3D
@@ -1501,7 +1623,12 @@ func _update_enemy_hp_bars() -> void:
 			lbl.visible = false
 			continue
 		lbl.visible = true
-		lbl.text = bar_text
+		# Only rebuild the bar string when the filled-cell count actually
+		# changes — avoids a "=".repeat()/"-".repeat() alloc every frame per
+		# damaged enemy.
+		if _hp_bar_fill.get(key, -1) != filled:
+			lbl.text = "=".repeat(filled) + "-".repeat(_HP_BAR_CELLS - filled)
+			_hp_bar_fill[key] = filled
 		lbl.position = anchor_pos
 		if ratio > 0.6:
 			lbl.modulate = Color(0.30, 1.0, 0.30)
@@ -1516,6 +1643,7 @@ func _update_enemy_hp_bars() -> void:
 			if is_instance_valid(stale_lbl):
 				stale_lbl.queue_free()
 			_hp_bars.erase(key)
+			_hp_bar_fill.erase(key)
 
 # Pulls the best "[E] …" hint off any nearby registered interactable and
 # floats it on the FP CanvasLayer. Most interactables already toggle their

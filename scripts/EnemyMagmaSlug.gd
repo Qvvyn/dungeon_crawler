@@ -56,6 +56,7 @@ func _drop_lava() -> void:
 	# slug can lay several tiles per fight and they used to persist for the
 	# whole run, cluttering the room (especially loud in FP).
 	lava.set("lifetime", 8.0)
+	lava.set("tile_radius", 5.0)
 	tree.current_scene.add_child(lava)
 
 func _enemy_anim_update(delta: float) -> void:

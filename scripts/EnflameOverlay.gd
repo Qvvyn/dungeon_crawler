@@ -37,9 +37,14 @@ static func spawn_patch(host: Node) -> void:
 	var tree := (host as Node).get_tree()
 	if tree == null or tree.current_scene == null:
 		return
+	var spawn_pos: Vector2 = (host as Node2D).global_position
+	# Don't stack patches — skip if one already exists within 20 px.
+	for existing in tree.get_nodes_in_group("fire_patch"):
+		if is_instance_valid(existing) and (existing as Node2D).global_position.distance_to(spawn_pos) < 20.0:
+			return
 	var patch := Node2D.new()
 	patch.set_script(FIRE_PATCH_SCRIPT)
-	patch.global_position = (host as Node2D).global_position
+	patch.global_position = spawn_pos
 	tree.current_scene.add_child(patch)
 
 # Centralised "every 2 burn-hits while ENFLAMED → drop a fresh ground patch"
