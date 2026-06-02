@@ -12,6 +12,11 @@ shader_type canvas_item;
 
 uniform float cell_px = 8.0;
 uniform vec2  viewport_size = vec2(200.0, 80.0);
+// Radial "blinded" vignette — 0.0 means no darkening, 1.0 means full
+// darkness everywhere except a tight center disk. Drives the periphery
+// fade-to-black when a status effect (or in-world hazard) blinds the
+// player. FirstPersonRig.set_blinded(amount) writes this.
+uniform float darkness = 0.0;
 
 float brightness_of(vec4 c) {
 	return dot(c.rgb, vec3(0.299, 0.587, 0.114));
@@ -90,5 +95,18 @@ void fragment() {
 	// individual channels from saturating to pure white on the brightest
 	// emissive overlap.
 	vec3 col = clamp(src.rgb * mask, vec3(0.0), vec3(0.88));
+	// Blinded vignette — radial darkness from screen center. At
+	// darkness=0 the multiplier is 1.0 everywhere; at darkness=1 only a
+	// small disk near the center survives, the rest fades to black.
+	if (darkness > 0.0) {
+		vec2 ndc = SCREEN_UV - vec2(0.5);
+		ndc.x *= viewport_size.x / viewport_size.y;
+		float r = length(ndc);
+		// Inner safe radius shrinks as darkness grows; outer goes to 0.
+		float inner = mix(0.55, 0.08, darkness);
+		float outer = mix(0.95, 0.18, darkness);
+		float vignette = 1.0 - smoothstep(inner, outer, r);
+		col *= vignette;
+	}
 	COLOR = vec4(col, 1.0);
 }

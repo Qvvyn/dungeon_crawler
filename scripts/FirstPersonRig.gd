@@ -83,7 +83,12 @@ var _floor_albedo: Color = Color(0.15, 0.13, 0.10)
 var _viewport: SubViewport = null
 var _world3d: Node3D       = null
 var _camera: Camera3D      = null
-var _wall_mm: MultiMeshInstance3D = null
+# Walls are partitioned into uniform grid chunks (Build-engine-style sectors)
+# so future per-tile height changes (DOOM_DESIGN.md §3 — lifts, crushers)
+# only have to rebuild one chunk's MultiMesh, not all walls. Chunk coord =
+# (tile_x / WALL_CHUNK_SIZE, tile_y / WALL_CHUNK_SIZE), stored as Vector2i.
+const WALL_CHUNK_SIZE: int = 8
+var _wall_chunks: Dictionary = {}   # Vector2i → MultiMeshInstance3D
 # Floor + ceiling plane instances, tracked so rebuild_walls() (which can run
 # again mid-floor when a secret passage opens) frees the old ones instead of
 # stacking duplicate planes that z-fight.
@@ -91,8 +96,18 @@ var _floor_ceiling: Array[MeshInstance3D] = []
 # Animated wall segments (doors / lifts / crushers). Separate MeshInstance3D
 # nodes in _world3d so animating a height never triggers a full rebuild_walls().
 var _wall_segments: Dictionary = {}   # id -> MeshInstance3D
+# Per-segment tile + open_amount tracking so the entity-occlusion raycast
+# can treat closed segments as walls. Without this, enemies behind a closed
+# door render right through the visual wall (door tiles aren't in _grid).
+var _segment_tile: Dictionary = {}    # id -> Vector2i (the grid tile the segment sits on)
+var _segment_open: Dictionary = {}    # id -> float (0=closed, 1=fully open)
+var _tile_blocks_sight: Dictionary = {}  # Vector2i -> true (only blocking tiles stored)
+const _SEGMENT_BLOCK_THRESHOLD: float = 0.5   # wall blocks sight while it's at least half-height
 var _next_segment_id: int = 1
 var _player_light: OmniLight3D = null
+# ASCII post-shader material — referenced so set_blinded() can drive the
+# `darkness` uniform without re-finding the container each call.
+var _ascii_mat: ShaderMaterial = null
 # ── Sector lighting (DOOM-style per-room darkness + torch flicker) ─────────────
 var _env: Environment = null          # stored so ambient_light_energy is drivable
 var _light_rooms: Array = []          # Array[Rect2i], parallel to _light_levels
@@ -126,10 +141,15 @@ var _melee_lbl: Label3D = null
 var _melee_timer: float = 0.0
 const MELEE_LIFE: float = 0.18
 
-# Enemy beam emitter pools — keyed by the emitter's instance ID so multiple
-# beam-sweeping enemies can fire concurrently without trampling each other's
-# dots. Each entry is an Array[Label3D] of pooled glyphs along the path.
-var _enemy_beam_pools: Dictionary = {}
+# Enemy beam emitter visuals — keyed by the emitter's instance ID so multiple
+# beam-sweeping enemies can fire concurrently without trampling each other.
+# Telegraph phase uses pooled "·" Label3D dots (the warning visual the
+# player can clearly read as "incoming beam, get out"); sweep phase uses a
+# solid CylinderMesh tube per emitter — same "crunchy ray" visual the
+# player's beam wand produces, oriented via the shared _orient_beam_tube
+# helper. Both stored per-emitter so concurrent sweepers don't collide.
+var _enemy_beam_pools: Dictionary = {}   # emitter_id → Array[Label3D] (telegraph dots)
+var _enemy_beam_tubes: Dictionary = {}   # emitter_id → MeshInstance3D (sweep cylinder)
 
 # (Shock zap is now fire-and-forget — each tick spawns a brief Line2D that
 # fades + queue_frees itself, no per-emitter pool. The old pooled approach
@@ -160,6 +180,11 @@ var _interact_label: Label = null
 # of the bar sitting crisp on the CanvasLayer above the ASCII view).
 var _hp_bars: Dictionary = {}     # enemy_id -> Label3D (LAYER_ENT)
 var _hp_bar_fill: Dictionary = {} # enemy_id -> last filled-cell count (text-rebuild cache)
+var _hp_bar_color: Dictionary = {} # enemy_id -> last color bucket (0/1/2), modulate-assign cache
+# Debug name overlay (KEY_N) — Label3Ds floated above enemy heads. Created
+# lazily when GameState.show_enemy_names flips on; reaped here when the
+# enemy dies AND on the same toggle going off.
+var _name_labels: Dictionary = {}  # enemy_id -> Label3D (LAYER_ENT)
 # Per-frame counter used to stagger raycasts across entities.
 var _frame_counter: int = 0
 # Cached wall-occlusion result per entity (key → bool). Recomputed on a
@@ -188,6 +213,14 @@ func set_camera_mode(mode: String) -> void:
 		return
 	_camera_mode = mode
 
+# Drives the ASCII post-shader's `darkness` uniform. 0.0 = no vignette,
+# 1.0 = nearly all the screen blacked out except a tight center disk.
+# Hook for status effects ("blinded" debuff) or environmental hazards.
+func set_blinded(amount: float) -> void:
+	if _ascii_mat == null:
+		return
+	_ascii_mat.set_shader_parameter("darkness", clampf(amount, 0.0, 1.0))
+
 # Walks a ray (in tile coords) from `from` toward `to`, returning the
 # point just before the first wall cell. Used by 3rd-person to keep the
 # camera in front of any wall behind the player. Steps in ~0.1-tile
@@ -214,7 +247,10 @@ func _raycast_to_grid(from: Vector2, to: Vector2) -> Vector2:
 			# Out of bounds — treat like a wall so the camera doesn't escape.
 			return prev_clear
 		var row: Array = _grid[gy]
-		if int(row[gx]) == 1:
+		# Closed-enough wall segments (doors, lifts, crushers) also block
+		# sight — without this, enemies render right through a closed door
+		# because the door tile itself is FLOOR in _grid.
+		if int(row[gx]) == 1 or _tile_blocks_sight.has(Vector2i(gx, gy)):
 			# Back off slightly along the ray so we sit in front of the wall.
 			var safe_t: float = maxf(0.0, t - TP_WALL_PAD)
 			return from + dir * safe_t
@@ -230,17 +266,21 @@ func _build_scene() -> void:
 	container.anchor_bottom = 1.0
 	container.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-	# Low-res mode: halve both viewport dimensions AND cell_px so the ASCII
-	# grid stays the same size on screen but the GPU renders 75% fewer pixels.
-	var vp_w: int   = VIEWPORT_W / 2 if GameState.fp_low_res else VIEWPORT_W
-	var vp_h: int   = VIEWPORT_H / 2 if GameState.fp_low_res else VIEWPORT_H
-	var cell: float = CELL_PX  / 2.0 if GameState.fp_low_res else CELL_PX
+	# Fixed resolution. The old low-res mode (halving vp_w/vp_h/cell_px
+	# from GameState.fp_low_res) produced a mostly-black scene at runtime —
+	# disabled until that's diagnosed. The GameState flag is left around
+	# for save-file compatibility but not read anywhere.
+	var vp_w: int   = VIEWPORT_W
+	var vp_h: int   = VIEWPORT_H
+	var cell: float = CELL_PX
 
 	var mat := ShaderMaterial.new()
 	mat.shader = preload("res://shaders/ascii_post.gdshader")
 	mat.set_shader_parameter("cell_px", cell)
 	mat.set_shader_parameter("viewport_size", Vector2(vp_w, vp_h))
+	mat.set_shader_parameter("darkness", 0.0)
 	container.material = mat
+	_ascii_mat = mat
 	add_child(container)
 
 	_viewport = SubViewport.new()
@@ -359,7 +399,7 @@ func _build_scene() -> void:
 func set_wall_color(col: Color) -> void:
 	_wall_albedo = col
 	# If walls already exist, rebuild so the new color takes effect.
-	if _wall_mm != null and is_instance_valid(_wall_mm) and not _grid.is_empty():
+	if not _wall_chunks.is_empty() and not _grid.is_empty():
 		rebuild_walls()
 
 # Biome wall albedo (already lightened the same way the baked walls are) so
@@ -413,7 +453,7 @@ func _update_lighting(delta: float, pp: Vector2) -> void:
 func set_floor_color(col: Color) -> void:
 	_floor_albedo = col
 	# Rebuild so the floor plane picks up the new biome color.
-	if _wall_mm != null and is_instance_valid(_wall_mm) and not _grid.is_empty():
+	if not _wall_chunks.is_empty() and not _grid.is_empty():
 		rebuild_walls()
 
 func set_grid(grid: Array, grid_w: int, grid_h: int) -> void:
@@ -425,25 +465,92 @@ func set_grid(grid: Array, grid_w: int, grid_h: int) -> void:
 func rebuild_walls() -> void:
 	if _grid.is_empty():
 		return
-	if _wall_mm != null and is_instance_valid(_wall_mm):
-		_wall_mm.queue_free()
-	var positions: Array[Vector3] = []
+	# Free any existing chunks before rebuilding.
+	for chunk_v in _wall_chunks.values():
+		if is_instance_valid(chunk_v):
+			(chunk_v as Node).queue_free()
+	_wall_chunks.clear()
+	# Bucket wall tiles by chunk coord so each chunk gets its own MultiMesh.
+	# Build-engine-style partition: future per-tile floor/ceiling height
+	# changes (lifts, crushers — DOOM_DESIGN.md §3) can rebuild only the
+	# affected chunk via _rebuild_wall_chunk(), not the whole grid.
 	# Theme F — walls raised 1.0→1.5 tall to lift their tops well above the
 	# 0.5 eye line. At full 1.0 height the wall ceiling sat exactly at the
 	# camera's Y, which gave the horizon a flat "ceiling band" that swallowed
 	# distant enemies. With taller walls the player's torch fades cleanly into
 	# darkness above, distant entities stay below the ceiling line, and the
 	# corridors feel more mazey. Mesh is centered, so position y = height/2.
+	var buckets: Dictionary = {}   # Vector2i → Array[Vector3]
 	for y in _grid_h:
 		var row: Array = _grid[y]
 		for x in _grid_w:
-			if int(row[x]) == 1:
-				positions.append(Vector3(float(x) + 0.5, _WALL_H * 0.5, float(y) + 0.5))
+			if int(row[x]) != 1:
+				continue
+			var co := Vector2i(x / WALL_CHUNK_SIZE, y / WALL_CHUNK_SIZE)
+			if not buckets.has(co):
+				buckets[co] = [] as Array
+			(buckets[co] as Array).append(Vector3(float(x) + 0.5, _WALL_H * 0.5, float(y) + 0.5))
+	# Shared box + material across every chunk — single geometry resource,
+	# one MultiMeshInstance3D draw call per non-empty chunk.
 	var box := BoxMesh.new()
 	box.size = Vector3(1.0, _WALL_H, 1.0)
 	var mat := StandardMaterial3D.new()
 	# Brighten the biome wall color a touch so it reads under the dim
 	# dungeon lighting + ASCII shader (the raw 2D color is quite dark).
+	mat.albedo_color = _wall_albedo.lightened(0.15)
+	mat.roughness = 1.0
+	box.material = mat
+	for co in buckets.keys():
+		var positions: Array = buckets[co]
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = box
+		mm.instance_count = positions.size()
+		for i in positions.size():
+			mm.set_instance_transform(i, Transform3D(Basis(), positions[i] as Vector3))
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		mmi.layers = LAYER_ENV
+		_world3d.add_child(mmi)
+		_wall_chunks[co] = mmi
+	_build_floor_ceiling()
+
+# Future hook for per-tile height changes — rebuilds only the wall chunk
+# that contains the given grid tile, leaving all other chunks intact.
+# Not currently wired (no per-tile heights yet), but ready for the lifts /
+# crushers work in DOOM_DESIGN.md §3.
+func rebuild_wall_chunk_for_tile(gx: int, gy: int) -> void:
+	if _grid.is_empty() or _world3d == null or not is_instance_valid(_world3d):
+		return
+	if gx < 0 or gy < 0 or gx >= _grid_w or gy >= _grid_h:
+		return
+	_rebuild_wall_chunk(Vector2i(gx / WALL_CHUNK_SIZE, gy / WALL_CHUNK_SIZE))
+
+func _rebuild_wall_chunk(co: Vector2i) -> void:
+	# Free the old chunk if present.
+	if _wall_chunks.has(co):
+		var old_v: Variant = _wall_chunks[co]
+		if is_instance_valid(old_v):
+			(old_v as Node).queue_free()
+		_wall_chunks.erase(co)
+	# Scan only this chunk's tile range and bucket walls.
+	var x_start: int = co.x * WALL_CHUNK_SIZE
+	var y_start: int = co.y * WALL_CHUNK_SIZE
+	var x_end: int = mini(x_start + WALL_CHUNK_SIZE, _grid_w)
+	var y_end: int = mini(y_start + WALL_CHUNK_SIZE, _grid_h)
+	if x_start < 0 or y_start < 0 or x_start >= _grid_w or y_start >= _grid_h:
+		return
+	var positions: Array[Vector3] = []
+	for y in range(y_start, y_end):
+		var row: Array = _grid[y]
+		for x in range(x_start, x_end):
+			if int(row[x]) == 1:
+				positions.append(Vector3(float(x) + 0.5, _WALL_H * 0.5, float(y) + 0.5))
+	if positions.is_empty():
+		return
+	var box := BoxMesh.new()
+	box.size = Vector3(1.0, _WALL_H, 1.0)
+	var mat := StandardMaterial3D.new()
 	mat.albedo_color = _wall_albedo.lightened(0.15)
 	mat.roughness = 1.0
 	box.material = mat
@@ -453,11 +560,11 @@ func rebuild_walls() -> void:
 	mm.instance_count = positions.size()
 	for i in positions.size():
 		mm.set_instance_transform(i, Transform3D(Basis(), positions[i]))
-	_wall_mm = MultiMeshInstance3D.new()
-	_wall_mm.multimesh = mm
-	_wall_mm.layers = LAYER_ENV
-	_world3d.add_child(_wall_mm)
-	_build_floor_ceiling()
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	mmi.layers = LAYER_ENV
+	_world3d.add_child(mmi)
+	_wall_chunks[co] = mmi
 
 func _build_floor_ceiling() -> void:
 	# Free any planes from a previous build so re-runs (secret passage opening)
@@ -471,9 +578,14 @@ func _build_floor_ceiling() -> void:
 	# 3rd-person camera (y≈1.05) sat *above* — making the dark ceiling
 	# plane render as a giant black billboard covering most of the lower
 	# half of the screen.
+	# Floor + ceiling — flat planes with simple standard materials. Earlier
+	# experiments with a purple/blue night-sky shader on the ceiling
+	# produced beam-like artifacts and unreliable star visibility through
+	# the ASCII post-shader; reverted to plain black up top until a
+	# different approach is tried.
 	for kv in [
 		{"y": 0.0,  "color": _floor_albedo},
-		{"y": 1.5,  "color": _floor_albedo.darkened(0.6)},
+		{"y": 1.5,  "color": Color(0.0, 0.0, 0.0)},
 	]:
 		var plane := PlaneMesh.new()
 		plane.size = Vector2(float(_grid_w) * 2.0, float(_grid_h) * 2.0)
@@ -509,6 +621,13 @@ func add_wall_segment(pos_2d: Vector2, color: Color) -> int:
 	var id := _next_segment_id
 	_next_segment_id += 1
 	_wall_segments[id] = seg
+	# Record the tile so the entity-occlusion raycast can treat this segment
+	# as a wall when it's closed. Tile coord derives from the pos_2d (which
+	# Door.gd hands in as tile-center pixel coords).
+	var tile := Vector2i(int(floor(pos_2d.x / TILE_PX)), int(floor(pos_2d.y / TILE_PX)))
+	_segment_tile[id] = tile
+	_segment_open[id] = 0.0   # spawns closed by convention; set_wall_segment_open updates this
+	_recompute_tile_block(tile)
 	return id
 
 # t in [0,1]: 0 = closed (full height), 1 = open (sunk fully into the floor).
@@ -520,12 +639,32 @@ func set_wall_segment_open(id: int, t: float) -> void:
 	seg.scale.y = maxf(0.001, 1.0 - amt)
 	# Keep the base on the floor while the top sinks: center y = remaining/2.
 	seg.position.y = _WALL_H * (1.0 - amt) * 0.5
+	_segment_open[id] = amt
+	if _segment_tile.has(id):
+		_recompute_tile_block(_segment_tile[id] as Vector2i)
 
 func remove_wall_segment(id: int) -> void:
 	var seg: MeshInstance3D = _wall_segments.get(id) as MeshInstance3D
 	if seg != null and is_instance_valid(seg):
 		seg.queue_free()
 	_wall_segments.erase(id)
+	var tile_v: Variant = _segment_tile.get(id)
+	_segment_tile.erase(id)
+	_segment_open.erase(id)
+	if tile_v != null:
+		_recompute_tile_block(tile_v as Vector2i)
+
+# Walks every segment on `tile` and flips _tile_blocks_sight accordingly.
+# Called whenever a segment is added/removed or its open_amount changes —
+# cheap because the dungeon never has many active segments at once.
+func _recompute_tile_block(tile: Vector2i) -> void:
+	for sid in _segment_tile.keys():
+		if _segment_tile[sid] != tile:
+			continue
+		if float(_segment_open.get(sid, 1.0)) < _SEGMENT_BLOCK_THRESHOLD:
+			_tile_blocks_sight[tile] = true
+			return
+	_tile_blocks_sight.erase(tile)
 
 # Pixel size (world units per font pixel) baseline by kind. Projectiles are
 # kept small and uniform so they read as fast-moving sparks rather than
@@ -593,7 +732,19 @@ func register_entity(body: Node2D, glyph: String = "X", color: Color = Color(0.9
 	# modulate is per-Label3D, handled by the _process loop for multi-line).
 	var lbl: Node3D = null
 	var line_labels: Array[Label3D] = []
-	if is_multiline:
+	# Multi-line entities take one of two paths:
+	#  - Consolidated (default): a single Label3D with embedded \n. Native
+	#    Godot multi-line text — 1 draw call regardless of row count, and
+	#    status overlays just append more \n lines. The headline win for
+	#    bigger ASCII sprites.
+	#  - Legacy per-row: a Node3D parent with one Label3D child per row.
+	#    Required when the entity needs sub-row positioning (the wizard's
+	#    `fp_line_x_offsets` half-shifts the robe) or floor-decal flat
+	#    layout. Opt-in via those metas.
+	var is_consolidated: bool = is_multiline \
+		and not is_floor_decal \
+		and not body.has_meta("fp_line_x_offsets")
+	if is_multiline and not is_consolidated:
 		lbl = Node3D.new()
 		# Scale per-row pixel_size so the whole multi-line entity fits in
 		# the same vertical envelope as a single-line entity (mirrors the
@@ -640,6 +791,27 @@ func register_entity(body: Node2D, glyph: String = "X", color: Color = Color(0.9
 			row_lbl.position = Vector3(row_x_off, (mid_row - float(i)) * line_h, 0.0)
 			lbl.add_child(row_lbl)
 			line_labels.append(row_lbl)
+	elif is_consolidated:
+		# Single Label3D with the full multi-line glyph. Godot Label3D
+		# centers each line independently around the local X axis when
+		# HORIZONTAL_ALIGNMENT_CENTER is set, matching the legacy stacked
+		# look without per-row children.
+		var sl_c := Label3D.new()
+		sl_c.text = glyph
+		sl_c.font = MonoFont.get_font()
+		sl_c.font_size = 64
+		sl_c.outline_size = outline_size
+		sl_c.pixel_size = pixel_size / float(maxi(1, raw_lines.size()))
+		sl_c.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		sl_c.no_depth_test = false
+		sl_c.shaded = false
+		sl_c.double_sided = true
+		sl_c.modulate = color
+		sl_c.outline_modulate = Color(0, 0, 0, 1)
+		sl_c.alpha_cut = Label3D.ALPHA_CUT_DISCARD
+		sl_c.layers = LAYER_ENT
+		sl_c.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		lbl = sl_c
 	else:
 		var sl := Label3D.new()
 		sl.text = glyph
@@ -655,7 +827,7 @@ func register_entity(body: Node2D, glyph: String = "X", color: Color = Color(0.9
 		sl.outline_modulate = Color(0, 0, 0, 1)
 		sl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
 		sl.layers = LAYER_ENT
-		if body.has_meta("fp_rotation_z") or is_floor_decal:
+		if body.has_meta("fp_rotation_z") or body.has_meta("fp_spin_rate") or is_floor_decal:
 			sl.billboard = BaseMaterial3D.BILLBOARD_DISABLED
 		lbl = sl
 	lbl.position = anchor_pos
@@ -672,6 +844,7 @@ func register_entity(body: Node2D, glyph: String = "X", color: Color = Color(0.9
 		"kind": kind,
 		"is_multiline": is_multiline,
 		"is_floor_decal": is_floor_decal,
+		"is_consolidated": is_consolidated,
 		"registered_rows": raw_lines.size() if is_multiline else 1,
 	}
 
@@ -719,6 +892,9 @@ func clear_entities() -> void:
 		if is_instance_valid(seg_v):
 			(seg_v as Node).queue_free()
 	_wall_segments.clear()
+	_segment_tile.clear()
+	_segment_open.clear()
+	_tile_blocks_sight.clear()
 
 func _process(delta: float) -> void:
 	if not visible:
@@ -807,6 +983,11 @@ func _process(delta: float) -> void:
 				continue
 			register_entity(e as Node2D, "D", Color(0.95, 0.28, 0.22))
 
+	# Camera-forward, hoisted out of the entity loop — used by the frustum
+	# early-out below. Computed once per frame since the camera transform is
+	# finalized at this point (look_at above, ent-camera mirror at line 788).
+	var cam_fwd: Vector3 = -_camera.global_transform.basis.z
+
 	# Entity sync — pull live glyph + status modulate from each body's
 	# AsciiChar each frame so 2-frame animations + status tints carry into FP.
 	var stale: Array = []
@@ -853,9 +1034,17 @@ func _process(delta: float) -> void:
 		if cam_pos.distance_to(ent_3d) < 0.55 and str(body.get("source")) == "player":
 			lbl.visible = false
 			continue
-		# Distance cull — beyond 8 tiles, everything is wall-occluded in a
-		# dungeon anyway; skip the raycast entirely.
-		if cam_pos.distance_to(ent_3d) > 8.0:
+		# Distance cull — beyond 13 tiles, the entity is far enough into the
+		# dark horizon that the torch can't reach it; skip occlusion + the
+		# per-frame status/billboard work entirely. Matches the HP-bar cull
+		# in _update_enemy_hp_bars so bars don't float over invisible enemies.
+		if cam_pos.distance_to(ent_3d) > 13.0:
+			lbl.visible = false
+			continue
+		# Frustum early-out — entities strictly behind the camera skip the
+		# occlusion raycast, status-overlay scan, and per-row Label3D writes.
+		# Common when the player spins to face a new direction.
+		if (ent_3d - cam_pos).dot(cam_fwd) < 0.0:
 			lbl.visible = false
 			continue
 		# Wall occlusion — throttled to once every 3 frames per entity,
@@ -890,17 +1079,23 @@ func _process(delta: float) -> void:
 		# fp_rotation_from_direction: Z rotation is derived from the body's
 		# live direction vector each frame (fp_rotation_z acts as an offset),
 		# so the glyph tip tracks the projectile's travel direction.
-		if body.has_meta("fp_rotation_z"):
+		# fp_spin_rate (rad/sec): adds a continuous time-driven rotation on
+		# top of the static offset — fire projectile uses it for a clockwise
+		# tumble. Negative = clockwise (screen space, +Z is camera-out).
+		if body.has_meta("fp_rotation_z") or body.has_meta("fp_spin_rate"):
 			var to_cam_e: Vector3 = cam_pos - lbl.position
 			if to_cam_e.length() > 0.001:
 				lbl.look_at(lbl.position - to_cam_e, Vector3.UP)
-				var z_rot: float = float(body.get_meta("fp_rotation_z"))
+				var z_rot: float = float(body.get_meta("fp_rotation_z", 0.0))
 				if body.get_meta("fp_rotation_from_direction", false):
 					var dir_v2: Variant = body.get("direction")
 					if dir_v2 is Vector2:
 						var d2: Vector2 = dir_v2 as Vector2
 						if d2.length_squared() > 0.001:
 							z_rot = -d2.angle() + z_rot
+				if body.has_meta("fp_spin_rate"):
+					var spin_rate: float = float(body.get_meta("fp_spin_rate"))
+					z_rot += spin_rate * (Time.get_ticks_msec() / 1000.0)
 				lbl.rotate_object_local(Vector3(0, 0, 1), z_rot)
 		# Live glyph + modulate from body's AsciiChar.
 		var stored_glyph: String = entry["stored_glyph"]
@@ -940,7 +1135,14 @@ func _process(delta: float) -> void:
 		var has_status := false
 		# Status overlays only exist on "body" entities (enemies/player) — skip
 		# the sibling lookups entirely for projectiles, sparks, and floor decals.
+		# Per-frame get_node_or_null (no cache) — caching the Label refs led
+		# to "Trying to cast a freed object" errors when enemies despawn /
+		# respawn overlays mid-frame. Lookups are cheap; the actual win below
+		# is the no-debuff fast path that skips the Array build + join.
 		var frozen_child: Label = (body.get_node_or_null("FrozenBlock") as Label) if kind == "body" else null
+		var enflame_child: Label = null
+		var electric_child: Label = null
+		var poison_child: Label = null
 		if frozen_child != null and frozen_child.text != "":
 			# Enemy art stays unchanged -- just apply ice-blue tint.
 			status_modulate = Color(0.72, 0.92, 1.0)
@@ -968,17 +1170,25 @@ func _process(delta: float) -> void:
 				if is_instance_valid(_ice_cubes[key]):
 					(_ice_cubes[key] as Node).queue_free()
 				_ice_cubes.erase(key)
-			var enflame_child: Label = (body.get_node_or_null("EnflameOverlay") as Label) if kind == "body" else null
-			var electric_child: Label = (body.get_node_or_null("ElectricBolt") as Label) if kind == "body" else null
-			var poison_child: Label = (body.get_node_or_null("PoisonOverlay") as Label) if kind == "body" else null
-			var status_lines: Array[String] = []
-			if electric_child != null and electric_child.text != "" and electric_child.modulate.a > 0.0:
-				status_lines.append(electric_child.text)
-			if enflame_child != null and enflame_child.text != "":
-				status_lines.append(enflame_child.text)
-			if poison_child != null and poison_child.text != "":
-				status_lines.append(poison_child.text)
-			if not status_lines.is_empty():
+			# Fast-path: if none of the overlays carry text right now, skip
+			# the Array build + "\n".join entirely. Healthy enemies hit this
+			# branch every frame, so this is the biggest per-frame win.
+			if kind == "body":
+				enflame_child  = body.get_node_or_null("EnflameOverlay") as Label
+				electric_child = body.get_node_or_null("ElectricBolt") as Label
+				poison_child   = body.get_node_or_null("PoisonOverlay") as Label
+			var en_text: String = enflame_child.text if enflame_child != null else ""
+			var el_text: String = electric_child.text if electric_child != null else ""
+			var po_text: String = poison_child.text if poison_child != null else ""
+			var el_visible: bool = (electric_child != null and electric_child.modulate.a > 0.0)
+			if en_text != "" or po_text != "" or (el_text != "" and el_visible):
+				var status_lines: Array[String] = []
+				if el_text != "" and el_visible:
+					status_lines.append(el_text)
+				if en_text != "":
+					status_lines.append(en_text)
+				if po_text != "":
+					status_lines.append(po_text)
 				status_lines.append(live_text)
 				live_text = "
 ".join(status_lines)
@@ -1008,16 +1218,33 @@ func _process(delta: float) -> void:
 			entry["_split_src"] = live_text
 			entry["_split_arr"] = split_lines
 		if is_multiline:
+			# Consolidated path — one Label3D with embedded \n. Native
+			# multi-line text, 1 draw call regardless of row count, and
+			# Label3D billboards itself so no manual camera-facing rotation
+			# is needed. The whole legacy per-row block below is skipped.
+			if bool(entry.get("is_consolidated", false)):
+				var sl_consol: Label3D = lbl as Label3D
+				sl_consol.text = live_text
+				sl_consol.modulate = final_modulate
+				var live_count_c: int = split_lines.size()
+				var designed_rows_c: int = int(entry.get("registered_rows", live_count_c))
+				sl_consol.pixel_size = base_ps / float(maxi(1, designed_rows_c))
+				continue
 			# Per-row Label3D rendering. Each child centers its own line
 			# independently — no per-line drift from a shared multi-line
 			# bbox. Dynamic resize: status overlays (ice block, burn/shock
 			# stack) can grow the line count past the registered art.
 			var live_lines_arr: Array = split_lines
 			var row_labels: Array = entry.get("line_labels", [])
-			# Per-row pixel_size = base / row_count so the whole stack fits
-			# in roughly the same vertical envelope as a single-line entity.
-			# A 5-row wizard at base 0.014 gets each row at 0.0028.
-			var ps_now: float = base_ps / float(maxi(1, live_lines_arr.size()))
+			# Per-row pixel_size = base / DESIGNED row count (the line count
+			# the entity registered with). Using the live row count here
+			# would shrink the whole sprite whenever a status overlay added
+			# a line on top (frozen + burn + shock + poison stack pushes a
+			# 5-row wizard to 8 rows, compressing the art mid-fight). With
+			# the designed count, status overlays only extend the envelope
+			# upward and the base art keeps its size.
+			var designed_rows: int = int(entry.get("registered_rows", live_lines_arr.size()))
+			var ps_now: float = base_ps / float(maxi(1, designed_rows))
 			# Grow children if we have more lines than labels.
 			while row_labels.size() < live_lines_arr.size():
 				var new_row := Label3D.new()
@@ -1150,6 +1377,10 @@ func _process(delta: float) -> void:
 	# small bar above each one. Floor is occupied by hazards so bars sit
 	# above the head.
 	_update_enemy_hp_bars(enemies)
+	# Debug name overlay (KEY_N). Reaps existing labels on toggle-off, so
+	# turning the overlay off cleans up immediately without waiting for
+	# each enemy to die.
+	_update_enemy_names(enemies)
 	# Floating damage text — re-projects each active text from its source
 	# world position so the labels stay glued to the enemy when the
 	# camera turns (was tweening screen-space, drifted off).
@@ -1169,42 +1400,63 @@ func set_beam(start_pos2d: Vector2, end_pos2d: Vector2, color: Color) -> void:
 	# from the same waist-level muzzle as everything else.
 	var start_3d := Vector3(start_pos2d.x / TILE_PX, 0.22, start_pos2d.y / TILE_PX)
 	var end_3d   := Vector3(end_pos2d.x / TILE_PX, 0.22, end_pos2d.y / TILE_PX)
-	var dist := start_3d.distance_to(end_3d)
-	# Start the tube ~0.6 units out so it doesn't engulf the camera.
-	var skip := 0.6
-	if dist <= skip:
-		clear_beam()
-		return
-	var dir3d := (end_3d - start_3d) / dist
-	var seg_len := dist - skip
-	var mid := start_3d + dir3d * (skip + seg_len * 0.5)
 	# Bias the tube blue regardless of the wand's element tint.
 	var tube_col: Color = color.lerp(Color(0.35, 0.65, 1.0), 0.6)
 	if _beam_tube == null or not is_instance_valid(_beam_tube):
-		_beam_tube = MeshInstance3D.new()
-		var cyl := CylinderMesh.new()
-		cyl.top_radius = 0.08
-		cyl.bottom_radius = 0.08
-		cyl.height = 1.0
-		cyl.radial_segments = 8
-		var mat := StandardMaterial3D.new()
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		mat.albedo_color = tube_col
-		cyl.material = mat
-		_beam_tube.mesh = cyl
-		_beam_tube.layers = LAYER_ENV   # through the ASCII post-shader
-		_world3d.add_child(_beam_tube)
-	var m := (_beam_tube.mesh as CylinderMesh).material as StandardMaterial3D
-	if m != null:
-		m.albedo_color = tube_col
+		_beam_tube = _build_beam_tube(0.08, tube_col)
+	if not _orient_beam_tube(_beam_tube, start_3d, end_3d, tube_col, 0.6):
+		clear_beam()
+		return
+	_beam_tube.visible = true
+	_beam_active = true
+
+# Creates a freshly-parented CylinderMesh instance for a beam tube.
+# Shared by the player wand path (set_beam) and the enemy sweep path
+# (set_enemy_beam). Caller owns the resulting node and is responsible for
+# parenting it into _world3d on LAYER_ENV (so the ASCII post-shader picks
+# it up as crunchy glyphs).
+func _build_beam_tube(radius: float, color: Color) -> MeshInstance3D:
+	var inst := MeshInstance3D.new()
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = radius
+	cyl.bottom_radius = radius
+	cyl.height = 1.0
+	cyl.radial_segments = 8
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = color
+	cyl.material = mat
+	inst.mesh = cyl
+	inst.layers = LAYER_ENV
+	_world3d.add_child(inst)
+	return inst
+
+# Stretches `tube` along the (start_3d → end_3d) segment, with `skip_from_start`
+# trimmed off the near end so the tube doesn't engulf the camera/muzzle.
+# Returns false if the segment is too short to render (caller should hide
+# the tube and bail). Updates the tube's albedo color so emitters that
+# change color mid-beam (e.g. telegraph→sweep gradient, future) animate
+# cleanly without rebuilding the mesh.
+func _orient_beam_tube(tube: MeshInstance3D, start_3d: Vector3, end_3d: Vector3,
+		color: Color, skip_from_start: float) -> bool:
+	var dist: float = start_3d.distance_to(end_3d)
+	if dist <= skip_from_start:
+		return false
+	var dir3d: Vector3 = (end_3d - start_3d) / dist
+	var seg_len: float = dist - skip_from_start
+	var mid: Vector3 = start_3d + dir3d * (skip_from_start + seg_len * 0.5)
+	var cyl_mesh := tube.mesh as CylinderMesh
+	if cyl_mesh != null:
+		var m := cyl_mesh.material as StandardMaterial3D
+		if m != null:
+			m.albedo_color = color
 	# Orient the cylinder's local +Y along the beam and stretch it to seg_len;
 	# X/Z stay unit so the radius is unchanged.
 	var up_ref: Vector3 = Vector3.UP if absf(dir3d.dot(Vector3.UP)) < 0.99 else Vector3.RIGHT
-	var xv := up_ref.cross(dir3d).normalized()
-	var zv := xv.cross(dir3d).normalized()
-	_beam_tube.global_transform = Transform3D(Basis(xv, dir3d * seg_len, zv), mid)
-	_beam_tube.visible = true
-	_beam_active = true
+	var xv: Vector3 = up_ref.cross(dir3d).normalized()
+	var zv: Vector3 = xv.cross(dir3d).normalized()
+	tube.global_transform = Transform3D(Basis(xv, dir3d * seg_len, zv), mid)
+	return true
 
 func clear_beam() -> void:
 	if not _beam_active:
@@ -1250,51 +1502,84 @@ func set_enemy_beam(emitter: Node, start_pos2d: Vector2, end_pos2d: Vector2, col
 	if not is_instance_valid(emitter):
 		return
 	var key := emitter.get_instance_id()
-	var pool: Array = _enemy_beam_pools.get(key, []) as Array
 	var start_3d := Vector3(start_pos2d.x / TILE_PX, y, start_pos2d.y / TILE_PX)
 	var end_3d   := Vector3(end_pos2d.x / TILE_PX, y, end_pos2d.y / TILE_PX)
-	var dist := start_3d.distance_to(end_3d)
-	var step := 0.35
-	var count: int = maxi(0, int(dist / step))
-	var glyph: String = "·" if is_telegraph else "X"
-	while pool.size() < count:
-		var lbl := Label3D.new()
-		lbl.text = glyph
-		lbl.font = MonoFont.get_font()
-		lbl.font_size = 48
-		lbl.outline_size = 6
-		lbl.pixel_size = 0.008 if is_telegraph else 0.012
-		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.no_depth_test = false
-		lbl.shaded = false
-		lbl.double_sided = true
-		lbl.outline_modulate = Color(0, 0, 0, 1)
-		lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
-		_world3d.add_child(lbl)
-		pool.append(lbl)
-	var dir3d := Vector3.ZERO if dist <= 0.0 else (end_3d - start_3d) / dist
-	for i in count:
-		var lbl: Label3D = pool[i]
-		lbl.text = glyph
-		lbl.pixel_size = 0.008 if is_telegraph else 0.012
-		lbl.position = start_3d + dir3d * (float(i) * step + step * 0.5)
-		lbl.modulate = color
-		lbl.visible = true
-	for i in range(count, pool.size()):
-		(pool[i] as Label3D).visible = false
-	_enemy_beam_pools[key] = pool
+	if is_telegraph:
+		# Telegraph phase — dotted "·" pool. The fragmented look is the whole
+		# point of the warning: easy to spot the line, easy to dodge across.
+		# Hide any sweep tube that might still be parented from a prior cycle
+		# (clean handoff if telegraph re-fires after a sweep).
+		if _enemy_beam_tubes.has(key):
+			var prev_tube: MeshInstance3D = _enemy_beam_tubes[key] as MeshInstance3D
+			if is_instance_valid(prev_tube):
+				prev_tube.visible = false
+		var pool: Array = _enemy_beam_pools.get(key, []) as Array
+		var dist := start_3d.distance_to(end_3d)
+		var step := 0.35
+		var count: int = maxi(0, int(dist / step))
+		while pool.size() < count:
+			var lbl := Label3D.new()
+			lbl.text = "·"
+			lbl.font = MonoFont.get_font()
+			lbl.font_size = 48
+			lbl.outline_size = 6
+			lbl.pixel_size = 0.008
+			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			lbl.no_depth_test = false
+			lbl.shaded = false
+			lbl.double_sided = true
+			lbl.outline_modulate = Color(0, 0, 0, 1)
+			lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
+			_world3d.add_child(lbl)
+			pool.append(lbl)
+		var dir3d := Vector3.ZERO if dist <= 0.0 else (end_3d - start_3d) / dist
+		for i in count:
+			var lbl: Label3D = pool[i]
+			lbl.text = "·"
+			lbl.pixel_size = 0.008
+			lbl.position = start_3d + dir3d * (float(i) * step + step * 0.5)
+			lbl.modulate = color
+			lbl.visible = true
+		for i in range(count, pool.size()):
+			(pool[i] as Label3D).visible = false
+		_enemy_beam_pools[key] = pool
+		return
+	# Sweep phase — crunchy CylinderMesh tube, same visual language as the
+	# player's beam wand (just in the emitter's hostile color, no blue lerp).
+	# Hide the dotted telegraph pool so the warning cleanly hands off to the
+	# damage visual.
+	if _enemy_beam_pools.has(key):
+		var dot_pool: Array = _enemy_beam_pools[key] as Array
+		for lbl in dot_pool:
+			if is_instance_valid(lbl):
+				(lbl as Label3D).visible = false
+	var tube: MeshInstance3D = _enemy_beam_tubes.get(key) as MeshInstance3D
+	if tube == null or not is_instance_valid(tube):
+		tube = _build_beam_tube(0.08, color)
+		_enemy_beam_tubes[key] = tube
+	# Skip 0.0 from start — the emitter is the enemy's position, not a
+	# player muzzle; the player isn't standing on top of it, so no near-cull
+	# needed and the tube can reach all the way back to the source.
+	if not _orient_beam_tube(tube, start_3d, end_3d, color, 0.0):
+		tube.visible = false
+		return
+	tube.visible = true
 
 func clear_enemy_beam(emitter: Node) -> void:
 	if not is_instance_valid(emitter):
 		return
 	var key := emitter.get_instance_id()
-	if not _enemy_beam_pools.has(key):
-		return
-	var pool: Array = _enemy_beam_pools[key] as Array
-	for lbl in pool:
-		if is_instance_valid(lbl):
-			(lbl as Node).queue_free()
-	_enemy_beam_pools.erase(key)
+	if _enemy_beam_pools.has(key):
+		var pool: Array = _enemy_beam_pools[key] as Array
+		for lbl in pool:
+			if is_instance_valid(lbl):
+				(lbl as Node).queue_free()
+		_enemy_beam_pools.erase(key)
+	if _enemy_beam_tubes.has(key):
+		var tube: MeshInstance3D = _enemy_beam_tubes[key] as MeshInstance3D
+		if is_instance_valid(tube):
+			tube.queue_free()
+		_enemy_beam_tubes.erase(key)
 
 # ── Shock zap line (per-projectile crackling line) ────────────────────────────
 # Fire-and-forget: each tick the projectile calls this, we spawn a short
@@ -1626,6 +1911,24 @@ func _update_enemy_hp_bars(enemies: Array) -> void:
 			enemy_2d.global_position.x / TILE_PX,
 			1.05,
 			enemy_2d.global_position.y / TILE_PX)
+		# Distance / behind-camera cull — keep HP bars from floating in the
+		# dark horizon past where the enemy itself is visible. 13 tiles in
+		# normal-lit rooms (covers most engagement ranges); tightens to ~6
+		# in DARK / FLICKER rooms since the torch can't illuminate that far
+		# in pitch-black sectors and the bare HP line would read as "lonely
+		# green stripe in the void".
+		var hp_cull_dist: float = 13.0
+		if _cur_room_idx >= 0 and _cur_room_idx < _light_levels.size():
+			if int(_light_levels[_cur_room_idx]) != 0:
+				hp_cull_dist = 6.0
+		var cam_p: Vector3 = _camera.global_position
+		if cam_p.distance_to(anchor_pos) > hp_cull_dist:
+			lbl.visible = false
+			continue
+		var cam_fwd_hp: Vector3 = -_camera.global_transform.basis.z
+		if (anchor_pos - cam_p).dot(cam_fwd_hp) < 0.0:
+			lbl.visible = false
+			continue
 		var is_hp_occluded: bool = _occlusion_cache.get(key, false)
 		if (_frame_counter + key) % 3 == 0:
 			var cam_tile_hp := Vector2(_camera.global_position.x, _camera.global_position.z)
@@ -1644,12 +1947,17 @@ func _update_enemy_hp_bars(enemies: Array) -> void:
 			lbl.text = "=".repeat(filled) + "-".repeat(_HP_BAR_CELLS - filled)
 			_hp_bar_fill[key] = filled
 		lbl.position = anchor_pos
-		if ratio > 0.6:
-			lbl.modulate = Color(0.30, 1.0, 0.30)
-		elif ratio > 0.3:
-			lbl.modulate = Color(1.0, 0.85, 0.20)
-		else:
-			lbl.modulate = Color(1.0, 0.30, 0.20)
+		# Modulate cache — most damaged enemies sit in the same color bucket
+		# for many frames, so only assign Color when the bucket flips.
+		var color_bucket: int = 0 if ratio > 0.6 else (1 if ratio > 0.3 else 2)
+		if _hp_bar_color.get(key, -1) != color_bucket:
+			if color_bucket == 0:
+				lbl.modulate = Color(0.30, 1.0, 0.30)
+			elif color_bucket == 1:
+				lbl.modulate = Color(1.0, 0.85, 0.20)
+			else:
+				lbl.modulate = Color(1.0, 0.30, 0.20)
+			_hp_bar_color[key] = color_bucket
 	# Reap stale (dead) bars.
 	for key in _hp_bars.keys():
 		if not alive_keys.has(key):
@@ -1658,6 +1966,69 @@ func _update_enemy_hp_bars(enemies: Array) -> void:
 				stale_lbl.queue_free()
 			_hp_bars.erase(key)
 			_hp_bar_fill.erase(key)
+			_hp_bar_color.erase(key)
+
+# Debug overlay (KEY_N) — float each enemy's script-derived name above its
+# head. Reads the script's filename (e.g. "EnemyChaser") so the labels stay
+# accurate as enemies are added without anyone maintaining a name table.
+# When the toggle is OFF we proactively reap any leftover labels instead of
+# waiting for the parent enemy to die.
+func _update_enemy_names(enemies: Array) -> void:
+	if _ent_world3d == null or not is_instance_valid(_ent_world3d):
+		return
+	if not GameState.show_enemy_names:
+		if not _name_labels.is_empty():
+			for key in _name_labels.keys():
+				var dead_lbl: Label3D = _name_labels[key] as Label3D
+				if is_instance_valid(dead_lbl):
+					dead_lbl.queue_free()
+			_name_labels.clear()
+		return
+	var alive_keys: Dictionary = {}
+	for e: Node in enemies:
+		if not is_instance_valid(e) or not (e is Node2D):
+			continue
+		var enemy_2d: Node2D = e as Node2D
+		var key := enemy_2d.get_instance_id()
+		alive_keys[key] = true
+		var lbl: Label3D = _name_labels.get(key) as Label3D
+		if lbl == null or not is_instance_valid(lbl):
+			lbl = Label3D.new()
+			lbl.font = MonoFont.get_font()
+			lbl.font_size = 64
+			lbl.outline_size = 8
+			lbl.pixel_size = 0.004
+			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			lbl.no_depth_test = false
+			lbl.shaded = false
+			lbl.double_sided = true
+			lbl.modulate = Color(0.65, 1.0, 1.0)
+			lbl.outline_modulate = Color(0, 0, 0, 1)
+			lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
+			_ent_world3d.add_child(lbl)
+			_name_labels[key] = lbl
+			# Derive a stable name from the script filename — "EnemyChaser.gd"
+			# → "EnemyChaser". Falls back to Node.name if the enemy has no
+			# script attached (unlikely but safe).
+			var nm: String = enemy_2d.name
+			var scr: Script = enemy_2d.get_script() as Script
+			if scr != null:
+				var path: String = scr.resource_path
+				if path != "":
+					nm = path.get_file().get_basename()
+			lbl.text = nm
+		# Position slightly above the HP bar slot (1.05) so the two don't fight.
+		lbl.position = Vector3(
+			enemy_2d.global_position.x / TILE_PX,
+			1.25,
+			enemy_2d.global_position.y / TILE_PX)
+	# Reap labels for enemies that just died.
+	for key in _name_labels.keys():
+		if not alive_keys.has(key):
+			var stale_lbl: Label3D = _name_labels[key] as Label3D
+			if is_instance_valid(stale_lbl):
+				stale_lbl.queue_free()
+			_name_labels.erase(key)
 
 # Pulls the best "[E] …" hint off any nearby registered interactable and
 # floats it on the FP CanvasLayer. Most interactables already toggle their

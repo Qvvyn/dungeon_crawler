@@ -74,7 +74,7 @@ func _end_attack() -> void:
 
 func _on_melee_hit(body: Node2D) -> void:
 	if body.is_in_group("player") and body.has_method("take_damage"):
-		body.take_damage(int(round(float(BASE_DAMAGE) * _rage_mult())))
+		body.take_damage(int(round(float(BASE_DAMAGE) * _rage_mult())), self)
 
 func _enemy_anim_update(delta: float) -> void:
 	_anim_t += delta

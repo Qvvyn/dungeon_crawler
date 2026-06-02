@@ -165,6 +165,10 @@ func _ready() -> void:
 					"fire":
 						glyph = "@"
 						color = Color(1.0, 0.42, 0.08)
+						# Continuous clockwise spin in FP — ~1.6 rev/sec.
+						# Negative spin_rate = clockwise on screen (camera-Z
+						# points out of the screen).
+						set_meta("fp_spin_rate", -TAU * 1.6)
 					"freeze":
 						glyph = "*"
 						color = Color(0.55, 0.92, 1.0)
@@ -696,7 +700,7 @@ func _on_body_entered(body: Node2D) -> void:
 		if shoot_type == "grenade":
 			_explode_grenade()
 		elif body.has_method("take_damage"):
-			body.take_damage(damage)
+			body.take_damage(damage, self)
 		queue_free()
 		return
 
@@ -748,7 +752,7 @@ func _explode_grenade() -> void:
 	var ply := get_tree().get_first_node_in_group("player")
 	if is_instance_valid(ply) and (ply as Node2D).global_position.distance_to(global_position) <= radius:
 		if ply.has_method("take_damage"):
-			ply.take_damage(damage)
+			ply.take_damage(damage, self)
 	if SoundManager:
 		SoundManager.play("explosion", randf_range(0.92, 1.08))
 	# Visual: expanding shockwave ring

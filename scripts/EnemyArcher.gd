@@ -464,7 +464,7 @@ func take_damage(amount: int) -> void:
 			if elite_modifier == 2 and _split_scene != null:
 				_do_split()
 			if elite_modifier == 5:
-				EnemyBase.volatile_explosion(global_position, max_health, _player, get_tree().current_scene)
+				EnemyBase.volatile_explosion(global_position, max_health, _player, get_tree().current_scene, self)
 			_maybe_drop_bag()
 		EffectFx.spawn_death_pop(global_position, get_tree().current_scene)
 		queue_free()

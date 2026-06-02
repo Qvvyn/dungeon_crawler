@@ -186,7 +186,24 @@ var fp_limb_drift: bool = false
 # success so wand shots, nova, shield, levitate, etc. cost nothing. The
 # only thing that still gates is wand_charges (limited-use wands).
 var infinite_mana: bool = false
+# Debug cheat: damage to the player is silently swallowed when on. Toggled
+# with F2 alongside infinite_mana so the two stay in lockstep (one "god
+# mode" feel). take_damage() early-returns when this is true.
+var infinite_health: bool = false
+# Index into MonoFont.FONTS — drives which typeface MonoFont.get_font()
+# returns. Cycled via the debug menu. Persists across sessions; takes
+# effect on the next FP rig rebuild / scene reload since existing
+# Label3Ds / Labels hold their font reference at creation time.
+var font_choice: int = 0
 var show_hitboxes: bool = false
+# Debug overlay: floats each enemy's script-derived name above their head
+# in FP. Toggled with KEY_N. Useful for ID'ing which enemy type is which
+# when balancing or chasing a behavior bug.
+var show_enemy_names: bool = false
+# Debug toggle: force-apply the FP "blinded" vignette (radial darkness in
+# the ASCII post-shader). Sticky across render-mode flips — re-applied to
+# the rig in _apply_render_mode. Drives FirstPersonRig.set_blinded().
+var fp_blinded: bool = false
 # FP render resolution — when true, the SubViewport renders at half size
 # (with proportionally smaller cell_px) so the GPU processes 75% fewer
 # pixels. Same number of ASCII characters on screen; slightly softer look.
@@ -262,6 +279,8 @@ func save_settings() -> void:
 		"wizard_color":        wizard_color.to_html(false),
 		"render_mode":         render_mode,
 		"infinite_mana":       infinite_mana,
+		"infinite_health":     infinite_health,
+		"font_choice":         font_choice,
 		"fp_low_res":          fp_low_res,
 	}))
 	f.close()
@@ -289,6 +308,8 @@ func _load_settings() -> void:
 		render_mode         = clampi(int(result.get("render_mode", RenderMode.TOPDOWN)),
 									 0, RenderMode.size() - 1)
 		infinite_mana       = bool(result.get("infinite_mana", false))
+		infinite_health     = bool(result.get("infinite_health", false))
+		font_choice         = clampi(int(result.get("font_choice", 0)), 0, 99)
 		fp_low_res          = bool(result.get("fp_low_res",   false))
 		# Mirror the loaded difficulty into the active run value so the title
 		# screen's slider starts where the player last left it.

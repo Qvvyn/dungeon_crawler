@@ -113,7 +113,7 @@ func _detonate() -> void:
 	var ply := get_tree().get_first_node_in_group("player")
 	if is_instance_valid(ply) and (ply as Node2D).global_position.distance_to(global_position) <= RADIUS:
 		if ply.has_method("take_damage"):
-			ply.take_damage(DAMAGE)
+			ply.take_damage(DAMAGE, self)
 	if SoundManager:
 		SoundManager.play("explosion", randf_range(1.05, 1.18))
 	# Expanding shockwave ring — clearly an explosion, not a square on the ground

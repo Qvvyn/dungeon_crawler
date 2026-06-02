@@ -14,7 +14,7 @@ func _ready() -> void:
 	# "$" matches the 2D pickup label below — FP previously diverged with "g".
 	# Hugs the floor and uses a small pixel_size so the coin reads as a
 	# pickup glinting on the ground, not a chest-high token.
-	set_meta("fp_pixel_size", 0.005)
+	set_meta("fp_pixel_size", 0.003)
 	set_meta("fp_outline_size", 0)   # no outline — reads as a small floor glint
 	GameState.attach_fp_visual(self, "$", Color(1.0, 0.95, 0.30), 0.05)
 	_player = get_tree().get_first_node_in_group("player")

@@ -55,7 +55,7 @@ func _enemy_tick(delta: float) -> void:
 	# how often any one spider can apply it.
 	if to_p.length() <= CONTACT_RADIUS and _contact_cd <= 0.0:
 		if _player.has_method("take_damage"):
-			_player.take_damage(CONTACT_DAMAGE)
+			_player.take_damage(CONTACT_DAMAGE, self)
 		if _player.has_method("apply_status"):
 			_player.apply_status("slow", 1.2)
 		_contact_cd = CONTACT_COOLDOWN

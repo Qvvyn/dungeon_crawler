@@ -82,5 +82,5 @@ func _process(delta: float) -> void:
 		_burn_timer = burn_interval
 		var player: Node2D = get_tree().get_first_node_in_group("player")
 		if is_instance_valid(player) and player.has_method("take_damage"):
-			player.take_damage(burn_damage)
+			player.take_damage(burn_damage, self)
 			FloatingText.spawn_str(global_position, "BURN!", Color(1.0, 0.35, 0.0), get_tree().current_scene)

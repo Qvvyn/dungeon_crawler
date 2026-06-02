@@ -287,6 +287,11 @@ var _floor_seed: int = 0   # captured per-floor RNG seed (shown on the minimap)
 var _fp_rig: CanvasLayer        = null
 var _raycaster_rig: CanvasLayer = null
 var _wall_ascii: Node2D         = null   # the AsciiWalls overlay, hidden in FP modes
+# 2D top-down vision-radius mask — full-screen ColorRect with a radial
+# darkness shader. Visible only in TOPDOWN render mode; the shader's
+# `player_px` uniform is pushed each frame from the player's screen pos.
+var _vision_overlay: ColorRect  = null
+var _vision_mat: ShaderMaterial = null
 
 # ── Entry ─────────────────────────────────────────────────────────────────────
 func _ready() -> void:
@@ -484,6 +489,38 @@ func _setup_render_rigs() -> void:
 
 	if not GameState.render_mode_changed.is_connected(_on_render_mode_changed):
 		GameState.render_mode_changed.connect(_on_render_mode_changed)
+	_setup_vision_overlay()
+
+# Builds the 2D top-down vision-radius mask. CanvasLayer holds a fullscreen
+# ColorRect whose shader paints alpha=0 in a disc around the player and
+# fades to ~black at the periphery. _process pushes the player's screen
+# position into the shader each frame; _apply_render_mode toggles
+# visibility (TOPDOWN only).
+func _setup_vision_overlay() -> void:
+	var layer := CanvasLayer.new()
+	layer.name = "VisionOverlay"
+	# Layer 0 keeps the mask above the 2D world (walls/floor/entities) but
+	# below the Player.HUD CanvasLayer (default layer 1) — HUD stays crisp.
+	layer.layer = 0
+	add_child(layer)
+	_vision_overlay = ColorRect.new()
+	_vision_overlay.anchor_right = 1.0
+	_vision_overlay.anchor_bottom = 1.0
+	_vision_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_vision_overlay.color = Color(0, 0, 0, 1)   # shader writes alpha; base color is opaque black
+	var mat := ShaderMaterial.new()
+	mat.shader = preload("res://shaders/vision_radius.gdshader")
+	mat.set_shader_parameter("player_px", Vector2.ZERO)
+	# ~11 tiles fully visible, fade to near-black over the next ~7.5 tiles.
+	# Tuned so enemies at typical engagement range stay readable; raise
+	# both values further if combat still feels too dim.
+	mat.set_shader_parameter("radius_px", 360.0)
+	mat.set_shader_parameter("fade_px", 240.0)
+	mat.set_shader_parameter("max_darkness", 0.88)
+	_vision_overlay.material = mat
+	_vision_mat = mat
+	_vision_overlay.visible = false
+	layer.add_child(_vision_overlay)
 
 func _on_render_mode_changed(mode: int) -> void:
 	_apply_render_mode(mode)
@@ -498,6 +535,8 @@ func _apply_render_mode(mode: int) -> void:
 	for n in get_tree().get_nodes_in_group("topdown_only"):
 		if is_instance_valid(n):
 			(n as CanvasItem).visible = top_down_visible
+	if _vision_overlay != null and is_instance_valid(_vision_overlay):
+		_vision_overlay.visible = top_down_visible
 
 	# Show whichever rig matches the mode; hide the other. The shader rig
 	# also hosts 3rd-person — we just flip its camera mode before showing.
@@ -519,6 +558,11 @@ func _apply_render_mode(mode: int) -> void:
 			if rig.has_method("clear_entities"):
 				rig.clear_entities()
 	GameState.active_rig = rig_to_show
+	# Re-apply the sticky FP debug "blinded" vignette so flipping into FP
+	# from TOPDOWN doesn't silently reset darkness=0 on the freshly-shown
+	# rig. (Newly-built rigs default the uniform to 0.0.)
+	if rig_to_show != null and rig_to_show.has_method("set_blinded"):
+		rig_to_show.set_blinded(0.7 if GameState.fp_blinded else 0.0)
 
 	# Feed the live grid to the newly-active rig + bulk-register every
 	# existing body so entities that spawned before the rig was shown
@@ -3742,6 +3786,16 @@ func _on_room_cleared() -> void:
 var _eruption_t: float = 5.0   # first eruption ~5 s after entering a Lava Rift floor
 
 func _process(delta: float) -> void:
+	# 2D top-down vision-radius mask — push the player's current screen-pixel
+	# position into the shader so the visibility disc tracks the player as
+	# the Camera2D slides. Only updated while the overlay is actually visible
+	# (TOPDOWN mode); skip the work otherwise.
+	if _vision_overlay != null and _vision_overlay.visible and _vision_mat != null:
+		var player := get_tree().get_first_node_in_group("player")
+		if is_instance_valid(player) and player is Node2D:
+			var p2d: Node2D = player as Node2D
+			var screen_pos: Vector2 = p2d.get_global_transform_with_canvas().get_origin()
+			_vision_mat.set_shader_parameter("player_px", screen_pos)
 	if _is_test_mode:
 		_tick_test_wave(delta)
 	# Lava Rift biome mechanic — periodic eruptions near the player.

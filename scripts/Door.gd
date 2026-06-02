@@ -12,7 +12,7 @@ extends Node2D
 #                  1 = N-S corridor (door span is horizontal / along X)
 
 const TILE: int = 32
-const OPEN_SPEED := 3.5    # open/close lerp rate (units of open-amount per sec)
+const OPEN_SPEED := 6.0    # open/close lerp rate (units of open-amount per sec)
 
 var cover_tiles: Array[Vector2i] = []
 var corridor_axis: int = 0
@@ -168,8 +168,11 @@ func _process(delta: float) -> void:
 	if absf(_open_amount - _open_target) > 0.001:
 		_open_amount = move_toward(_open_amount, _open_target, OPEN_SPEED * delta)
 		_push_open_amount()
-		# Collision is solid only while essentially closed.
-		var solid: bool = _open_amount <= 0.05
+		# Collision tracks the FP visual: stays solid until the wall is at
+		# least half-sunk, so a fast approach can't clip through a still-
+		# tall-looking wall. Symmetric on close — collision returns when
+		# the wall has risen back past mid-height.
+		var solid: bool = _open_amount <= 0.5
 		if _col_shape.disabled == solid:
 			_col_shape.disabled = not solid
 

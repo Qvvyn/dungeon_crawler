@@ -222,7 +222,7 @@ func _tick_damage() -> void:
 	if low_beam and ply.get("_is_levitating"):
 		return
 	if ply.has_method("take_damage"):
-		ply.take_damage(DAMAGE)
+		ply.take_damage(DAMAGE, self)
 
 func _end_a() -> Vector2:
 	var offset := beam_half_width - 2.0

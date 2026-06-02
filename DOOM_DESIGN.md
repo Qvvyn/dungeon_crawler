@@ -17,8 +17,12 @@ them as starting points, not gospel.
 
 - **Animated wall-segment primitive** — `FirstPersonRig.add_wall_segment` /
   `set_wall_segment_open` / `remove_wall_segment`. Segments live in `_world3d` on `LAYER_ENV`,
-  never baked into `_wall_mm`, so animating a height never triggers a full rebuild. This is the
-  §3 "core capability", realized.
+  never baked into the chunked wall MultiMesh (`_wall_chunks`), so animating a height never
+  triggers a rebuild. This is the §3 "core capability", realized.
+- **Sector-chunked wall MultiMesh** — walls split into `WALL_CHUNK_SIZE`×`WALL_CHUNK_SIZE`
+  (8×8 tile) chunks, each its own `MultiMeshInstance3D` in `_wall_chunks`. `rebuild_walls()`
+  still does a full rebuild for now; the new `rebuild_wall_chunk_for_tile(gx, gy)` will let
+  per-tile height changes (lifts, crushers) invalidate only their chunk once §3 lands.
 - **Doors** — `Door.gd` / `Door.tscn`: auto-open on approach (sink into floor), plus
   `remote_only` + `start_open` + `open()/close()` for seals. Placed by `World._spawn_doors`.
 - **Beam-trap corridors** — `BeamTrap.gd` (high + floor-level / levitate-able variants),
@@ -152,10 +156,11 @@ not the goal:
 ### Key implementation note
 
 Animated segments should be **separate `MeshInstance3D` nodes** added to `_world3d`, *not* baked
-into the static `_wall_mm` MultiMesh. That way changing a height tweens a single node's
-transform and never triggers a whole-wall rebuild. *Static* height variation (steps, pits) can
-still live in the baked mesh since it never moves. For anything triggered, reuse the
-`SpikeTrap` / `BeamTrap` state-machine + `attach_fp_visual` patterns we already have.
+into the chunked wall MultiMesh (`_wall_chunks`). That way changing a height tweens a single
+node's transform and never triggers a rebuild. *Static* height variation (steps, pits) lives in
+the baked chunks; call `rebuild_wall_chunk_for_tile(gx, gy)` to invalidate only the affected
+chunk instead of doing a whole-wall rebuild. For anything triggered, reuse the `SpikeTrap` /
+`BeamTrap` state-machine + `attach_fp_visual` patterns we already have.
 
 ### Follow-on
 

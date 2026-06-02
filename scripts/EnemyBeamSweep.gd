@@ -161,7 +161,7 @@ func _check_beam_hit() -> void:
 		var hit := space.intersect_ray(params)
 		if hit.is_empty() or hit.get("collider") == _player:
 			if _player.has_method("take_damage"):
-				_player.take_damage(BEAM_DAMAGE)
+				_player.take_damage(BEAM_DAMAGE, self)
 
 func _on_death() -> void:
 	_cleanup_visuals()

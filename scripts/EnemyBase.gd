@@ -375,7 +375,7 @@ func alert_by_sound(source_pos: Vector2, radius: float) -> void:
 		_has_aggro = true
 		FloatingText.spawn_str(global_position, "!", Color(1.0, 0.9, 0.0), get_tree().current_scene)
 
-func take_damage(amount: int) -> void:
+func take_damage(amount: int, _source: Node = null) -> void:
 	if _shield_active:
 		_shield_active = false
 		FloatingText.spawn_str(global_position, "BLOCKED!", Color(0.4, 0.9, 1.0), get_tree().current_scene)
@@ -475,12 +475,14 @@ func _do_volatile() -> void:
 		(fp as Node2D).position = global_position
 	get_tree().current_scene.call_deferred("add_child", fp)
 
-static func volatile_explosion(pos: Vector2, hp: int, player: Node, scene: Node) -> void:
+static func volatile_explosion(pos: Vector2, hp: int, player: Node, scene: Node, source: Node = null) -> void:
 	FloatingText.spawn_str(pos, "BOOM!", Color(1.0, 0.55, 0.0), scene)
 	var dmg := int(hp / 3)
 	if is_instance_valid(player) and player.has_method("take_damage"):
 		if pos.distance_to(player.global_position) <= 90.0:
-			player.take_damage(dmg)
+			# Caller passes the exploding enemy so the death log attributes
+			# the hit to "EnemyArcher" / "EnemyChaser" / etc. instead of "?".
+			player.take_damage(dmg, source)
 	const FP := preload("res://scripts/FirePatch.gd")
 	var fp: Node = FP.new()
 	if fp is Node2D:
@@ -679,4 +681,4 @@ func damage_player_in_radius(amount: int, radius: float) -> void:
 	if not is_instance_valid(_player): return
 	if global_position.distance_to(_player.global_position) <= radius:
 		if _player.has_method("take_damage"):
-			_player.take_damage(amount)
+			_player.take_damage(amount, self)

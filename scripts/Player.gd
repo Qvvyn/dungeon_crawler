@@ -42,10 +42,20 @@ var _pause_weapons_label: Label = null
 var _pause_weapons_sort: String = "damage"
 # Settings sub-panel — overlays the main pause panel when visible.
 var _settings_root: Node = null
-var _pause_main_buttons: Array = []   # nodes hidden when settings is open
+# Debug sub-panel — same lifecycle as _settings_root: hides main pause
+# buttons on open, BACK restores them. Lists the live debug toggles
+# (hitboxes / names / blind / …).
+var _debug_root: Node = null
+var _pause_main_buttons: Array = []   # nodes hidden when settings / debug sub-panel is open
 var _buff_timer: float = 0.0
 var _speed_multiplier: float = 1.0
 var _fire_rate_multiplier: float = 1.0
+# Ring buffer of the player's most recent damage events. Newest at the end.
+# Each entry: {amount: int, source: String, ticks_msec: int, hp_after: int,
+# floor: int}. Surfaced on the death screen so the player can see what
+# actually killed them. Capped at DAMAGE_LOG_SIZE.
+const DAMAGE_LOG_SIZE: int = 5
+var _damage_log: Array = []
 
 # Equipment stat bonuses (applied by InventoryManager)
 var _equip_speed_bonus: float = 0.0
@@ -826,13 +836,15 @@ func _setup_pause_menu() -> void:
 	var border := ColorRect.new()
 	border.color    = Color(0.28, 0.18, 0.45, 0.9)
 	border.position = Vector2(580, 230)
-	border.size     = Vector2(440, 556)
+	# Grown 56px to fit the new DEBUG row below QUIT without crowding the
+	# volume slider / mobile run-stats line.
+	border.size     = Vector2(440, 612)
 	_pause_menu.add_child(border)
 
 	var inner := ColorRect.new()
 	inner.color    = Color(0.04, 0.02, 0.09, 0.97)
 	inner.position = Vector2(583, 233)
-	inner.size     = Vector2(434, 550)
+	inner.size     = Vector2(434, 606)
 	_pause_menu.add_child(inner)
 
 	# Stat reference panel — sits to the right of the main menu, always visible while paused
@@ -919,17 +931,22 @@ func _setup_pause_menu() -> void:
 	_pause_btn("SETTINGS",     Vector2(640, 452), Color(0.85, 0.7, 1.0), _open_settings,  true)
 	_pause_btn("TITLE SCREEN", Vector2(640, 504), Color(0.7, 0.55, 1.0), _on_title,       true)
 	_pause_btn("QUIT",         Vector2(640, 556), Color(0.55, 0.55, 0.6),_on_quit,        true)
+	# DEBUG opens a sub-panel listing devtest toggles (hitboxes, names,
+	# blind, …). Mirrors the SETTINGS pattern: hides main buttons on open,
+	# BACK restores them. Kept in the always-built section (not just
+	# test_mode) so anyone running locally can quickly poke at the toggles.
+	_pause_btn("DEBUG",        Vector2(640, 596), Color(0.8, 0.6, 0.4),  _open_debug,     true)
 	# Volume slider lives directly on the main pause panel so the player
 	# doesn't need to dive into the settings sub-panel just to nudge volume.
 	# Track the just-added widgets so they hide alongside the other main
 	# buttons when SETTINGS opens.
 	var _pre_count: int = _pause_menu.get_child_count()
-	_add_volume_slider(612, _pause_menu)
+	_add_volume_slider(648, _pause_menu)
 	# Mobile run-stats line — only visible on phones since the HUD's gold
 	# / kills / floor readouts are hidden there. Refreshed on every
 	# pause-menu open via _refresh_pause_run_stats().
 	_pause_run_stats_label = Label.new()
-	_pause_run_stats_label.position = Vector2(586, 656)
+	_pause_run_stats_label.position = Vector2(586, 692)
 	_pause_run_stats_label.size = Vector2(428, 60)
 	_pause_run_stats_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_pause_run_stats_label.add_theme_font_size_override("font_size", 14)
@@ -942,13 +959,14 @@ func _setup_pause_menu() -> void:
 	# level setter, and an enemy-spawn override dropdown so balance
 	# tuning doesn't require quitting + restarting.
 	if GameState.test_mode:
-		_add_test_difficulty_slider(660, _pause_menu)
-		_add_test_level_input(692, _pause_menu)
-		_add_test_spawn_dropdown(724, _pause_menu)
-		_add_test_drops_toggle(756, _pause_menu)
+		_add_test_difficulty_slider(696, _pause_menu)
+		_add_test_level_input(728, _pause_menu)
+		_add_test_spawn_dropdown(760, _pause_menu)
+		_add_test_drops_toggle(792, _pause_menu)
 	for ci in range(_pre_count, _pause_menu.get_child_count()):
 		_pause_main_buttons.append(_pause_menu.get_child(ci))
 	_build_settings_panel()
+	_build_debug_panel()
 
 func _pause_autoplay_btn(pos: Vector2) -> void:
 	# Custom variant of _pause_btn that retains a reference to its label
@@ -969,9 +987,13 @@ func _pause_autoplay_btn(pos: Vector2) -> void:
 		_set_autoplay(not _autoplay)
 		_refresh_autoplay_pause_label())
 	btn.mouse_entered.connect(func() -> void:
+		if not is_instance_valid(_pause_autoplay_label):
+			return
 		var col: Color = _autoplay_pause_btn_color()
 		_pause_autoplay_label.add_theme_color_override("font_color", col.lightened(0.35)))
 	btn.mouse_exited.connect(func() -> void:
+		if not is_instance_valid(_pause_autoplay_label):
+			return
 		_pause_autoplay_label.add_theme_color_override("font_color",
 			_autoplay_pause_btn_color()))
 	_pause_menu.add_child(btn)
@@ -1021,8 +1043,12 @@ func _pause_btn(txt: String, pos: Vector2, col: Color, cb: Callable, is_main: bo
 	btn.position = pos - Vector2(4, 2)
 	btn.size     = Vector2(328, 40)
 	btn.mouse_entered.connect(func() -> void:
+		if not is_instance_valid(lbl):
+			return
 		lbl.add_theme_color_override("font_color", col.lightened(0.35)))
 	btn.mouse_exited.connect(func() -> void:
+		if not is_instance_valid(lbl):
+			return
 		lbl.add_theme_color_override("font_color", col))
 	btn.pressed.connect(cb)
 	_pause_menu.add_child(btn)
@@ -1057,7 +1083,6 @@ func _build_settings_panel() -> void:
 
 	_add_crt_toggle(Vector2(640, 360), _settings_root)
 	_add_limb_drift_toggle(Vector2(640, 398), _settings_root)
-	_add_low_res_toggle(Vector2(640, 436), _settings_root)
 	_add_flash_toggle(Vector2(640, 562), _settings_root)
 	_add_volume_slider(422, _settings_root)
 	_add_difficulty_slider(496, _settings_root)
@@ -1078,8 +1103,12 @@ func _build_settings_panel() -> void:
 	back_btn.position = Vector2(636, 676)
 	back_btn.size = Vector2(328, 40)
 	back_btn.mouse_entered.connect(func() -> void:
+		if not is_instance_valid(back_lbl):
+			return
 		back_lbl.add_theme_color_override("font_color", back_col.lightened(0.35)))
 	back_btn.mouse_exited.connect(func() -> void:
+		if not is_instance_valid(back_lbl):
+			return
 		back_lbl.add_theme_color_override("font_color", back_col))
 	back_btn.pressed.connect(_close_settings)
 	_settings_root.add_child(back_btn)
@@ -1099,6 +1128,202 @@ func _close_settings() -> void:
 	for n in _pause_main_buttons:
 		if is_instance_valid(n):
 			(n as CanvasItem).visible = true
+
+# ── Debug sub-panel ──────────────────────────────────────────────────────────
+# Mirrors the SETTINGS sub-panel shape: a Control containing labeled toggle
+# rows, hidden by default. Buttons here flip GameState flags that the rest
+# of the game reads (FirstPersonRig.show_hitboxes / show_enemy_names, the
+# blinded vignette uniform, …). Adding a new toggle = one call to
+# _add_debug_toggle below; no other plumbing required.
+func _build_debug_panel() -> void:
+	_debug_root = Control.new()
+	_debug_root.position = Vector2.ZERO
+	_debug_root.size = Vector2(1600, 900)
+	_debug_root.visible = false
+	(_debug_root as Control).mouse_filter = Control.MOUSE_FILTER_PASS
+	_pause_menu.add_child(_debug_root)
+
+	var bg := ColorRect.new()
+	bg.color = Color(0.10, 0.06, 0.04, 0.97)
+	bg.position = Vector2(583, 290)
+	bg.size = Vector2(434, 460)
+	_debug_root.add_child(bg)
+
+	var title := Label.new()
+	title.text = "— DEBUG —"
+	title.position = Vector2(586, 304)
+	title.size     = Vector2(428, 32)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 22)
+	title.add_theme_color_override("font_color", Color(0.95, 0.75, 0.5))
+	_debug_root.add_child(title)
+
+	# Each row is a toggle: shows current ON/OFF state, click flips it and
+	# runs the on_change callback. Captured-`lbl` lambdas guard with
+	# is_instance_valid so a freed label can't crash the callback if the
+	# pause menu is ever rebuilt mid-press.
+	_add_debug_toggle(Vector2(640, 360), _debug_root, "HITBOXES",
+		func() -> bool: return GameState.show_hitboxes,
+		func(v: bool) -> void: GameState.show_hitboxes = v)
+	_add_debug_toggle(Vector2(640, 400), _debug_root, "ENEMY NAMES",
+		func() -> bool: return GameState.show_enemy_names,
+		func(v: bool) -> void: GameState.show_enemy_names = v)
+	_add_debug_toggle(Vector2(640, 440), _debug_root, "BLIND (FP)",
+		func() -> bool: return GameState.fp_blinded,
+		func(v: bool) -> void:
+			GameState.fp_blinded = v
+			_apply_blinded_to_rig())
+	# Mirrors KEY_F2 — flips infinite_mana + infinite_health in lockstep.
+	# Tops up vitals immediately on toggle-on so the player sees the change.
+	_add_debug_toggle(Vector2(640, 480), _debug_root, "INFINITE VITALS",
+		func() -> bool: return GameState.infinite_mana,
+		func(v: bool) -> void:
+			GameState.infinite_mana = v
+			GameState.infinite_health = v
+			GameState.save_settings()
+			if v:
+				mana = max_mana
+				health = _max_hp()
+				_update_mana_bar()
+				_update_health_bar())
+	# Mirrors Shift+D — also lives on the Settings panel, but having it
+	# here too means debug-only sessions don't need to dive into settings.
+	_add_debug_toggle(Vector2(640, 520), _debug_root, "LIMB DRIFT",
+		func() -> bool: return GameState.fp_limb_drift,
+		func(v: bool) -> void:
+			GameState.fp_limb_drift = v
+			GameState.save_settings())
+	# Font cycle — picks the next entry in MonoFont.FONTS. Doesn't refresh
+	# existing labels (they hold the Font ref at creation time); a scene
+	# reload / next floor picks up the new typeface.
+	_add_debug_cycle(Vector2(640, 560), _debug_root, "FONT",
+		func() -> String: return MonoFont.current_name(),
+		func() -> void:
+			GameState.font_choice = (GameState.font_choice + 1) % MonoFont.choice_count()
+			MonoFont.invalidate()
+			GameState.save_settings())
+
+	# BACK button — mirrors _build_settings_panel's back row.
+	var back_lbl := Label.new()
+	back_lbl.text = "[ BACK ]"
+	back_lbl.position = Vector2(640, 678)
+	back_lbl.size = Vector2(320, 36)
+	back_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	back_lbl.add_theme_font_size_override("font_size", 20)
+	var back_col := Color(0.6, 0.85, 1.0)
+	back_lbl.add_theme_color_override("font_color", back_col)
+	_debug_root.add_child(back_lbl)
+	var back_btn := Button.new()
+	back_btn.flat = true
+	back_btn.position = Vector2(636, 676)
+	back_btn.size = Vector2(328, 40)
+	back_btn.mouse_entered.connect(func() -> void:
+		if is_instance_valid(back_lbl):
+			back_lbl.add_theme_color_override("font_color", back_col.lightened(0.35)))
+	back_btn.mouse_exited.connect(func() -> void:
+		if is_instance_valid(back_lbl):
+			back_lbl.add_theme_color_override("font_color", back_col))
+	back_btn.pressed.connect(_close_debug)
+	_debug_root.add_child(back_btn)
+
+# Adds a "[ LABEL: ON/OFF ]" toggle row. getter reads the current state;
+# setter writes the flipped value. is_instance_valid guards on captured
+# nodes so a hot-rebuild of the menu can't crash a stale lambda.
+func _add_debug_toggle(pos: Vector2, parent: Node, label_text: String,
+		getter: Callable, setter: Callable) -> void:
+	var col_on  := Color(0.55, 1.0, 0.55)
+	var col_off := Color(0.65, 0.65, 0.7)
+	var lbl := Label.new()
+	lbl.position = pos
+	lbl.size = Vector2(320, 32)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.add_theme_font_size_override("font_size", 17)
+	parent.add_child(lbl)
+	var refresh := func() -> void:
+		if not is_instance_valid(lbl):
+			return
+		var on: bool = bool(getter.call())
+		lbl.text = "[ %s: %s ]" % [label_text, "ON" if on else "OFF"]
+		lbl.add_theme_color_override("font_color", col_on if on else col_off)
+	refresh.call()
+	var btn := Button.new()
+	btn.flat = true
+	btn.position = pos - Vector2(4, 2)
+	btn.size = Vector2(328, 36)
+	btn.mouse_entered.connect(func() -> void:
+		if not is_instance_valid(lbl):
+			return
+		var on: bool = bool(getter.call())
+		lbl.add_theme_color_override("font_color",
+			(col_on if on else col_off).lightened(0.35)))
+	btn.mouse_exited.connect(func() -> void:
+		refresh.call())
+	btn.pressed.connect(func() -> void:
+		setter.call(not bool(getter.call()))
+		refresh.call())
+	parent.add_child(btn)
+
+# Adds a "[ LABEL: <current value> ]" row that cycles through values on
+# click. `value_getter` returns the current value's display string;
+# `next` advances to the next value (and persists / applies as needed).
+# Mirrors _add_debug_toggle's defensive `is_instance_valid` pattern.
+func _add_debug_cycle(pos: Vector2, parent: Node, label_text: String,
+		value_getter: Callable, next: Callable) -> void:
+	var col_neutral := Color(0.85, 0.75, 0.5)
+	var lbl := Label.new()
+	lbl.position = pos
+	lbl.size = Vector2(320, 32)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.add_theme_font_size_override("font_size", 17)
+	parent.add_child(lbl)
+	var refresh := func() -> void:
+		if not is_instance_valid(lbl):
+			return
+		lbl.text = "[ %s: %s ]" % [label_text, String(value_getter.call())]
+		lbl.add_theme_color_override("font_color", col_neutral)
+	refresh.call()
+	var btn := Button.new()
+	btn.flat = true
+	btn.position = pos - Vector2(4, 2)
+	btn.size = Vector2(328, 36)
+	btn.mouse_entered.connect(func() -> void:
+		if not is_instance_valid(lbl):
+			return
+		lbl.add_theme_color_override("font_color", col_neutral.lightened(0.35)))
+	btn.mouse_exited.connect(func() -> void:
+		refresh.call())
+	btn.pressed.connect(func() -> void:
+		next.call()
+		refresh.call())
+	parent.add_child(btn)
+
+func _open_debug() -> void:
+	if _debug_root == null:
+		return
+	(_debug_root as Control).visible = true
+	for n in _pause_main_buttons:
+		if is_instance_valid(n):
+			(n as CanvasItem).visible = false
+
+func _close_debug() -> void:
+	if _debug_root == null:
+		return
+	(_debug_root as Control).visible = false
+	for n in _pause_main_buttons:
+		if is_instance_valid(n):
+			(n as CanvasItem).visible = true
+
+# Push the current GameState.fp_blinded value into the active rig's
+# shader uniform. Called from the debug toggle and from World on render-
+# mode flips so a sticky "blinded" state survives switching to TOPDOWN
+# and back.
+func _apply_blinded_to_rig() -> void:
+	var rig: Node = GameState.active_rig
+	if rig == null or not is_instance_valid(rig):
+		return
+	if not rig.has_method("set_blinded"):
+		return
+	rig.set_blinded(0.7 if GameState.fp_blinded else 0.0)
 
 # Hex-code wizard color picker — type a 6-digit hex (e.g. a08cff) + Enter to
 # recolor the wizard. A live swatch shows the current color.
@@ -1136,7 +1361,8 @@ func _add_wizard_color_field(pos: Vector2, parent: Node) -> void:
 		col.a = 1.0
 		GameState.wizard_color = col
 		GameState.save_settings()
-		swatch.color = col
+		if is_instance_valid(swatch):
+			swatch.color = col
 		apply_wizard_color(col)
 	input.text_submitted.connect(apply)
 
@@ -1158,12 +1384,18 @@ func _add_flash_toggle(pos: Vector2, parent: Node = null) -> void:
 	btn.position = pos - Vector2(4, 2)
 	btn.size = Vector2(328, 36)
 	btn.mouse_entered.connect(func() -> void:
+		if not is_instance_valid(lbl):
+			return
 		lbl.add_theme_color_override("font_color", lbl.get_theme_color("font_color").lightened(0.3)))
 	btn.mouse_exited.connect(func() -> void:
+		if not is_instance_valid(lbl):
+			return
 		lbl.add_theme_color_override("font_color", col_on if GameState.disable_flashing else col_off))
 	btn.pressed.connect(func() -> void:
 		GameState.disable_flashing = not GameState.disable_flashing
 		GameState.save_settings()
+		if not is_instance_valid(lbl):
+			return
 		lbl.text = "[ REDUCE FLASHING: %s ]" % ("ON" if GameState.disable_flashing else "OFF")
 		lbl.add_theme_color_override("font_color", col_on if GameState.disable_flashing else col_off))
 	parent.add_child(btn)
@@ -1186,14 +1418,19 @@ func _add_crt_toggle(pos: Vector2, parent: Node = null) -> void:
 	btn.position = pos - Vector2(4, 2)
 	btn.size = Vector2(328, 36)
 	btn.mouse_entered.connect(func() -> void:
+		if not is_instance_valid(lbl):
+			return
 		lbl.add_theme_color_override("font_color", lbl.get_theme_color("font_color").lightened(0.3)))
 	btn.mouse_exited.connect(func() -> void:
+		if not is_instance_valid(lbl):
+			return
 		lbl.add_theme_color_override("font_color", col_on if GameState.crt_enabled else col_off))
 	btn.pressed.connect(func() -> void:
 		GameState.crt_enabled = not GameState.crt_enabled
 		GameState.save_settings()
-		lbl.text = "[ CRT: %s ]" % ("ON" if GameState.crt_enabled else "OFF")
-		lbl.add_theme_color_override("font_color", col_on if GameState.crt_enabled else col_off)
+		if is_instance_valid(lbl):
+			lbl.text = "[ CRT: %s ]" % ("ON" if GameState.crt_enabled else "OFF")
+			lbl.add_theme_color_override("font_color", col_on if GameState.crt_enabled else col_off)
 		var scene := get_tree().current_scene
 		if scene.has_method("_apply_crt_state"):
 			scene._apply_crt_state())
@@ -1225,12 +1462,18 @@ func _add_low_res_toggle(pos: Vector2, parent: Node = null) -> void:
 	btn.position = pos - Vector2(4, 2)
 	btn.size = Vector2(328, 36)
 	btn.mouse_entered.connect(func() -> void:
+		if not is_instance_valid(lbl):
+			return
 		lbl.add_theme_color_override("font_color", lbl.get_theme_color("font_color").lightened(0.3)))
 	btn.mouse_exited.connect(func() -> void:
+		if not is_instance_valid(lbl):
+			return
 		lbl.add_theme_color_override("font_color", col_on if GameState.fp_low_res else col_off))
 	btn.pressed.connect(func() -> void:
 		GameState.fp_low_res = not GameState.fp_low_res
 		GameState.save_settings()
+		if not is_instance_valid(lbl):
+			return
 		lbl.text = "[ FP LOW-RES: %s ]" % ("ON" if GameState.fp_low_res else "OFF")
 		lbl.add_theme_color_override("font_color", col_on if GameState.fp_low_res else col_off))
 	parent.add_child(btn)
@@ -1253,12 +1496,18 @@ func _add_limb_drift_toggle(pos: Vector2, parent: Node = null) -> void:
 	btn.position = pos - Vector2(4, 2)
 	btn.size = Vector2(328, 36)
 	btn.mouse_entered.connect(func() -> void:
+		if not is_instance_valid(lbl):
+			return
 		lbl.add_theme_color_override("font_color", lbl.get_theme_color("font_color").lightened(0.3)))
 	btn.mouse_exited.connect(func() -> void:
+		if not is_instance_valid(lbl):
+			return
 		lbl.add_theme_color_override("font_color", col_on if GameState.fp_limb_drift else col_off))
 	btn.pressed.connect(func() -> void:
 		GameState.fp_limb_drift = not GameState.fp_limb_drift
 		GameState.save_settings()
+		if not is_instance_valid(lbl):
+			return
 		lbl.text = "[ LIMB DRIFT: %s ]" % ("ON" if GameState.fp_limb_drift else "OFF")
 		lbl.add_theme_color_override("font_color", col_on if GameState.fp_limb_drift else col_off))
 	parent.add_child(btn)
@@ -1289,7 +1538,8 @@ func _add_volume_slider(y: float, parent: Node = null) -> void:
 		GameState.master_volume = v / 100.0
 		GameState._apply_volume()
 		GameState.save_settings()
-		lbl.text = "VOLUME: %d%%" % int(v))
+		if is_instance_valid(lbl):
+			lbl.text = "VOLUME: %d%%" % int(v))
 
 func _add_difficulty_slider(y: float, parent: Node = null) -> void:
 	if parent == null:
@@ -1319,7 +1569,8 @@ func _add_difficulty_slider(y: float, parent: Node = null) -> void:
 			GameState.test_difficulty = v
 		else:
 			GameState.difficulty = v
-		lbl.text = "DIFFICULTY: %.1fx" % v)
+		if is_instance_valid(lbl):
+			lbl.text = "DIFFICULTY: %.1fx" % v)
 
 # Test-arena difficulty input. Replaces the previous slider — typing
 # is faster than dragging when probing specific values, and the field
@@ -1357,6 +1608,8 @@ func _add_test_difficulty_slider(y: float, parent: Node) -> void:
 	_pause_main_buttons.append(apply)
 
 	var commit: Callable = func() -> void:
+		if not is_instance_valid(input):
+			return
 		var v := input.text.to_float()
 		if v < 0.0:
 			return
@@ -1406,6 +1659,8 @@ func _add_test_level_input(y: float, parent: Node) -> void:
 	_pause_main_buttons.append(apply)
 
 	var commit: Callable = func() -> void:
+		if not is_instance_valid(input):
+			return
 		var lv := input.text.to_int()
 		if lv < 0:
 			return   # negatives only — 0 is allowed (clears level bonus)
@@ -1466,6 +1721,8 @@ func _add_test_spawn_dropdown(y: float, parent: Node) -> void:
 	_pause_main_buttons.append(dropdown)
 
 	dropdown.item_selected.connect(func(idx: int) -> void:
+		if not is_instance_valid(dropdown):
+			return
 		var key := ""
 		if idx > 0:   # 0 == "Regular spawn"
 			var meta = dropdown.get_item_metadata(idx)
@@ -1503,6 +1760,8 @@ func _add_test_drops_toggle(y: float, parent: Node) -> void:
 	_pause_main_buttons.append(btn)
 
 	var refresh: Callable = func() -> void:
+		if not is_instance_valid(lbl):
+			return
 		var on: bool = GameState.test_drops_enabled
 		lbl.text = "[ DROPS: %s ]" % ("ON" if on else "OFF")
 		lbl.add_theme_color_override("font_color",
@@ -2548,16 +2807,32 @@ func _input(event: InputEvent) -> void:
 				Color(0.5, 0.85, 1.0), get_tree().current_scene)
 			get_viewport().set_input_as_handled()
 		KEY_F2:
-			# Infinite mana cheat toggle — wand shots / nova / shield / levitate
-			# all cost 0 mana while on. Persists across sessions.
-			GameState.infinite_mana = not GameState.infinite_mana
+			# Cheat toggle — invincible AND wand shots / nova / shield /
+			# levitate cost 0 mana. Health + mana flags move in lockstep.
+			# Persists across sessions.
+			var on: bool = not GameState.infinite_mana
+			GameState.infinite_mana = on
+			GameState.infinite_health = on
 			GameState.save_settings()
-			if GameState.infinite_mana:
+			if on:
 				mana = max_mana
+				health = _max_hp()
 				_update_mana_bar()
+				_update_health_bar()
 			FloatingText.spawn_str(global_position + Vector2(0.0, -32.0),
-				"INFINITE MANA: " + ("ON" if GameState.infinite_mana else "OFF"),
+				"INFINITE VITALS: " + ("ON" if on else "OFF"),
 				Color(0.4, 0.95, 1.0), get_tree().current_scene)
+			get_viewport().set_input_as_handled()
+		KEY_F3:
+			# Cycle through MonoFont.FONTS — picks up on next FP rebuild /
+			# scene reload since existing Label3Ds hold their font ref at
+			# creation. Mirrors the DEBUG menu FONT cycle button.
+			GameState.font_choice = (GameState.font_choice + 1) % MonoFont.choice_count()
+			MonoFont.invalidate()
+			GameState.save_settings()
+			FloatingText.spawn_str(global_position + Vector2(0.0, -32.0),
+				"FONT: " + MonoFont.current_name(),
+				Color(0.85, 0.75, 0.5), get_tree().current_scene)
 			get_viewport().set_input_as_handled()
 		KEY_BRACKETLEFT:   # [  →  random wand
 			if not _is_dead and not _is_paused:
@@ -2622,6 +2897,12 @@ func _input(event: InputEvent) -> void:
 			FloatingText.spawn_str(global_position + Vector2(0.0, -32.0),
 				"HITBOXES: " + ("ON" if GameState.show_hitboxes else "OFF"),
 				Color(1.0, 1.0, 0.2), get_tree().current_scene)
+			get_viewport().set_input_as_handled()
+		KEY_N:             # N  →  toggle enemy-name labels above heads (FP)
+			GameState.show_enemy_names = not GameState.show_enemy_names
+			FloatingText.spawn_str(global_position + Vector2(0.0, -32.0),
+				"NAMES: " + ("ON" if GameState.show_enemy_names else "OFF"),
+				Color(0.6, 1.0, 1.0), get_tree().current_scene)
 			get_viewport().set_input_as_handled()
 		KEY_D:             # Shift+D  →  toggle FP limb-drift for all entities
 			# Master switch for the loose per-row "drift" on multi-line ASCII
@@ -5462,10 +5743,12 @@ func apply_buff(duration: float) -> void:
 	_fire_rate_multiplier = 2.0
 	_buff_timer += duration
 
-func take_damage(amount: int) -> void:
+func take_damage(amount: int, source: Node = null) -> void:
 	if _is_dead:
 		return
 	if _is_invincible:
+		return
+	if GameState.infinite_health:
 		return
 	# Higher difficulties make enemies more deadly — scale incoming damage
 	# before shield/DEF so both sources of mitigation apply consistently.
@@ -5509,6 +5792,26 @@ func take_damage(amount: int) -> void:
 	if amount <= 0:
 		return
 	health = max(0, health - amount)
+	# Log this hit to the rolling damage history so the death screen can
+	# show what actually killed the run. Source name pulled from the
+	# attacker's script (e.g. "EnemyChaser") so generic engine names like
+	# "CharacterBody2D" never show up; falls back to Node.name then "?".
+	var src_name: String = "?"
+	if source != null and is_instance_valid(source):
+		var scr: Script = source.get_script() as Script
+		if scr != null and scr.resource_path != "":
+			src_name = scr.resource_path.get_file().get_basename()
+		elif source is Node:
+			src_name = (source as Node).name
+	_damage_log.append({
+		"amount":     amount,
+		"source":     src_name,
+		"ticks_msec": Time.get_ticks_msec(),
+		"hp_after":   health,
+		"floor":      GameState.portals_used + 1,
+	})
+	while _damage_log.size() > DAMAGE_LOG_SIZE:
+		_damage_log.pop_front()
 	FloatingText.spawn(global_position, amount, false, get_tree().current_scene)
 	_update_health_bar()
 	# Visceral feedback: shake + red flash + varied hurt grunt
@@ -5927,8 +6230,51 @@ func _build_death_leaderboard(ranks: Dictionary) -> void:
 	_add_lb_column(dm, "GOLD",          Leaderboard.get_top("gold",    5), Vector2(420, 584), ranks.get("gold",    -1))
 	_add_lb_column(dm, "DAMAGE",        Leaderboard.get_top("damage",  5), Vector2(770, 584), ranks.get("damage",  -1))
 
+	# Damage history — what actually killed the run. Sits below the
+	# leaderboard columns in the left/center area; the right-side weapon
+	# panel still owns x=1170 onward.
+	_build_death_damage_log(dm, Vector2(70, 740), Vector2(1080, 130))
+
 	# Weapon panel on the right
 	_build_death_weapon_panel(dm, Vector2(1170, 558), Vector2(360, 316))
+
+# Renders the player's last 5 damage events, newest at the bottom, with
+# the source's script name, the damage dealt, the resulting HP, and the
+# seconds-before-death. If no damage was logged this run (test mode,
+# died to OOB cleanup, etc.) shows a placeholder line.
+func _build_death_damage_log(parent: Node, pos: Vector2, size: Vector2) -> void:
+	var title := Label.new()
+	title.text = "— LAST 5 HITS —"
+	title.position = pos
+	title.size = Vector2(size.x, 22)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 14)
+	title.add_theme_color_override("font_color", Color(1.0, 0.5, 0.5))
+	parent.add_child(title)
+	var body := Label.new()
+	body.position = pos + Vector2(20, 28)
+	body.size     = size - Vector2(40, 28)
+	body.add_theme_font_size_override("font_size", 13)
+	body.add_theme_color_override("font_color", Color(0.95, 0.85, 0.85))
+	body.add_theme_constant_override("line_separation", 4)
+	body.add_theme_font_override("font", MonoFont.get_font())
+	if _damage_log.is_empty():
+		body.text = "(no hits logged)"
+	else:
+		var now_ms: int = Time.get_ticks_msec()
+		var lines: Array = ["%-22s %5s   %-7s   %s" % ["SOURCE", "DMG", "HP→", "WHEN"]]
+		for entry_v in _damage_log:
+			var entry: Dictionary = entry_v as Dictionary
+			var src: String = String(entry.get("source", "?"))
+			if src.length() > 22:
+				src = src.substr(0, 22)
+			var dmg: int = int(entry.get("amount", 0))
+			var hp_after: int = int(entry.get("hp_after", 0))
+			var seconds_ago: float = float(now_ms - int(entry.get("ticks_msec", now_ms))) / 1000.0
+			var when_str: String = ("%.1fs before" % seconds_ago) if seconds_ago > 0.05 else "killing blow"
+			lines.append("%-22s %5d   %-7d   %s" % [src, dmg, hp_after, when_str])
+		body.text = "\n".join(lines)
+	parent.add_child(body)
 
 func _made_top_10(ranks: Dictionary) -> bool:
 	for cat in ["portals", "gold", "damage"]:

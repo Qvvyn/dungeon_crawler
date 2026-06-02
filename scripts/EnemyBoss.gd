@@ -157,7 +157,7 @@ func _physics_process(delta: float) -> void:
 				move_and_slide()
 				if not _charge_hit and global_position.distance_to(_player.global_position) <= 34.0:
 					if _player.has_method("take_damage"):
-						_player.take_damage(CHARGE_DAMAGE)
+						_player.take_damage(CHARGE_DAMAGE, self)
 					_charge_hit = true
 				if _charge_t <= 0.0 or get_slide_collision_count() > 0:
 					_enter_charge_cooldown()

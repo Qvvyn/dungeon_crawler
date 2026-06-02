@@ -54,7 +54,7 @@ func _enemy_tick(delta: float) -> void:
 			_state_t -= delta
 			if not _hit_player_this_dash and global_position.distance_to(_player.global_position) <= CONTACT_RADIUS:
 				if _player.has_method("take_damage"):
-					_player.take_damage(CONTACT_DAMAGE)
+					_player.take_damage(CONTACT_DAMAGE, self)
 				_hit_player_this_dash = true
 			if _state_t <= 0.0 or get_slide_collision_count() > 0:
 				_enter_cooldown()
