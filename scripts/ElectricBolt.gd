@@ -49,18 +49,20 @@ func _ready() -> void:
 	if _shared_font == null:
 		_shared_font = MonoFont.get_font()
 	add_theme_font_override("font", _shared_font)
-	add_theme_font_size_override("font_size", 16)
+	# Font size 16 → 11. Chunky monospace faces (VT323 / Major Mono) blew the
+	# zZz tag out wide enough to overlap the enemy art; smaller size + tighter
+	# box keeps the bolt readable across every font in the rotation.
+	add_theme_font_size_override("font_size", 11)
 	add_theme_color_override("font_color", Color(0.95, 0.95, 0.30))
 	add_theme_color_override("font_outline_color", Color(0.40, 0.30, 0.0))
-	add_theme_constant_override("outline_size", 2)
+	add_theme_constant_override("outline_size", 1)
 	horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vertical_alignment   = VERTICAL_ALIGNMENT_CENTER
-	# Sit just above the entity's head so the bolt never covers the
-	# silhouette but reads as "lightning crackling on this guy".
-	offset_left   = -22.0
-	offset_top    = -42.0
-	offset_right  =  22.0
-	offset_bottom = -16.0
+	# Sit just above the entity's head — narrower box matches the new font size.
+	offset_left   = -16.0
+	offset_top    = -38.0
+	offset_right  =  16.0
+	offset_bottom = -20.0
 	text = BOLT_F0
 	z_index = 3
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -75,7 +77,7 @@ func _ready() -> void:
 		var parent_body := get_parent() as Node2D
 		if is_instance_valid(parent_body):
 			GameState.active_rig.spawn_burst_2d(parent_body.global_position, "Z",
-				Color(1.0, 0.95, 0.15), 4, 0.35, 0.20, Vector2.ZERO, TAU, 0.010, 0.55)
+				Color(1.0, 0.95, 0.15), 4, 0.35, 0.20, Vector2.ZERO, TAU, 0.006, 0.55)
 
 func _process(delta: float) -> void:
 	# Glyph flicker — fast frame swap so the bolt looks alive even during
@@ -117,4 +119,4 @@ func _fire_fp_pulse() -> void:
 		return
 	rig.spawn_burst_2d((_host as Node2D).global_position, "z",
 			Color(1.0, 0.92, 0.20), 3, 0.28, 0.18,
-			Vector2.ZERO, TAU, 0.009, 0.55)
+			Vector2.ZERO, TAU, 0.005, 0.55)

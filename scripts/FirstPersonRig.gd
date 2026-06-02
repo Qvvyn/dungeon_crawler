@@ -116,6 +116,17 @@ var _cur_room_idx: int = -1           # cached room the player is in
 const _AMBIENT_NORMAL: float = 0.95   # matches the base ambient in _build_scene
 const _AMBIENT_DARK: float = 0.12     # torch-only pool; shader thins to sparse glyphs
 const _TORCH_BASE_ENERGY: float = 4.0
+# "Fully illuminated" room modifier — when on, _update_lighting forces a
+# bright steady ambient + boosted torch and the entity/HP cull radius is
+# stretched. Used by the Wizard Village (always on, so the dummy at the far
+# end of the room reads from spawn) and exposed in the debug menu's lighting
+# cycle so dungeon floors can be inspected without the dark-room dimming.
+const _AMBIENT_FULL_BRIGHT: float = 2.6
+const _TORCH_FULL_BRIGHT_ENERGY: float = 8.0
+const _TORCH_FULL_BRIGHT_RANGE: float = 50.0
+const _CULL_DIST_NORMAL: float = 13.0
+const _CULL_DIST_FULL_BRIGHT: float = 60.0
+var _fully_illuminated: bool = false
 var _entity_root: Node3D   = null
 # body InstanceID → {body, label3d (Label3D), stored_glyph, stored_color, base_pixel_size}
 var _entities: Dictionary = {}
@@ -125,6 +136,20 @@ var _ice_cubes: Dictionary = {}  # body instance_id → persistent ice-cube Labe
 var _hitbox_mesh: ImmediateMesh      = null
 var _hitbox_mi:   MeshInstance3D     = null
 var _hitbox_mat:  StandardMaterial3D = null
+
+# Player shield arc in FP — curved MeshInstance3D on LAYER_ENV so the ASCII
+# post-shader chunks it the same way it crunches walls and beams. Built lazily
+# on first set_player_shield call; transform updates each frame to keep the
+# arc centered on the player and aimed along the cursor direction.
+var _shield_mesh_inst: MeshInstance3D = null
+var _shield_mesh: ArrayMesh = null
+var _shield_mat: StandardMaterial3D = null
+const _SHIELD_FP_RADIUS: float    = 1.40   # tile-units from player to the arc face
+const _SHIELD_FP_THICKNESS: float = 0.06   # radial wall depth
+const _SHIELD_FP_BOTTOM_Y: float  = 0.12
+const _SHIELD_FP_TOP_Y: float     = 0.88
+const _SHIELD_FP_ARC_STEPS: int   = 14     # facet count across the 90° sweep
+const _SHIELD_FP_HALF_ARC: float  = PI * 0.25   # 45° each side of forward
 
 var _grid: Array = []
 var _grid_w: int = 0
@@ -220,6 +245,91 @@ func set_blinded(amount: float) -> void:
 	if _ascii_mat == null:
 		return
 	_ascii_mat.set_shader_parameter("darkness", clampf(amount, 0.0, 1.0))
+
+# Updates the FP shield arc. Player calls this each frame from _handle_shield:
+# `active=true` shows the curved blue arc mesh centered on the player and
+# rotated to face aim_dir_2d; `active=false` hides it. Lazy-builds the mesh
+# on first use so the rig has no overhead until the player actually shields.
+# Lives on LAYER_ENV so the ASCII post-shader crunches it like walls/beams.
+func set_player_shield(active: bool, player_pos_2d: Vector2, aim_dir_2d: Vector2) -> void:
+	if _world3d == null or not is_instance_valid(_world3d):
+		return
+	if _shield_mesh_inst == null or not is_instance_valid(_shield_mesh_inst):
+		if _shield_mesh == null:
+			_shield_mesh = _build_shield_mesh()
+		if _shield_mat == null:
+			_shield_mat = StandardMaterial3D.new()
+			_shield_mat.albedo_color = Color(0.40, 0.78, 1.0)
+			_shield_mat.roughness = 1.0
+			# Double-sided so the inner-facing surface shows up in 3rd-person
+			# when the camera sits behind the player.
+			_shield_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		_shield_mesh_inst = MeshInstance3D.new()
+		_shield_mesh_inst.mesh = _shield_mesh
+		_shield_mesh_inst.material_override = _shield_mat
+		_shield_mesh_inst.layers = LAYER_ENV
+		_world3d.add_child(_shield_mesh_inst)
+	_shield_mesh_inst.visible = active and visible
+	if not active:
+		return
+	var player_3d: Vector3 = Vector3(player_pos_2d.x / TILE_PX, 0.0, player_pos_2d.y / TILE_PX)
+	_shield_mesh_inst.position = player_3d
+	# Rotate the mesh's local +X (the arc's center forward) to point along
+	# aim_dir_2d in the world XZ plane. Y rotation in Godot maps +X to
+	# (cos θ, 0, -sin θ); we want (aim_dir.x, 0, aim_dir.y), so θ = -angle.
+	_shield_mesh_inst.rotation = Vector3(0.0, -atan2(aim_dir_2d.y, aim_dir_2d.x), 0.0)
+
+# Builds the curved-wall mesh for the player shield arc. Local space: +X is
+# the arc's "forward" (mid-point of the sweep), Y is wall height. The mesh
+# is rotated about Y in set_player_shield so +X tracks aim_dir_2d.
+func _build_shield_mesh() -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var r_outer: float = _SHIELD_FP_RADIUS + _SHIELD_FP_THICKNESS * 0.5
+	var r_inner: float = _SHIELD_FP_RADIUS - _SHIELD_FP_THICKNESS * 0.5
+	var ya: float = _SHIELD_FP_BOTTOM_Y
+	var yb: float = _SHIELD_FP_TOP_Y
+	for i in _SHIELD_FP_ARC_STEPS:
+		var step: float = (_SHIELD_FP_HALF_ARC * 2.0) / float(_SHIELD_FP_ARC_STEPS)
+		var a0: float = -_SHIELD_FP_HALF_ARC + step * float(i)
+		var a1: float = -_SHIELD_FP_HALF_ARC + step * float(i + 1)
+		# Outer face — two triangles per segment, double-sided material so we
+		# don't need to also emit the inner face (the radial thickness shows
+		# up via the ASCII shader's depth shading already).
+		var o0: Vector3 = Vector3(cos(a0) * r_outer, ya, sin(a0) * r_outer)
+		var o1: Vector3 = Vector3(cos(a1) * r_outer, ya, sin(a1) * r_outer)
+		var o2: Vector3 = Vector3(cos(a1) * r_outer, yb, sin(a1) * r_outer)
+		var o3: Vector3 = Vector3(cos(a0) * r_outer, yb, sin(a0) * r_outer)
+		st.add_vertex(o0); st.add_vertex(o1); st.add_vertex(o2)
+		st.add_vertex(o0); st.add_vertex(o2); st.add_vertex(o3)
+		# Top cap — thin radial slab so the arc reads as a wall with a
+		# top edge from above (matters in 3rd-person where you look down a
+		# bit on the wizard).
+		var i0: Vector3 = Vector3(cos(a0) * r_inner, yb, sin(a0) * r_inner)
+		var i1: Vector3 = Vector3(cos(a1) * r_inner, yb, sin(a1) * r_inner)
+		st.add_vertex(o3); st.add_vertex(o2); st.add_vertex(i1)
+		st.add_vertex(o3); st.add_vertex(i1); st.add_vertex(i0)
+	st.generate_normals()
+	return st.commit()
+
+# Flips the rig into "fully illuminated" mode. When on, _update_lighting
+# bypasses per-room dim/flicker, the torch range/energy jumps, the ASCII
+# post-shader's darkness vignette is cleared, and the entity/HP cull radius
+# stretches so the far end of a room reads cleanly. The Wizard Village
+# always pushes this on; dungeons drive it through GameState.fp_illuminated.
+func set_fully_illuminated(on: bool) -> void:
+	_fully_illuminated = on
+	if not on:
+		# Let _update_lighting reclaim ambient/torch on its next tick — just
+		# clear the shader vignette to whatever blinded wants.
+		return
+	if _env != null:
+		_env.ambient_light_energy = _AMBIENT_FULL_BRIGHT
+	if is_instance_valid(_player_light):
+		_player_light.omni_range = _TORCH_FULL_BRIGHT_RANGE
+		_player_light.light_energy = _TORCH_FULL_BRIGHT_ENERGY
+	if _ascii_mat != null:
+		_ascii_mat.set_shader_parameter("darkness", 0.0)
 
 # Walks a ray (in tile coords) from `from` toward `to`, returning the
 # point just before the first wall cell. Used by 3rd-person to keep the
@@ -417,6 +527,14 @@ func set_room_lighting(rooms: Array, levels: Array) -> void:
 
 func _update_lighting(delta: float, pp: Vector2) -> void:
 	if _env == null or not is_instance_valid(_player_light):
+		return
+	if _fully_illuminated:
+		# Force-clamp the per-frame values so the torch flicker / room-darkness
+		# easing in the normal path can't pull them back toward dim. Cheap to
+		# write each frame; avoids needing a separate "is dirty" flag.
+		_env.ambient_light_energy = _AMBIENT_FULL_BRIGHT
+		_player_light.light_energy = _TORCH_FULL_BRIGHT_ENERGY
+		_player_light.omni_range = _TORCH_FULL_BRIGHT_RANGE
 		return
 	var amp_scale: float = 0.35 if GameState.disable_flashing else 1.0
 	var t: float = Time.get_ticks_msec() * 0.001
@@ -1038,7 +1156,10 @@ func _process(delta: float) -> void:
 		# dark horizon that the torch can't reach it; skip occlusion + the
 		# per-frame status/billboard work entirely. Matches the HP-bar cull
 		# in _update_enemy_hp_bars so bars don't float over invisible enemies.
-		if cam_pos.distance_to(ent_3d) > 13.0:
+		# Stretched in "fully illuminated" mode so the village's far-side
+		# training dummy stays visible from anywhere in the hub.
+		var ent_cull: float = _CULL_DIST_FULL_BRIGHT if _fully_illuminated else _CULL_DIST_NORMAL
+		if cam_pos.distance_to(ent_3d) > ent_cull:
 			lbl.visible = false
 			continue
 		# Frustum early-out — entities strictly behind the camera skip the
@@ -1373,6 +1494,22 @@ func _process(delta: float) -> void:
 	# WIZARD" gates). Surface that text on a centered FP CanvasLayer label.
 	_frame_counter += 1
 	_update_interact_hint(pp)
+	# Mirror entity-label visibility onto any "satellite" labels we attached
+	# to enemies (ice cubes, future debug overlays). The main loop already
+	# culled by frustum / distance / wall occlusion and set lbl.visible
+	# accordingly — anything keyed to the same instance_id should hide
+	# alongside it, otherwise the ice cube floats through walls while the
+	# enemy art correctly disappears.
+	for sync_key in _ice_cubes.keys():
+		var ice_v: Variant = _ice_cubes[sync_key]
+		if not is_instance_valid(ice_v):
+			continue
+		var ent_entry_v: Variant = _entities.get(sync_key)
+		if not (ent_entry_v is Dictionary):
+			continue
+		var ent_lbl_v: Variant = (ent_entry_v as Dictionary).get("label")
+		if ent_lbl_v is Node3D:
+			(ice_v as Node3D).visible = (ent_lbl_v as Node3D).visible
 	# Enemy health bars — project enemy positions to screen and draw a
 	# small bar above each one. Floor is occupied by hazards so bars sit
 	# above the head.
@@ -1496,7 +1633,7 @@ func flash_melee(hit_pos2d: Vector2, color: Color) -> void:
 # 3D world. is_telegraph swaps the glyph to a faint "·" so the windup reads
 # distinctly from the actual sweep. Each emitter has its own pooled label
 # array so concurrent beam enemies don't fight over the same dots.
-func set_enemy_beam(emitter: Node, start_pos2d: Vector2, end_pos2d: Vector2, color: Color, is_telegraph: bool = false, y: float = 0.45) -> void:
+func set_enemy_beam(emitter: Node, start_pos2d: Vector2, end_pos2d: Vector2, color: Color, is_telegraph: bool = false, y: float = 0.45, thickness: float = 0.08) -> void:
 	if not visible or _world3d == null or not is_instance_valid(_world3d):
 		return
 	if not is_instance_valid(emitter):
@@ -1554,8 +1691,19 @@ func set_enemy_beam(emitter: Node, start_pos2d: Vector2, end_pos2d: Vector2, col
 			if is_instance_valid(lbl):
 				(lbl as Label3D).visible = false
 	var tube: MeshInstance3D = _enemy_beam_tubes.get(key) as MeshInstance3D
-	if tube == null or not is_instance_valid(tube):
-		tube = _build_beam_tube(0.08, color)
+	# Rebuild the cached tube if the requested thickness differs from what we
+	# built it with — lets a single emitter use different widths across calls
+	# (e.g. sniper's thin attack vs. a hypothetical fat finisher) without
+	# permanently locking in the first thickness.
+	var needs_rebuild: bool = tube == null or not is_instance_valid(tube)
+	if not needs_rebuild:
+		var cached_t: float = float(tube.get_meta("beam_thickness", 0.08))
+		needs_rebuild = absf(cached_t - thickness) > 0.001
+	if needs_rebuild:
+		if tube != null and is_instance_valid(tube):
+			tube.queue_free()
+		tube = _build_beam_tube(thickness, color)
+		tube.set_meta("beam_thickness", thickness)
 		_enemy_beam_tubes[key] = tube
 	# Skip 0.0 from start — the emitter is the enemy's position, not a
 	# player muzzle; the player isn't standing on top of it, so no near-cull
@@ -1750,8 +1898,12 @@ func spawn_chain_arc_2d(from_2d: Vector2, to_2d: Vector2, color: Color,
 	waypoints.append(to_3d)
 
 	# Place fading Label3Ds at each waypoint + each segment midpoint.
+	# PS dropped 0.013 → 0.005 — the previous size painted huge yellow z's
+	# around the target on every shock impact (which fires this 2× per hit
+	# via _impact_shock + 1× per chain hop). Smaller chars still read as a
+	# lightning arc but no longer engulf the enemy art.
 	var glyphs := ["~", "Z", "z", "~", "Z", "~"]
-	const PS: float = 0.013
+	const PS: float = 0.005
 	for i in range(waypoints.size() - 1):
 		var a: Vector3 = waypoints[i]
 		var b: Vector3 = waypoints[i + 1]
@@ -1761,9 +1913,10 @@ func spawn_chain_arc_2d(from_2d: Vector2, to_2d: Vector2, color: Color,
 	_spawn_fx_label(waypoints[waypoints.size() - 1], "Z", color, PS,
 			waypoints[waypoints.size() - 1], lifetime)
 
-	# Burst impact at the origin endpoint only — * removed per design.
+	# Burst impact at the origin endpoint — pixel_size 0.010 → 0.004 to
+	# match the smaller chain glyphs above.
 	spawn_burst_2d(from_2d, "~", color, 4, 0.25, lifetime * 0.65,
-			Vector2.ZERO, TAU, 0.010, y)
+			Vector2.ZERO, TAU, 0.004, y)
 
 # ── Per-emitter persistent warning ring ──────────────────────────────────────
 # Mirrors the grenadier's 2D Polygon2D + Line2D danger zone. Each emitter
@@ -1917,8 +2070,8 @@ func _update_enemy_hp_bars(enemies: Array) -> void:
 		# in DARK / FLICKER rooms since the torch can't illuminate that far
 		# in pitch-black sectors and the bare HP line would read as "lonely
 		# green stripe in the void".
-		var hp_cull_dist: float = 13.0
-		if _cur_room_idx >= 0 and _cur_room_idx < _light_levels.size():
+		var hp_cull_dist: float = _CULL_DIST_FULL_BRIGHT if _fully_illuminated else _CULL_DIST_NORMAL
+		if not _fully_illuminated and _cur_room_idx >= 0 and _cur_room_idx < _light_levels.size():
 			if int(_light_levels[_cur_room_idx]) != 0:
 				hp_cull_dist = 6.0
 		var cam_p: Vector3 = _camera.global_position
@@ -1992,6 +2145,17 @@ func _update_enemy_names(enemies: Array) -> void:
 		var key := enemy_2d.get_instance_id()
 		alive_keys[key] = true
 		var lbl: Label3D = _name_labels.get(key) as Label3D
+		# Suppress the debug name tag for enemies we already culled in the
+		# main entity loop. Reuses _occlusion_cache + the entity's current
+		# label.visible so "name floating through a wall" matches the rule
+		# that hides the enemy art itself.
+		var ent_entry_n_v: Variant = _entities.get(key)
+		if ent_entry_n_v is Dictionary:
+			var ent_lbl_n_v: Variant = (ent_entry_n_v as Dictionary).get("label")
+			if ent_lbl_n_v is Node3D and not (ent_lbl_n_v as Node3D).visible:
+				if lbl != null and is_instance_valid(lbl):
+					lbl.visible = false
+				continue
 		if lbl == null or not is_instance_valid(lbl):
 			lbl = Label3D.new()
 			lbl.font = MonoFont.get_font()
@@ -2017,6 +2181,10 @@ func _update_enemy_names(enemies: Array) -> void:
 				if path != "":
 					nm = path.get_file().get_basename()
 			lbl.text = nm
+		# Re-show on the visible path (the occlusion gate above sets it
+		# false; this is the back-channel that flips it back when the
+		# enemy comes around the corner again).
+		lbl.visible = true
 		# Position slightly above the HP bar slot (1.05) so the two don't fight.
 		lbl.position = Vector3(
 			enemy_2d.global_position.x / TILE_PX,
@@ -2200,10 +2368,26 @@ func _update_hitbox_mesh() -> void:
 		if body.is_in_group("fire_patch") and "_radius" in body:
 			_draw_fire_patch_ring(body, color)
 			continue
-		for child in body.get_children():
-			if child is CollisionShape2D:
-				_draw_hitbox_shape(child as CollisionShape2D, color)
+		# Walk the subtree so we pick up shapes nested under Area2D children
+		# (player shield, enemy melee hitboxes). Previously only direct
+		# CollisionShape2D children were drawn, so neither was visible in FP.
+		_scan_collisions_for_body(body, color)
 	_hitbox_mesh.surface_end()
+
+func _scan_collisions_for_body(n: Node, color: Color) -> void:
+	if n is CollisionShape2D:
+		var cs := n as CollisionShape2D
+		# Hide shapes whose parent Area2D is currently invisible (e.g. the
+		# shield sector when the player isn't holding RMB). is_visible_in_tree
+		# walks up to any ancestor that toggles `visible` for active state.
+		if not cs.disabled and cs.is_visible_in_tree():
+			_draw_hitbox_shape(cs, color)
+	elif n is CollisionPolygon2D:
+		var cp := n as CollisionPolygon2D
+		if not cp.disabled and cp.is_visible_in_tree():
+			_draw_hitbox_polygon(cp, color)
+	for child in n.get_children():
+		_scan_collisions_for_body(child, color)
 
 func _hitbox_color_for(body: Node2D) -> Color:
 	if body.is_in_group("player"):     return Color(0.2, 1.0, 0.3)
@@ -2263,6 +2447,35 @@ func _draw_hitbox_shape(cs: CollisionShape2D, color: Color) -> void:
 			var pz := cz + sin(a) * r
 			_hitbox_mesh.surface_add_vertex(Vector3(px, Y0, pz))
 			_hitbox_mesh.surface_add_vertex(Vector3(px, Y1, pz))
+
+# Wireframes the player shield's CollisionPolygon2D (and any other
+# CollisionPolygon2D that might appear on a body). Mirrors _draw_hitbox_shape's
+# two-ring + verticals format so polygons read the same way as rect/circle
+# shapes in 3D space.
+func _draw_hitbox_polygon(cp: CollisionPolygon2D, color: Color) -> void:
+	var pts: PackedVector2Array = cp.polygon
+	var n: int = pts.size()
+	if n < 2:
+		return
+	var origin: Vector2 = cp.global_position
+	var rot: float = cp.global_rotation
+	var cx: float = origin.x / TILE_PX
+	var cz: float = origin.y / TILE_PX
+	const Y0 := 0.05
+	const Y1 := 0.95
+	_hitbox_mesh.surface_set_color(color)
+	for i in n:
+		var a: Vector2 = pts[i].rotated(rot) / TILE_PX
+		var b: Vector2 = pts[(i + 1) % n].rotated(rot) / TILE_PX
+		# bottom edge
+		_hitbox_mesh.surface_add_vertex(Vector3(cx + a.x, Y0, cz + a.y))
+		_hitbox_mesh.surface_add_vertex(Vector3(cx + b.x, Y0, cz + b.y))
+		# top edge
+		_hitbox_mesh.surface_add_vertex(Vector3(cx + a.x, Y1, cz + a.y))
+		_hitbox_mesh.surface_add_vertex(Vector3(cx + b.x, Y1, cz + b.y))
+		# vertical pillar at each polygon vertex
+		_hitbox_mesh.surface_add_vertex(Vector3(cx + a.x, Y0, cz + a.y))
+		_hitbox_mesh.surface_add_vertex(Vector3(cx + a.x, Y1, cz + a.y))
 
 func _draw_fire_patch_ring(body: Node2D, color: Color) -> void:
 	var cx := body.global_position.x / TILE_PX

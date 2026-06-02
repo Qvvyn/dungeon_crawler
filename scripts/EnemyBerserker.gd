@@ -30,7 +30,7 @@ func _on_ready_extra() -> void:
 	_hitbox.name = "MeleeHitbox"
 	_hitbox.monitoring = false
 	_hitbox.monitorable = false
-	_hitbox.collision_mask = 1   # detect player layer
+	_hitbox.collision_mask = 3   # player (1) + enemy (2) for bewitched targeting
 	var cs := CollisionShape2D.new()
 	var shape := CircleShape2D.new()
 	shape.radius = 18.0
@@ -73,8 +73,9 @@ func _end_attack() -> void:
 	_hitbox.set_deferred("monitoring", false)
 
 func _on_melee_hit(body: Node2D) -> void:
-	if body.is_in_group("player") and body.has_method("take_damage"):
-		body.take_damage(int(round(float(BASE_DAMAGE) * _rage_mult())), self)
+	if not _should_melee_hit(body):
+		return
+	body.take_damage(int(round(float(BASE_DAMAGE) * _rage_mult())), self)
 
 func _enemy_anim_update(delta: float) -> void:
 	_anim_t += delta

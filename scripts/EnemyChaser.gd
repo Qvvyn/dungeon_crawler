@@ -94,6 +94,11 @@ func _ready() -> void:
 	_effective_interval = BASE_INTERVAL
 	_player = get_tree().get_first_node_in_group("player")
 	_hitbox = $MeleeHitbox
+	# Listen for both the player (layer 1) and other enemies (layer 2). The
+	# extra layer is the path bewitched chasers use to actually damage their
+	# new targets; non-bewitched chasers still filter to the player in
+	# _on_melee_hit so behavior for normal play is unchanged.
+	_hitbox.collision_mask = 3
 	_hitbox.body_entered.connect(_on_melee_hit)
 	_update_health_bar()
 	_setup_patrol()
@@ -432,13 +437,14 @@ func _end_attack() -> void:
 	_hitbox.get_node("Visual").visible = false
 
 func _on_melee_hit(body: Node2D) -> void:
-	if body.is_in_group("player") and body.has_method("take_damage"):
-		body.take_damage(1, self)
-		if SoundManager:
-			SoundManager.play("thud", randf_range(0.92, 1.10))
-		if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
-				and GameState.active_rig.has_method("flash_melee"):
-			GameState.active_rig.flash_melee(global_position, Color(1.0, 0.3, 0.1))
+	if not EnemyBase.melee_hit_filter(self, body):
+		return
+	body.take_damage(1, self)
+	if SoundManager:
+		SoundManager.play("thud", randf_range(0.92, 1.10))
+	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("flash_melee"):
+		GameState.active_rig.flash_melee(global_position, Color(1.0, 0.3, 0.1))
 
 # ── Shared ────────────────────────────────────────────────────────────────────
 

@@ -1,3 +1,4 @@
+class_name World
 extends Node2D
 
 # ── Grid constants ─────────────────────────────────────────────────────────────
@@ -39,6 +40,7 @@ const BOMBER_SCENE       = preload("res://scenes/EnemyBomber.tscn")
 const BERSERKER_SCENE    = preload("res://scenes/EnemyBerserker.tscn")
 const PHANTOM_SCENE      = preload("res://scenes/EnemyPhantom.tscn")
 const BANSHEE_SCENE      = preload("res://scenes/EnemyBanshee.tscn")
+const SPAWNER_SCENE      = preload("res://scenes/EnemySpawner.tscn")
 const REFLECTOR_SCENE    = preload("res://scenes/EnemyReflector.tscn")
 # Biome-themed (only appear in their biome under normal play; available
 # everywhere in the test arena via the override).
@@ -151,6 +153,11 @@ const FLOOR_MODIFIERS := {
 
 # ── Secret door tracking ───────────────────────────────────────────────────────
 var _secret_door_data: Array = []   # [{tile, loot_tile}]
+# Sideroom ambush data — populated by _carve_sideroom_doors BEFORE walls are
+# built, consumed by _spawn_doors AFTER walls/floors exist so the Door scene
+# and ambush enemies can spawn into the freshly-carved geometry.
+# Entries: { seam_tiles: Array[Vector2i], axis: int, room_rect: Rect2i }
+var _sideroom_door_data: Array = []
 
 # ── Test mode ─────────────────────────────────────────────────────────────────
 const TEST_TARGET        := 100
@@ -364,6 +371,11 @@ func _ready() -> void:
 	# so the hidden rooms read as solid wall in both 2D and FP until broken.
 	_seal_secret_doors()
 
+	# Carve hidden sideroom ambush chambers BEFORE walls are built, so the FP
+	# wall mesh + 2D floor decals reflect the new floor tiles. Door + ambush
+	# enemy placement happens later in _spawn_doors which reads _sideroom_door_data.
+	_carve_sideroom_doors(layout_player_room, layout_portal_room)
+
 	_build_floor_visual()
 	_build_walls()
 
@@ -435,6 +447,7 @@ func _ready() -> void:
 	_spawn_traps()
 	_spawn_beam_traps()
 	_spawn_doors()
+	_spawn_enemy_nests(player_room)
 	_spawn_ambush()
 	_spawn_switch_alcove()
 	_spawn_lava_tiles()
@@ -558,11 +571,14 @@ func _apply_render_mode(mode: int) -> void:
 			if rig.has_method("clear_entities"):
 				rig.clear_entities()
 	GameState.active_rig = rig_to_show
-	# Re-apply the sticky FP debug "blinded" vignette so flipping into FP
-	# from TOPDOWN doesn't silently reset darkness=0 on the freshly-shown
-	# rig. (Newly-built rigs default the uniform to 0.0.)
+	# Re-apply the sticky FP debug "blinded" vignette + the "fully illuminated"
+	# modifier so flipping into FP from TOPDOWN doesn't silently reset both to
+	# their defaults on the freshly-shown rig. The two flags are mutually
+	# exclusive in the debug menu cycle so only one is on at a time.
 	if rig_to_show != null and rig_to_show.has_method("set_blinded"):
 		rig_to_show.set_blinded(0.7 if GameState.fp_blinded else 0.0)
+	if rig_to_show != null and rig_to_show.has_method("set_fully_illuminated"):
+		rig_to_show.set_fully_illuminated(GameState.fp_illuminated)
 
 	# Feed the live grid to the newly-active rig + bulk-register every
 	# existing body so entities that spawned before the rig was shown
@@ -676,7 +692,7 @@ func _spawn_test_wand_selection(center: Vector2) -> void:
 		{"name": "Chain Storm",      "type": "shock",     "dmg": 12, "rate": 0.09, "cost":  9.0, "speed": 720.0, "color": Color(0.9, 0.95, 0.1)},
 		{"name": "Void Cascade",     "type": "nova",      "dmg": 16, "rate": 0.22, "cost": 18.0, "speed": 500.0, "color": Color(0.55, 0.1, 1.0)},
 		{"name": "Soul Seeker",      "type": "homing",    "dmg": 22, "rate": 0.16, "cost": 12.0, "speed": 450.0, "color": Color(0.8, 0.2, 1.0)},
-		{"name": "Iron Knuckle",     "type": "melee",     "dmg": 50, "rate": 0.75, "cost": 14.0, "speed": 0.0,   "color": Color(0.95, 0.85, 0.3)},
+		{"name": "Love Magic",       "type": "love",      "dmg":  1, "rate": 0.50, "cost":  6.0, "speed": 520.0, "color": Color(1.00, 0.45, 0.75)},
 		{"name": "Ricochet Storm",   "type": "ricochet",  "dmg": 20, "rate": 0.13, "cost": 11.0, "speed": 680.0, "color": Color(0.15, 1.0, 0.28), "ricochet": 5},
 	]
 	var offsets: Array[Vector2] = [
@@ -3340,66 +3356,275 @@ func _spawn_beam_traps() -> void:
 		add_child(trap)
 		placed.append(Vector2i(tx, ty))
 
-# ── Doors ─────────────────────────────────────────────────────────────────────
-# Auto-opening doors that span a 3-wide corridor cross-section. Reuses the same
-# corridor-detection as beam traps. First use of the FP rig's animated
-# wall-segment primitive (see DOOM_DESIGN.md).
-func _spawn_doors() -> void:
-	var door_count: int = mini(1 + int(GameState.difficulty * 0.3), 2)
-	var candidates: Array[Dictionary] = []
-	for ty in range(3, GRID_H - 3):
-		for tx in range(3, GRID_W - 3):
-			if _grid[ty][tx] != FLOOR or _in_any_room(tx, ty):
-				continue
-			# N-S beam / E-W corridor: 3-wide in Y, walls at ty±2.
-			if _grid[ty - 1][tx] == FLOOR and _grid[ty + 1][tx] == FLOOR \
-					and _grid[ty - 2][tx] == WALL and _grid[ty + 2][tx] == WALL \
-					and _grid[ty][tx - 1] == FLOOR and _grid[ty][tx + 1] == FLOOR:
-				candidates.append({"tx": tx, "ty": ty, "axis": 0})
-			# E-W beam / N-S corridor: 3-wide in X, walls at tx±2.
-			elif _grid[ty][tx - 1] == FLOOR and _grid[ty][tx + 1] == FLOOR \
-					and _grid[ty][tx - 2] == WALL and _grid[ty][tx + 2] == WALL \
-					and _grid[ty - 1][tx] == FLOOR and _grid[ty + 1][tx] == FLOOR:
-				candidates.append({"tx": tx, "ty": ty, "axis": 1})
+# ── Doors / siderooms ─────────────────────────────────────────────────────────
+# Doors are no longer placed in main corridors (where they'd block the
+# critical path and read as clutter). Each door is the entrance to a small
+# 4×4 ambush chamber carved into solid wall adjacent to an existing room.
+# The chamber is off the critical path — you can ignore it entirely — but
+# breaking through the door spills out 2-3 enemies onto the room you just
+# came from. The door blends into the wall (see Door.gd color match) so it
+# reads as a hidden passage.
 
+# Door count per floor — scales with difficulty (more siderooms = more
+# optional engagements at high diff). Capped at 4 so a single floor isn't
+# Swiss-cheesed by chambers.
+func _sideroom_door_count() -> int:
+	return clampi(1 + int(GameState.difficulty * 0.25), 1, 4)
+
+# Carving pass — must run BEFORE _build_walls so the new floor tiles get
+# rendered as walkable. Populates _sideroom_door_data for _spawn_doors to
+# consume later (after entities are placed and walls/floor exist).
+func _carve_sideroom_doors(player_room: Rect2i, portal_room: Rect2i) -> void:
+	_sideroom_door_data.clear()
+	var target_count: int = _sideroom_door_count()
+	# Candidate base rooms — anything reasonably sized that isn't the spawn
+	# room or the portal room (siderooms off those would feel cheap, and we
+	# don't want to clutter the player's start point).
+	var candidates: Array[Rect2i] = []
+	for r in _rooms:
+		var room: Rect2i = r
+		if room == player_room or room == portal_room:
+			continue
+		if room.size.x < 5 or room.size.y < 5:
+			continue
+		candidates.append(room)
 	candidates.shuffle()
-	var placed: Array[Vector2i] = []
-	for c in candidates:
-		if placed.size() >= door_count:
+	var spawned: int = 0
+	for base in candidates:
+		if spawned >= target_count:
 			break
-		var tx: int = int(c["tx"])
-		var ty: int = int(c["ty"])
-		var axis: int = int(c["axis"])
-		# Door-to-door spacing.
-		var too_close := false
-		for prev: Vector2i in placed:
-			if abs(prev.x - tx) + abs(prev.y - ty) < 8:
-				too_close = true
+		# Try each cardinal direction in random order. 0=N, 1=E, 2=S, 3=W.
+		var dirs: Array[int] = [0, 1, 2, 3]
+		dirs.shuffle()
+		for dir in dirs:
+			if _try_carve_sideroom(base, dir):
+				spawned += 1
 				break
-		if too_close:
-			continue
-		# Keep doors clear of existing hazards (beam/spike/spin traps).
-		var center := _tile_center(Vector2i(tx, ty))
-		for hz in get_tree().get_nodes_in_group("trap"):
-			if is_instance_valid(hz) and (hz as Node2D).global_position.distance_to(center) < 96.0:
-				too_close = true
-				break
-		if too_close:
-			continue
 
-		# Cover tiles = the 3 corridor cross-section tiles, perpendicular to travel.
+# Attempts a sideroom carve off `base` in cardinal direction `dir`. Returns
+# true if successful (geometry carved + data saved); false if the candidate
+# spot doesn't fit (out of bounds, overlaps another room/corridor, etc).
+func _try_carve_sideroom(base: Rect2i, dir: int) -> bool:
+	@warning_ignore("integer_division")
+	var center_x: int = base.position.x + base.size.x / 2
+	@warning_ignore("integer_division")
+	var center_y: int = base.position.y + base.size.y / 2
+	const SR_W: int = 5
+	const SR_H: int = 4
+	var seam_tiles: Array[Vector2i] = []
+	var room_rect: Rect2i
+	var axis: int = 0
+	match dir:
+		0:  # NORTH — sideroom above base, seam at top wall
+			var seam_y: int = base.position.y - 1
+			seam_tiles = [
+				Vector2i(center_x - 1, seam_y),
+				Vector2i(center_x,     seam_y),
+				Vector2i(center_x + 1, seam_y),
+			]
+			room_rect = Rect2i(center_x - 2, seam_y - SR_H, SR_W, SR_H)
+			axis = 1   # door span horizontal (corridor along Y)
+		1:  # EAST — sideroom to the right, seam at right wall
+			var seam_x: int = base.position.x + base.size.x
+			seam_tiles = [
+				Vector2i(seam_x, center_y - 1),
+				Vector2i(seam_x, center_y),
+				Vector2i(seam_x, center_y + 1),
+			]
+			room_rect = Rect2i(seam_x + 1, center_y - 2, SR_H, SR_W)
+			axis = 0   # door span vertical (corridor along X)
+		2:  # SOUTH — sideroom below base, seam at bottom wall
+			var seam_y: int = base.position.y + base.size.y
+			seam_tiles = [
+				Vector2i(center_x - 1, seam_y),
+				Vector2i(center_x,     seam_y),
+				Vector2i(center_x + 1, seam_y),
+			]
+			room_rect = Rect2i(center_x - 2, seam_y + 1, SR_W, SR_H)
+			axis = 1
+		3:  # WEST — sideroom to the left, seam at left wall
+			var seam_x: int = base.position.x - 1
+			seam_tiles = [
+				Vector2i(seam_x, center_y - 1),
+				Vector2i(seam_x, center_y),
+				Vector2i(seam_x, center_y + 1),
+			]
+			room_rect = Rect2i(seam_x - SR_H, center_y - 2, SR_H, SR_W)
+			axis = 0
+		_:
+			return false
+
+	# Bounds check — sideroom + 1-tile buffer must fit inside the grid.
+	if room_rect.position.x < 1 or room_rect.position.y < 1: return false
+	if room_rect.position.x + room_rect.size.x >= GRID_W - 1: return false
+	if room_rect.position.y + room_rect.size.y >= GRID_H - 1: return false
+
+	# Secret-door tiles are WALL right now (re-sealed before this pass) but
+	# punching a sideroom over them would un-seal the hidden room. Build a
+	# set of forbidden tiles to short-circuit both checks below.
+	var secret_set: Dictionary = {}
+	for sd in _secret_door_data:
+		for st in _secret_door_tiles(sd["entrance"]):
+			secret_set[st] = true
+
+	# Every tile in the sideroom AND its 1-tile border ring must currently be
+	# WALL — guarantees we're not punching into another room or corridor.
+	for ty in range(room_rect.position.y - 1, room_rect.position.y + room_rect.size.y + 1):
+		for tx in range(room_rect.position.x - 1, room_rect.position.x + room_rect.size.x + 1):
+			if tx < 0 or tx >= GRID_W or ty < 0 or ty >= GRID_H:
+				return false
+			if _grid[ty][tx] != WALL:
+				return false
+			if secret_set.has(Vector2i(tx, ty)):
+				return false
+	# Seam tiles must currently be WALL (the base room's wall row/col) and
+	# not part of a hidden secret-room entrance.
+	for t: Vector2i in seam_tiles:
+		if t.x < 0 or t.x >= GRID_W or t.y < 0 or t.y >= GRID_H:
+			return false
+		if _grid[t.y][t.x] != WALL:
+			return false
+		if secret_set.has(t):
+			return false
+
+	# Carve the sideroom interior + the 3-tile seam (the doorway). The
+	# door's StaticBody2D body will then provide collision at the seam when
+	# closed; open state lets the player walk through to the ambush.
+	for ty in range(room_rect.position.y, room_rect.position.y + room_rect.size.y):
+		for tx in range(room_rect.position.x, room_rect.position.x + room_rect.size.x):
+			_set_floor(tx, ty)
+	for t in seam_tiles:
+		_set_floor(t.x, t.y)
+	_sideroom_door_data.append({
+		"seam_tiles": seam_tiles,
+		"axis": axis,
+		"room_rect": room_rect,
+	})
+	return true
+
+# Door + ambush placement. Reads the data laid down by _carve_sideroom_doors
+# and spawns the actual Door scene at each seam + a handful of aggro'd
+# enemies inside each sideroom.
+func _spawn_doors() -> void:
+	# Light ambush pool — chasers and shooters that don't require a chase pattern
+	# to threaten the player on door-open. 2-3 enemies per chamber, HP scaled
+	# with floor diff like every other regular spawn.
+	var ambush_pool: Array[PackedScene] = [CHASER_SCENE, SHOOTER_SCENE, SPIDER_SCENE]
+	var hp_mult: float = 1.0 + maxf(0.0, GameState.difficulty - 1.0) * 0.5
+	for data in _sideroom_door_data:
+		var seam: Array = data["seam_tiles"]
+		var axis: int = int(data["axis"])
+		var room_rect: Rect2i = data["room_rect"]
+		# Strongly-typed copy of the seam tiles for Door.set("cover_tiles", ...).
 		var cover: Array[Vector2i] = []
-		if axis == 0:
-			cover = [Vector2i(tx, ty - 1), Vector2i(tx, ty), Vector2i(tx, ty + 1)]
-		else:
-			cover = [Vector2i(tx - 1, ty), Vector2i(tx, ty), Vector2i(tx + 1, ty)]
-
+		for t in seam:
+			cover.append(t as Vector2i)
 		var door := DOOR_SCENE.instantiate()
 		door.set("cover_tiles", cover)
 		door.set("corridor_axis", axis)
-		door.position = center
+		# Position the door node at the middle seam tile's centre — Door.gd
+		# lays out its child glyphs / collision relative to that origin.
+		var origin: Vector2i = cover[1]
+		door.position = _tile_center(origin)
 		add_child(door)
-		placed.append(Vector2i(tx, ty))
+		# Spawn 2-3 ambush enemies in the sideroom. They start aggro'd so the
+		# door-open reads as an actual ambush, not a sleepy room.
+		var count: int = randi_range(2, 3)
+		for _i in count:
+			var scene: PackedScene = ambush_pool[randi() % ambush_pool.size()]
+			var e: Node = _place_enemy(scene, room_rect, hp_mult)
+			if e != null and "_has_aggro" in e:
+				e.set("_has_aggro", true)
+
+# ── Enemy spawner nests ───────────────────────────────────────────────────────
+# Static "nests" that pump out a fixed minion type up to a per-nest cap until
+# the player finds and destroys them. See scripts/EnemySpawner.gd for the type
+# / rate / cap math. Each nest's minion species is biome-keyed so a nest in
+# the catacombs feels different from one in the rift.
+
+const _NEST_POOL_DUNGEON: Array[String]   = ["chaser", "spider", "shooter"]
+const _NEST_POOL_CATACOMBS: Array[String] = ["phantom", "chaser", "banshee"]
+const _NEST_POOL_ICE: Array[String]       = ["sniper", "shooter", "archer"]
+const _NEST_POOL_LAVA: Array[String]      = ["berserker", "charger", "bomber"]
+
+func _nest_pool_for_biome() -> Array[String]:
+	match GameState.biome:
+		1:   return _NEST_POOL_CATACOMBS
+		2:   return _NEST_POOL_ICE
+		3:   return _NEST_POOL_LAVA
+		_:   return _NEST_POOL_DUNGEON
+
+func _spawn_enemy_nests(player_room: Rect2i) -> void:
+	# Off below diff 4 — early floors should stay readable; nests escalate the
+	# room-clear pressure and deserve a few minutes of regular play first.
+	if GameState.difficulty < 4.0:
+		return
+	var nest_count: int = 1
+	if GameState.difficulty >= 30.0:
+		nest_count = 3
+	elif GameState.difficulty >= 15.0:
+		nest_count = 2
+	# Sort rooms by distance from player spawn (farthest first) so nests
+	# land in the back of the floor — hidden, not blocking the critical path.
+	var player_center: Vector2i = player_room.get_center()
+	var candidates: Array[Rect2i] = []
+	for r: Rect2i in _rooms:
+		if r == player_room:
+			continue
+		if r.size.x < 4 or r.size.y < 4:
+			continue
+		candidates.append(r)
+	candidates.sort_custom(func(a: Rect2i, b: Rect2i) -> bool:
+		return a.get_center().distance_squared_to(player_center) \
+			> b.get_center().distance_squared_to(player_center))
+	var pool: Array[String] = _nest_pool_for_biome()
+	var spawned: int = 0
+	for r in candidates:
+		if spawned >= nest_count:
+			break
+		var tile := _nest_corner_tile(r)
+		if tile == Vector2i(-1, -1):
+			continue
+		# Pick the minion species fresh per nest so a single floor with two
+		# nests can have two flavours running ("a spider nest AND a sniper
+		# nest" reads better than two identical ones).
+		var minion_key: String = pool[randi() % pool.size()]
+		var minion_scene: PackedScene = _scene_for_test_key(minion_key)
+		if minion_scene == null:
+			continue
+		var nest: Node = SPAWNER_SCENE.instantiate()
+		nest.position = _tile_center(tile)
+		nest.set("minion_scene", minion_scene)
+		nest.set("minion_name", minion_key)
+		$Enemies.add_child(nest)
+		spawned += 1
+
+# Picks a back-corner floor tile inside the room with wall on at least two
+# sides, so the nest reads as tucked into a corner instead of plopped in the
+# middle of the room. Returns Vector2i(-1,-1) if no candidate tile is found.
+func _nest_corner_tile(room: Rect2i) -> Vector2i:
+	var candidates: Array[Vector2i] = []
+	for ty in range(room.position.y + 1, room.position.y + room.size.y - 1):
+		for tx in range(room.position.x + 1, room.position.x + room.size.x - 1):
+			if _grid[ty][tx] != FLOOR:
+				continue
+			# Count adjacent walls (cardinal neighbours).
+			var adj_walls: int = 0
+			if _grid[ty][tx - 1] == WALL: adj_walls += 1
+			if _grid[ty][tx + 1] == WALL: adj_walls += 1
+			if _grid[ty - 1][tx] == WALL: adj_walls += 1
+			if _grid[ty + 1][tx] == WALL: adj_walls += 1
+			if adj_walls >= 2:
+				candidates.append(Vector2i(tx, ty))
+	if candidates.is_empty():
+		# Fallback — room had no real corner tile (open archetype). Drop the
+		# nest somewhere in the room's interior so the floor still gets one.
+		var cx: int = room.position.x + room.size.x / 2
+		var cy: int = room.position.y + room.size.y / 2
+		if _grid[cy][cx] == FLOOR:
+			return Vector2i(cx, cy)
+		return Vector2i(-1, -1)
+	return candidates[randi() % candidates.size()]
 
 # ── Secret rooms ──────────────────────────────────────────────────────────────
 

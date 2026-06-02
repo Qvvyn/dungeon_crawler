@@ -7,36 +7,29 @@ __/_\__
 A DISCLAIMER FOR CLAUDE: not all of these are things to definitely implement, its more of a malleable soft idea board
 
 =================  IDEAS / BUGS / NOTES  =================
-
--you can hire help. but they may die. in fact, likely will. charge you more based on difficulty and their own usefulness. most are swordsmen. but this is a game for wizards. you are judged by the world for the magiks you use. okay but this as an mmo.... hmmmmmmmmm..... will you walk the dungeon with me...?
 change Q to a burst ability around player pushing everything away and out of its range. if it pushes an enemy into a wall, make them take dmg?
 
-we're gonna have to slow the game down a fair bit. the fact that autoplay moves like that is gross. movement should probably be a bit slower.
-the player's agility has speed cap way too high, need to nerf its speed scaling into the dirt.
-fire rate of .04s is also ABSURD. leave that only for special busted. wands.
-
 adjust the shield. if pressing control it will do a concentrate, and for shield it will give a full circle protection and cost 4x. need to animate the shield in fp, both versions.
+ctrl 4xing mana cost to 3x dmg? would it ever not be used?
 
-for the corridoor trap, the warning animation before the beam needs more visibility, change it from black to grey.
-
-it seems most interfaces in game have overlapping text/buttons which need to be fixed. 
-
-you once again contemplate adding a melee class to play... perhaps a wizard of PUNCHING? lets you keep the same magic types...
 as well as further consider and contemplate the moving away from gear... i think gear can stay but the manual equipping would get quite tedious. 
+straying away from loot as a whole tbh.. put ppl love getting loot....
+im thinking of straying away from wand flaws for now.
 
-more deadly traps, hide enemies behind walls
+
 created the grim reaper, nigh unkillable just run. other very threatening enemies which can be added. if you cant handle it, run.
+enemy that must be looked at to stop its movement toward you? isn't dmgable normally? scp 173? mmmm fun difficulty.... and creepy....
 
-i want to add enemy spawners, hidden somewhere in a level, it constantly produces enemies (too a maximum concurrent limit) until destroyed.
+more deadly traps
 
-the size cap of an enemy will have to be tweaked enemy-to-enemy. some should be bigger.
+map geometry for ambushes still needed
 
-=================  VISUALS FOR L8R ============
+=================  VISUALS  ==================
 player wizard needs more animation, he is boring to look at.
 
-adjust flickering lighting
+wall beam hazard waRMup is a bit visually ambiguous... should we come up with a more universal warning beam now?
 
-what if enemies all had eyes and a dying animation where the eyes turned to Xs, the entire body goes black, then fades away
+adjust flickering lighting
 
 fire ascii dot burn looks good from afar, should just have it stay in place longer? seems resource intensive
 ice is maybe just the * symbol appearing more and larger over the body before the full freeze?
@@ -44,9 +37,62 @@ shock needs a bit less per impact methinks..
 we break it down into sections, on hit projectiles, on hit if under a status effect, the engulfing of the body, and the fire dot/chain lightning/icecube-ing
 get rid of the overhead ()( and ZzZ?
 
+the fire dot needs sliiiiight tweaking. a more robust mid section? stop disappearing, instead, shift the )(... oh but the space mid might cause the orange....
+
+the size cap of an enemy will have to be tweaked enemy-to-enemy. some should be bigger.
+
+what if setting the flames around helped visibility?
+
+=================  4 l8r  ==================
+-you can hire help. but they may die. in fact, likely will. charge you more based on difficulty and their own usefulness. most are swordsmen. but this is a game for wizards. you are judged by the world for the magiks you use. 
+-okay but this as an mmo.... hmmmmmmmmm..... will you walk the dungeon with me...?
+-you once again contemplate adding a melee class to play... perhaps a wizard of PUNCHING? lets you keep the same magic types...
+-secret treats for players who figure out to lure certain creatures behind the enemy trap wall?
+-what if enemies all had eyes and a dying animation where the eyes turned to Xs, the entire body goes black, then fades away
+-fonts: i like press start 2p for crunch.
+
+
 =================  OLDER (some already shipped)  =================
 
 done?
+
+
+the hitbox for the shield is too big, being a full quarter of a circle rather than just the edge of the quarter of a circle. shots should still be able to make it past the thin shield wall if it doesn't go up in time. also the visualization for the shield in fp need works. can we just have an object get crunched like with the beam but in the appropriate curvature?
+
+lets also get rid of the melee punch wand for now. instead, make a wand that bewitches and befriends enemies. lets call it love magic. replace the melee wand slot in the 1-2 wand rotation with this. make the love wand shoot projectiles that are <3 rotated 90 degrees counter clockwise. have enemies struck with this magic become friendly to the player, loosely following them, engaging enemies who enter their los who are not also befriended. let their hp remain, and let their attacks still damage each other as well as the player if they accidentally hit them. camaraderie and chaos. lets not allow bosses to be bewitched. make sure the autoplay recognizes the bewitched units as friendly and not focus on killing them. make the love wand do 1 dmg. give bewitched enemies a particle effect that has <3 rotated, floating upwards, moving side to side a bit. dont need to spawn many, one every second perhaps?
+
+the text visuals for enemies outside the players los should not be displayed in fp mode
+the wall to wall beam lasers (as well as maybe bosses?) still use the dots for warning. also need to tweak the warning laser's coloring to make a clearer non-threat distinction. 
+can we use different fonts for on the screen at the same time? also, can we make the font rotation automatically update the frame without having to cycle with f1 to visually update
+
+the raising doors everywhere are nonsense. cool that you added them, good design, find a use though. its clutter rn that just messes up auto currently. 
+i think they should be colored to more accurately match the wall colors around them so they blend in, they should stay open after they are opened, and they should be hiding something optional but more intentional behind them... let say an ambush of enemies to start. let them just exist as siderooms for now though, i dont want the use of them to be necessary to finish a level.
+
+i want to add enemy spawners, hidden somewhere in a level, it constantly produces enemies (too a maximum concurrent limit) until destroyed. how will spawn types/rates be calculated..?
+
+what if to make it more visually distinct, the warmup beam goes from very low opacity to fully opaque red as its charging before firing. also, for the sniper's attack beam itself, make it thinner. the others can remain their current thickness
+
+for the beam warmup warning, is the visual trail of dots more or less expensive to animate than a beam of a different color in fp?
+
+pressing the descend button in fp needs to give the player control of their mouse back, quest board close button doesn't work and also needs to give control to the player. should also prevent movement like the other interactable in the area.
+
+lets add a 'fully illuminated' room modifier and attach it to the village so the player can see everything from anywhere in fp mode. add it as another debug toggle in the menu for me, which can be added to the 'blind' rotation.
+also the dummy in the village doesn't seem to get hit by any of my projectiles. 
+
+why is view locked in village. enable fp and give a testing dummy in the village which will give dps feedback.
+
+the hitboxes for the levers prevent the player from getting into the narrow space behind it sometimes.
+
+is the sniper shot tracer laser a beam in fp? it should be. i haven't noticed a visual for it. perhaps its a changes color as its charging up before firing?
+
+we're gonna have to slow the game down a fair bit. the fact that autoplay moves like that is gross. movement should probably be a bit slower.
+the player's agility has speed cap way too high, need to nerf its speed scaling into the dirt.
+fire rate of .04s is also ABSURD. leave that only for special busted. wands.
+
+make the fire projectile @ rotate faster STILL pls >:3
+
+an enemy spider popped me for 1500+ dmg at difficulty 179. i had 780 hp, lvl45, f88.
+enemy tank hits for 1231 hmg at difficult 4 after hitting only 1s???
 
 proximity based doors have the issue of being immediately passable when approaching, even if the visual wall in fp hasn't moved yet. what should we do about this?
 
@@ -99,28 +145,3 @@ add a blinded debuff? make everything outside of a certain radius from the playe
 OO PERHAPS WE SUPER ASCII EVERYTHING AND BLUR CORNERS?
 
 spawning too many fire dot's seems mmmm. not good.
-
-
- "Most resource-intensive combat visualization?"
-
-  In this stack (Label3D billboards in a SubViewport + ASCII post-shader), the per-frame cost lives in the entity sync
-  loop (FirstPersonRig.gd:810-1150), not the shader. Ranked worst→meh for live combat:
-
-  1. Multi-line status-stacked enemies — a wizard/boss (5-row art) on fire + shocked + poisoned drives live_text to 8
-  rows. Each row is a separate Label3D child whose .text / .modulate / .position write every frame, and the child count
-  grows dynamically as statuses pile on. A roomful of these is the worst case the loop sees.
-  2. Magma Boss arena with FirePatch trails — each FirePatch is a multi-line animated entity. Many patches = many
-  simultaneous per-row Label3D writes. (FirePatch.gd was just heavily updated in v0.4.0.)
-  3. Concurrent beam-sweep emitters — each enemy beam pools Label3D glyphs along its path. 3-5 sweepers firing at once =
-   50-100 pooled Label3Ds positioned + oriented every frame.
-  4. Floating damage text storm — nova / shotgun / pierce land multiple hits per frame; each spawns a Label that's
-  re-projected from world to screen every other frame. Linear with hit count.
-  5. Nova detonation — momentary spike: ~16 nova_shard projectiles + the animated +↔x core all register Label3Ds at
-  once.
-
-  Cheap by comparison: walls (one draw call per 8×8 chunk), single OmniLight3D (one), HP bars (text cached, modulate
-  cached now), camera shake (one transform mul), occlusion (DDA staggered every 3 frames per entity).
-
-  If you wanted to profile the worst case: start a Magma boss arena (biome 3), let it spawn enemies, freeze a few with
-  the freeze gun, then enflame them. That hits multi-line + status stacking + persistent ice cubes + the boss's eruption
-   FirePatches simultaneously.

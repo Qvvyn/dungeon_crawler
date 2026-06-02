@@ -58,5 +58,12 @@ func _process(delta: float) -> void:
 	if _tick_t <= 0.0:
 		_tick_t = TICK_INTERVAL
 		var ply: Node2D = get_tree().get_first_node_in_group("player")
-		if is_instance_valid(ply) and ply.has_method("apply_status"):
-			ply.apply_status("poison", POISON_DURATION)
+		if not is_instance_valid(ply) or not ply.has_method("apply_status"):
+			return
+		# Levitating players float above the cloud — matches LavaTile / low-
+		# beam / spike-trap / spin-trap behavior so SPACE works as a uniform
+		# "skip floor hazards" tool. Without this, you could hover over fire
+		# safely but a poison wisp would still tick you.
+		if bool(ply.get("_is_levitating")):
+			return
+		ply.apply_status("poison", POISON_DURATION)

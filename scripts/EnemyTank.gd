@@ -87,6 +87,10 @@ func _ready() -> void:
 	_charge_cd = randf_range(CHARGE_CD_MIN, CHARGE_CD_MAX)
 	_player = get_tree().get_first_node_in_group("player")
 	_hitbox = $MeleeHitbox
+	# Mask 3 = player layer (1) + enemy layer (2) — required so bewitched
+	# tanks can detect other enemies for damage; non-bewitched still filter
+	# to the player via _should_melee_hit in _on_melee_hit.
+	_hitbox.collision_mask = 3
 	_hitbox.body_entered.connect(_on_melee_hit)
 	_update_health_bar()
 	_setup_patrol()
@@ -310,11 +314,12 @@ func _end_attack() -> void:
 		vis.visible = false
 
 func _on_melee_hit(body: Node2D) -> void:
-	if body.is_in_group("player") and body.has_method("take_damage"):
-		body.take_damage(2, self)
-		if body.has_method("apply_knockback"):
-			var dir := (body.global_position - global_position).normalized()
-			body.apply_knockback(dir * KNOCKBACK_FORCE)
+	if not EnemyBase.melee_hit_filter(self, body):
+		return
+	body.take_damage(2, self)
+	if body.has_method("apply_knockback"):
+		var dir := (body.global_position - global_position).normalized()
+		body.apply_knockback(dir * KNOCKBACK_FORCE)
 
 # ── Status ticking ────────────────────────────────────────────────────────────
 

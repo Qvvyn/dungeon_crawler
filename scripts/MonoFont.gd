@@ -57,9 +57,40 @@ static func get_font() -> Font:
 	_cached_choice = choice
 	return _cached
 
-# Called by the debug toggle so the next get_font() picks up the new
-# choice immediately. Existing Label3Ds / Labels keep their old font
-# reference until rebuilt.
+# Called by the debug font-cycle so the next get_font() picks up the new
+# choice immediately AND any existing Label / Button / RichTextLabel /
+# Label3D currently holding the old cached font reference is rewritten on
+# the spot. Previously the comment here said "existing labels keep their
+# old font until rebuilt" — that meant the debug cycle had no visible
+# effect until F1 rebuilt the rig. Walking the scene tree once per font
+# swap is cheap (we only touch nodes whose stored font is == the previous
+# cached one, so labels with a deliberate non-MonoFont stay untouched).
 static func invalidate() -> void:
+	var old_font: Font = _cached
 	_cached = null
 	_cached_choice = -1
+	if old_font == null:
+		return
+	var new_font: Font = get_font()   # rebuilds and re-caches under the new GameState.font_choice
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree == null or tree.root == null:
+		return
+	_propagate(tree.root, old_font, new_font)
+
+# Recursive walk — swaps the font on any node whose stored/overridden font
+# is the prior cached MonoFont. Labels with a non-MonoFont (e.g. a per-
+# character override) keep their own font.
+static func _propagate(n: Node, old_font: Font, new_font: Font) -> void:
+	if n is Control:
+		var c := n as Control
+		# Common font-override slot names actually used in this project.
+		# add_theme_font_override("font", ...) is the universal one; the
+		# rest cover RichTextLabel and any future variants.
+		for fn in ["font", "normal_font", "bold_font", "italics_font", "bold_italics_font", "mono_font"]:
+			if c.get_theme_font_override(fn) == old_font:
+				c.add_theme_font_override(fn, new_font)
+	elif n is Label3D:
+		if (n as Label3D).font == old_font:
+			(n as Label3D).font = new_font
+	for child in n.get_children():
+		_propagate(child, old_font, new_font)

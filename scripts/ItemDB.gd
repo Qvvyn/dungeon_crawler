@@ -64,7 +64,9 @@ static func roll_drop_tier() -> int:
 #   T50 → 25.3×
 static func tier_mult(t: int) -> float:
 	var x: float = float(maxi(0, t - 1))
-	return 1.0 + x * 0.25 + x * x * 0.005
+	# Quadratic coefficient compressed (0.005 → 0.002) so T100 wands no longer
+	# scale to ~75× and decimate T100 enemies; T1-T20 barely shifts.
+	return 1.0 + x * 0.25 + x * x * 0.002
 
 # Stamps a drop tier on a fixed-stat item that didn't roll one during
 # generation (everything from all_items / legendary_items / boss
@@ -198,6 +200,7 @@ static func _wand_icon_for_type(shoot_type: String) -> String:
 		"homing":   return ">"
 		"nova":     return "+"
 		"melee":    return "\\"
+		"love":     return "v"   # heart-ish glyph in the mono fonts that lack ♥
 	return "/"
 
 static func _make_wand(name: String, desc: String, col: Color, sell: int,

@@ -30,13 +30,26 @@ func _on_body_exited(body: Node2D) -> void:
 		var hint := get_node_or_null("InteractHint")
 		if hint != null:
 			hint.visible = false
+		# Mirror DescendPortal — walking away from the board cleans up the
+		# panel and releases the interface lock so the cursor / movement
+		# come back even if the player skipped the [CLOSE] button.
+		_close()
 
 func _open() -> void:
 	if is_instance_valid(_ui):
 		return
 	_ui = CanvasLayer.new()
 	_ui.layer = 28
+	# Keep the panel processing while the tree is paused (set_interface_open
+	# pauses combat + movement and releases the FP cursor — same lock the
+	# Bank / Shop use). The board itself also needs ALWAYS so its [CLOSE]
+	# button keeps wiring up its callback.
+	_ui.process_mode = Node.PROCESS_MODE_ALWAYS
 	get_tree().current_scene.add_child(_ui)
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	var ply := get_tree().get_first_node_in_group("player")
+	if ply != null and ply.has_method("set_interface_open"):
+		ply.set_interface_open(true)
 
 	var dim := ColorRect.new()
 	dim.color = Color(0.0, 0.0, 0.0, 0.78)
@@ -148,5 +161,16 @@ func _open() -> void:
 	close_btn.flat = true
 	close_btn.position = Vector2(680, 760)
 	close_btn.size = Vector2(240, 30)
-	close_btn.pressed.connect(func() -> void: _ui.queue_free())
+	close_btn.pressed.connect(_close)
 	_ui.add_child(close_btn)
+
+func _close() -> void:
+	var was_open := is_instance_valid(_ui)
+	if is_instance_valid(_ui):
+		_ui.queue_free()
+	_ui = null
+	if was_open:
+		var ply := get_tree().get_first_node_in_group("player")
+		if ply != null and ply.has_method("set_interface_open"):
+			ply.set_interface_open(false)
+		process_mode = Node.PROCESS_MODE_INHERIT

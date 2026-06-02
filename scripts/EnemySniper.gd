@@ -45,6 +45,9 @@ var _winding_up: bool      = false
 var _windup_elapsed: float = 0.0
 var _aim_line: Line2D      = null
 var _retreat_timer: float  = 0.0
+var _fp_flash_t: float     = 0.0   # >0 while the bright FP fire beam is held post-shot
+var _fp_flash_start: Vector2 = Vector2.ZERO
+var _fp_flash_end: Vector2 = Vector2.ZERO
 
 var _stun_timer: float      = 0.0
 var _no_attack_timer: float = 0.0
@@ -130,8 +133,23 @@ func _physics_process(delta: float) -> void:
 	else:
 		_patrol(delta)
 
+	if _fp_flash_t > 0.0:
+		_fp_flash_t -= delta
+		if _fp_flash_t <= 0.0:
+			_clear_fp_aim_beam()
 	move_and_slide()
 	_tick_anim(delta)
+
+func _clear_fp_aim_beam() -> void:
+	_fp_flash_t = 0.0
+	var rig := GameState.active_rig
+	if rig != null and is_instance_valid(rig) and rig.has_method("clear_enemy_beam"):
+		rig.clear_enemy_beam(self)
+
+func _exit_tree() -> void:
+	# Sniper can die mid-windup; make sure the FP rig isn't left holding a
+	# dangling pool keyed to this instance.
+	_clear_fp_aim_beam()
 
 func _move_combat(delta: float) -> void:
 	if _frozen or _stun_timer > 0.0 or _winding_up:
@@ -284,6 +302,7 @@ func _abort_windup() -> void:
 	if _aim_line != null:
 		_aim_line.queue_free()
 		_aim_line = null
+	_clear_fp_aim_beam()
 	var lbl := get_node_or_null("AsciiChar")
 	if lbl:
 		lbl.text = SNIPER_F0
@@ -312,7 +331,18 @@ func _update_windup_visual() -> void:
 	_aim_line.default_color = Color(1.0, lerpf(0.5, 0.05, progress), 0.0, lerpf(0.40, 1.0, progress))
 	var predicted := _player.global_position + _player_vel_est * 0.2
 	var dir := (predicted - global_position).normalized()
-	_aim_line.set_point_position(1, to_local(global_position + dir * 1200.0))
+	var end_pt := global_position + dir * 1200.0
+	_aim_line.set_point_position(1, to_local(end_pt))
+
+	# Mirror the aim laser into FP as a thin solid beam whose opacity ramps
+	# from barely-visible to fully opaque red as the windup progresses. The
+	# rising alpha reads as a charging laser sight (visually distinct from
+	# other enemies' dotted-warning telegraphs), and the thin tube costs
+	# one MeshInstance3D per emitter instead of a Label3D-per-step pool.
+	var rig := GameState.active_rig
+	if rig != null and is_instance_valid(rig) and rig.has_method("set_enemy_beam"):
+		var fp_col := Color(1.0, 0.05, 0.05, lerpf(0.08, 1.0, progress))
+		rig.set_enemy_beam(self, global_position, end_pt, fp_col, false, 0.45, 0.04)
 
 func _finish_windup() -> void:
 	_winding_up     = false
@@ -325,6 +355,7 @@ func _finish_windup() -> void:
 		lbl.text = SNIPER_F0
 	_shoot_timer = SHOOT_INTERVAL
 	if not is_instance_valid(_player):
+		_clear_fp_aim_beam()
 		return
 
 	# Instant beam — raycast to find hit point (aim at predicted position)
@@ -364,6 +395,17 @@ func _finish_windup() -> void:
 	var tw_c := core.create_tween()
 	tw_c.tween_property(core, "modulate:a", 0.0, 0.3)
 	tw_c.tween_callback(core.queue_free)
+
+	# FP fire-flash beam: bright thin tube for ~0.3s so the FP player sees
+	# the shot land, then clear. Same 0.04 thickness as the warmup so the
+	# cached tube doesn't have to be rebuilt — just recolored.
+	var rig := GameState.active_rig
+	if rig != null and is_instance_valid(rig) and rig.has_method("set_enemy_beam"):
+		rig.set_enemy_beam(self, global_position, beam_end,
+			Color(1.0, 0.85, 0.50, 1.0), false, 0.45, 0.04)
+		_fp_flash_t     = 0.3
+		_fp_flash_start = global_position
+		_fp_flash_end   = beam_end
 
 	_retreat_timer = 0.6
 

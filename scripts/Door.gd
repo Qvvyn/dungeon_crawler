@@ -18,6 +18,13 @@ var cover_tiles: Array[Vector2i] = []
 var corridor_axis: int = 0
 var remote_only: bool = false   # true = no auto proximity open; only open()/close()
 var start_open: bool = false    # spawn already open (e.g. a seal that closes later)
+# One-shot doors stay open after first proximity open — used by the sideroom
+# ambush placement (find the door, walk through, ambush triggers, room stays
+# accessible). Auto-closing was clutter on the critical path and made the
+# autoplay bot oscillate. Default false so existing remote-only doors (seals)
+# can still close on demand.
+var one_shot: bool = true
+var _has_opened: bool = false
 
 var _open_amount: float = 0.0   # 0 = closed, 1 = fully open
 var _open_target: float = 0.0
@@ -74,13 +81,18 @@ func _ready() -> void:
 	_trigger.body_exited.connect(_on_trigger_exited)
 
 	# --- Top-down 2D visual: a "+" (closed door) glyph per covered tile ---
+	# Color-matched to the biome's wall tint with a tiny brightness lift so the
+	# door reads as a door, not vanishes into the wall entirely. Previously
+	# fixed warm-tan, which stood out everywhere.
+	var wall_col: Color = World.BIOME_WALL_COLORS[clampi(GameState.biome, 0, World.BIOME_WALL_COLORS.size() - 1)]
+	var door_col: Color = wall_col.lightened(0.10)
 	var origin_tile := cover_tiles[cover_tiles.size() / 2]  # node sits at this tile's center
 	for t: Vector2i in cover_tiles:
 		var g := Label.new()
 		g.add_theme_font_override("font", _shared_font)
 		g.add_theme_font_size_override("font_size", 18)
-		g.add_theme_color_override("font_color", Color(0.72, 0.55, 0.32))
-		g.add_theme_color_override("font_outline_color", Color(0.1, 0.07, 0.03))
+		g.add_theme_color_override("font_color", door_col)
+		g.add_theme_color_override("font_outline_color", wall_col.darkened(0.45))
 		g.add_theme_constant_override("outline_size", 2)
 		g.text = "+"
 		g.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -124,8 +136,9 @@ func _sync_fp_segments() -> void:
 		var color: Color = Color(0.55, 0.50, 0.42)
 		if rig.has_method("get_wall_color"):
 			color = rig.get_wall_color()
-		# Slight warm shift so the door reads as a door, not seamless wall.
-		color = color.lerp(Color(0.70, 0.55, 0.35), 0.25)
+		# Match the wall color directly so closed doors blend into the
+		# surrounding wall band in FP. The 2D label adds a brightness lift
+		# so the player can still spot the door from top-down.
 		for t: Vector2i in cover_tiles:
 			var px := Vector2(float(t.x) * TILE + TILE * 0.5, float(t.y) * TILE + TILE * 0.5)
 			var id: int = rig.add_wall_segment(px, color)
@@ -190,6 +203,7 @@ func _on_trigger_entered(body: Node2D) -> void:
 		return
 	if _open_target != 1.0:
 		_open_target = 1.0
+		_has_opened = true
 		if SoundManager:
 			SoundManager.play("whoosh", randf_range(0.85, 0.95))
 
@@ -197,6 +211,11 @@ func _on_trigger_exited(body: Node2D) -> void:
 	if remote_only:
 		return
 	if not body.is_in_group("player"):
+		return
+	# One-shot doors stay open forever once opened — no auto-close. Keeps the
+	# sideroom passable for loot return trips and stops the autoplay bot from
+	# oscillating between "door closing → re-open" each pass.
+	if one_shot and _has_opened:
 		return
 	# Only close once no player remains in the trigger.
 	for b in _trigger.get_overlapping_bodies():

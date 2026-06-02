@@ -17,10 +17,13 @@ func _ready() -> void:
 	collision_layer = 1
 	collision_mask = 0
 	z_index = 1
-	# Small collision so it reads as a fixture without blocking a 3-wide corridor.
+	# Small collision so it reads as a fixture without blocking a 3-wide
+	# corridor. Shrunk from 14x14 → 8x8 (matches player CircleShape2D radius
+	# 8.0) so the player can squeeze into the narrow space behind the lever
+	# instead of being stuck against its edge.
 	var cs := CollisionShape2D.new()
 	var rect := RectangleShape2D.new()
-	rect.size = Vector2(14, 14)
+	rect.size = Vector2(8, 8)
 	cs.shape = rect
 	add_child(cs)
 

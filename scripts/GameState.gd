@@ -204,6 +204,11 @@ var show_enemy_names: bool = false
 # the ASCII post-shader). Sticky across render-mode flips — re-applied to
 # the rig in _apply_render_mode. Drives FirstPersonRig.set_blinded().
 var fp_blinded: bool = false
+# Debug toggle: force the FP rig into "fully illuminated" mode (uniform
+# bright ambient + boosted torch + extended cull distance). Mutually
+# exclusive with fp_blinded in the debug menu cycle — only one can be on
+# at a time. Re-applied on render-mode flips via _apply_fp_lighting_to_rig.
+var fp_illuminated: bool = false
 # FP render resolution — when true, the SubViewport renders at half size
 # (with proportionally smaller cell_px) so the GPU processes 75% fewer
 # pixels. Same number of ASCII characters on screen; slightly softer look.

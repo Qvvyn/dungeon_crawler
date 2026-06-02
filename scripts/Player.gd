@@ -2,7 +2,7 @@ extends CharacterBody2D
 
 const INVENTORY_UI_SCENE := preload("res://scenes/InventoryUI.tscn")
 
-@export var speed: float = 300.0
+@export var speed: float = 270.0
 @export var fire_rate: float = 0.15
 @export var max_health: int = 50   # base 10 VIT × +5/pt scaling — keeps HP matched to the stat curve at level 1
 @export var projectile_scene: PackedScene
@@ -139,6 +139,11 @@ const BASE_SHOT_MANA_COST  := 2.0   # mana cost when firing without a wand equip
 const BASE_FIRE_RATE_DEX   := 0.30
 const DEX_FIRE_STEP        := 0.01   # seconds removed per DEX_FIRE_PER_STEP DEX
 const DEX_FIRE_PER_STEP    := 5      # every 5 DEX = one DEX_FIRE_STEP cut
+# Universal fire-rate floor. 0.04 s (25 shots/sec) used to be reachable by any
+# DEX/legendary build and felt absurd; the floor is now 0.10 s for normal
+# wands and only "busted"-flagged wands can dip below it.
+const MIN_FIRE_RATE        := 0.10
+const MIN_FIRE_RATE_BUSTED := 0.04
 
 func _dex_fire_reduction() -> float:
 	var dex: int = int(GameState.get_stat_bonus("DEX"))
@@ -160,7 +165,8 @@ func _effective_fire_rate(wand: Item) -> float:
 			rate *= 2.0
 		if "sloppy" in wand.wand_flaws:
 			rate /= 1.5
-	return maxf(0.04, (rate - _equip_fire_rate_bonus) / _fire_rate_multiplier)
+	var floor_rate: float = MIN_FIRE_RATE_BUSTED if (wand != null and "busted" in wand.wand_flaws) else MIN_FIRE_RATE
+	return maxf(floor_rate, (rate - _equip_fire_rate_bonus) / _fire_rate_multiplier)
 
 # Dash uses mana now (Theme A stat overhaul — stamina removed). Cost picked
 # so a fresh-mana dash still leaves room for ~5 wand shots before the pool
@@ -1168,11 +1174,23 @@ func _build_debug_panel() -> void:
 	_add_debug_toggle(Vector2(640, 400), _debug_root, "ENEMY NAMES",
 		func() -> bool: return GameState.show_enemy_names,
 		func(v: bool) -> void: GameState.show_enemy_names = v)
-	_add_debug_toggle(Vector2(640, 440), _debug_root, "BLIND (FP)",
-		func() -> bool: return GameState.fp_blinded,
-		func(v: bool) -> void:
-			GameState.fp_blinded = v
-			_apply_blinded_to_rig())
+	# 3-state cycle: NORMAL → BLIND → ILLUMINATED → NORMAL. Pushes the result
+	# into both rig uniforms (darkness + fully_illuminated). Mutually
+	# exclusive — the cycle guarantees only one flag is set at a time.
+	_add_debug_cycle(Vector2(640, 440), _debug_root, "FP LIGHTING",
+		func() -> String:
+			if GameState.fp_blinded: return "BLIND"
+			if GameState.fp_illuminated: return "ILLUMINATED"
+			return "NORMAL",
+		func() -> void:
+			if not GameState.fp_blinded and not GameState.fp_illuminated:
+				GameState.fp_blinded = true
+			elif GameState.fp_blinded:
+				GameState.fp_blinded = false
+				GameState.fp_illuminated = true
+			else:
+				GameState.fp_illuminated = false
+			_apply_fp_lighting_to_rig())
 	# Mirrors KEY_F2 — flips infinite_mana + infinite_health in lockstep.
 	# Tops up vitals immediately on toggle-on so the player sees the change.
 	_add_debug_toggle(Vector2(640, 480), _debug_root, "INFINITE VITALS",
@@ -1313,17 +1331,19 @@ func _close_debug() -> void:
 		if is_instance_valid(n):
 			(n as CanvasItem).visible = true
 
-# Push the current GameState.fp_blinded value into the active rig's
-# shader uniform. Called from the debug toggle and from World on render-
-# mode flips so a sticky "blinded" state survives switching to TOPDOWN
-# and back.
-func _apply_blinded_to_rig() -> void:
+# Push the current GameState.fp_blinded / fp_illuminated values into the
+# active rig's shader uniform + lighting state. Called from the debug
+# cycle and from World on render-mode flips so the sticky lighting state
+# survives switching to TOPDOWN and back. The two flags are mutually
+# exclusive (enforced by the cycle button), so we apply both unconditionally.
+func _apply_fp_lighting_to_rig() -> void:
 	var rig: Node = GameState.active_rig
 	if rig == null or not is_instance_valid(rig):
 		return
-	if not rig.has_method("set_blinded"):
-		return
-	rig.set_blinded(0.7 if GameState.fp_blinded else 0.0)
+	if rig.has_method("set_blinded"):
+		rig.set_blinded(0.7 if GameState.fp_blinded else 0.0)
+	if rig.has_method("set_fully_illuminated"):
+		rig.set_fully_illuminated(GameState.fp_illuminated)
 
 # Hex-code wizard color picker — type a 6-digit hex (e.g. a08cff) + Enter to
 # recolor the wizard. A live swatch shows the current color.
@@ -2248,7 +2268,7 @@ func _debug_perfect_wand() -> void:
 	FloatingText.spawn_str(global_position, "WAND PERFECTED!", Color(0.3, 1.0, 0.8), get_tree().current_scene)
 
 func _cycle_test_wand(dir: int) -> void:
-	var types := ["regular", "pierce", "ricochet", "freeze", "fire", "shock", "beam", "shotgun", "homing", "nova", "melee"]
+	var types := ["regular", "pierce", "ricochet", "freeze", "fire", "shock", "beam", "shotgun", "homing", "nova", "melee", "love"]
 	_test_wand_index = posmod(_test_wand_index + dir, types.size())
 	var t: String = types[_test_wand_index]
 	var w := ItemDB.generate_wand(Item.RARITY_LEGENDARY)
@@ -2265,6 +2285,14 @@ func _cycle_test_wand(dir: int) -> void:
 			w.wand_damage    = 15
 			w.wand_mana_cost = 6.0
 		"freeze", "fire":  w.wand_status_stacks   = 3
+		"love":
+			# Love wand bewitches in one tap regardless of damage scaling —
+			# fire rate keeps the projectile cheap and slow so the player
+			# can place the hearts deliberately, not spray and pray.
+			w.wand_damage     = 1
+			w.wand_fire_rate  = 0.50
+			w.wand_mana_cost  = 6.0
+			w.wand_proj_speed = 520.0
 	w.display_name = t.capitalize() + " [%d/%d]" % [_test_wand_index + 1, types.size()]
 	InventoryManager.set_active_wand(w)
 	update_equip_stats()
@@ -2791,15 +2819,9 @@ func _input(event: InputEvent) -> void:
 		KEY_F1:
 			# Cycle render mode: TOP-DOWN → FP shader → FP raycaster → TOP-DOWN.
 			# Persists across sessions via GameState.save_settings; World/Player/
-			# EnemyBase/Projectile all listen for render_mode_changed to swap
-			# their visuals. Blocked while in the village hub since the hub
-			# scene doesn't construct FP rigs.
-			if GameState.in_hub:
-				FloatingText.spawn_str(global_position + Vector2(0.0, -32.0),
-					"VIEW LOCKED IN VILLAGE",
-					Color(0.85, 0.7, 0.4), get_tree().current_scene)
-				get_viewport().set_input_as_handled()
-				return
+			# EnemyBase/Projectile/Village all listen for render_mode_changed to
+			# swap their visuals. Village builds its own FP rig so toggling
+			# inside the hub is allowed (used to bench wand DPS on the dummy).
 			GameState.cycle_render_mode()
 			GameState.save_settings()
 			FloatingText.spawn_str(global_position + Vector2(0.0, -32.0),
@@ -3121,15 +3143,25 @@ func _setup_shield() -> void:
 	_shield_area.collision_mask  = 1
 	add_child(_shield_area)
 
-	# 90-degree sector polygon pointing right (+X)
+	# Thin 90-degree arc ribbon pointing right (+X) — was a filled triangular
+	# sector, which absorbed any shot that happened to be inside the wedge
+	# at the moment the shield came up (and made point-blank-then-shield a
+	# free block). Switched to a thin shell along the arc's edge so projectiles
+	# already between the player and the arc still reach the player; only
+	# shots crossing the arc itself get absorbed.
 	var steps := 12
-	var sector: PackedVector2Array = []
-	sector.append(Vector2.ZERO)
+	const SHIELD_THICKNESS: float = 8.0
+	var ribbon: PackedVector2Array = []
+	# Outer arc, left to right
 	for i in steps + 1:
 		var a := deg_to_rad(-45.0) + (deg_to_rad(90.0) / float(steps)) * float(i)
-		sector.append(Vector2(cos(a), sin(a)) * SHIELD_RADIUS)
+		ribbon.append(Vector2(cos(a), sin(a)) * SHIELD_RADIUS)
+	# Inner arc, right to left — closes the polygon into a curved strip.
+	for i in range(steps, -1, -1):
+		var a := deg_to_rad(-45.0) + (deg_to_rad(90.0) / float(steps)) * float(i)
+		ribbon.append(Vector2(cos(a), sin(a)) * (SHIELD_RADIUS - SHIELD_THICKNESS))
 	var poly := CollisionPolygon2D.new()
-	poly.polygon = sector
+	poly.polygon = ribbon
 	_shield_area.add_child(poly)
 
 	# Arc visual points (curved edge only)
@@ -3186,11 +3218,23 @@ func _handle_shield(delta: float) -> void:
 		_shield_area.visible    = true
 		_shield_visual.visible  = true
 		_shield_glow.visible    = true
+		_push_shield_to_fp_rig(true, mouse_dir)
 	else:
 		_is_shielding           = false
 		_shield_area.visible    = false
 		_shield_visual.visible  = false
 		_shield_glow.visible    = false
+		_push_shield_to_fp_rig(false, Vector2.RIGHT)
+
+# Mirrors the 2D shield arc into the FP rig. Lives in its own function so the
+# is_instance_valid + has_method dance doesn't clutter _handle_shield's hot
+# path. The rig builds the Label3D lazily on first call.
+func _push_shield_to_fp_rig(active: bool, aim_dir: Vector2) -> void:
+	var rig: Node = GameState.active_rig
+	if rig == null or not is_instance_valid(rig):
+		return
+	if rig.has_method("set_player_shield"):
+		rig.set_player_shield(active, global_position, aim_dir)
 
 func _on_shield_absorb(area: Area2D) -> void:
 	if not _is_shielding:
@@ -4078,17 +4122,30 @@ func _autoplay_refresh_targets() -> void:
 	# buy-upgrade), so the bot only needs to walk into range. Sprint
 	# mode and critical-HP sprints skip this so the survival behavior
 	# isn't blocked by a side trip.
+	# Mark any interactable the player has physically passed through as
+	# visited — runs EVERY frame, not just on portal-goal frames. The old
+	# version only ran when goal == portal and used a 50-px proximity test,
+	# which the bot would routinely exit before the mark fired. Result was
+	# an oscillation loop between interactables (Shrine / EnchantTable / etc.)
+	# and the portal: bot would auto-use the table, walk a few frames toward
+	# portal, the marker miss, then find_nearest_interactable would re-target
+	# the same table because it wasn't marked.
+	#
+	# overlaps_body for Area2D interactables (Shrine / EnchantTable / Reroller /
+	# QuestBoard) is the cheapest reliable signal — body_entered already fired
+	# (and ran the auto-action) before this overlap check sees it. A wider
+	# 80-px distance fallback covers the rare StaticBody2D case.
+	for n in get_tree().get_nodes_in_group("interactable"):
+		if not is_instance_valid(n):
+			continue
+		var nid_v: int = (n as Node).get_instance_id()
+		if n is Area2D and (n as Area2D).overlaps_body(self):
+			_autoplay_visited_interactables[nid_v] = true
+			continue
+		if n is Node2D and (n as Node2D).global_position.distance_to(global_position) < 80.0:
+			_autoplay_visited_interactables[nid_v] = true
 	if goal == portal and boss == null \
 			and not _autoplay_sprint and not force_sprint:
-		# Step 1: mark anything within 50 px as visited. body_entered will
-		# have fired during the previous frames so the auto-action is done.
-		# This prevents the bot from oscillating around an enchant table
-		# triggering forge → out → forge → out and bleeding gold.
-		for n in get_tree().get_nodes_in_group("interactable"):
-			if not is_instance_valid(n) or not (n is Node2D):
-				continue
-			if (n as Node2D).global_position.distance_to(global_position) < 50.0:
-				_autoplay_visited_interactables[(n as Node).get_instance_id()] = true
 		var inter: Node2D = _autoplay_find_nearest_interactable()
 		if is_instance_valid(inter):
 			goal = inter
@@ -4205,6 +4262,8 @@ func _autoplay_nearest_aggro_enemy() -> Node2D:
 	for e in get_tree().get_nodes_in_group("enemy"):
 		if not is_instance_valid(e):
 			continue
+		if (e as Node).is_in_group("bewitched"):
+			continue   # love-wand allies — bot won't friendly-fire
 		if _autoplay_skipped_enemies.has(e.get_instance_id()):
 			continue
 		if not ("_has_aggro" in e):
@@ -4230,6 +4289,8 @@ func _autoplay_nearest_living_enemy() -> Node2D:
 	for e in get_tree().get_nodes_in_group("enemy"):
 		if not is_instance_valid(e):
 			continue
+		if (e as Node).is_in_group("bewitched"):
+			continue   # love-wand allies — bot won't friendly-fire
 		if _autoplay_skipped_enemies.has(e.get_instance_id()):
 			continue
 		if (e as Node).is_in_group("boss") or (e as Node).is_in_group("portal_wizard"):
@@ -5204,7 +5265,7 @@ func _handle_movement() -> void:
 	# the cap and stopping required the cap to release. 1.25 stays under the
 	# cap in normal play and only binds during the buff window.
 	var haste_mult: float = 1.25 if GameState.has_floor_modifier("haste") else 1.0
-	var agi_bonus := float(GameState.get_stat_bonus("AGI")) * 4.0
+	var agi_bonus := float(GameState.get_stat_bonus("AGI")) * 2.0
 	velocity = direction * (speed + _equip_speed_bonus + agi_bonus) * _speed_multiplier * slow_mult * haste_mult
 	# Hard ceiling on player speed. Past ~600 px/s the bot teleports across
 	# tiles fast enough to bypass pathing / LOS / dodge logic and clip into
@@ -5307,7 +5368,8 @@ func _handle_shooting(delta: float) -> void:
 		if "sloppy" in wand.wand_flaws:
 			actual_rate /= 1.5   # 1.5× rate; ±13° aim arc handled in _fire
 	# Equipment fire-rate-reduction items still chip a bit off the cooldown.
-	actual_rate = maxf(0.04, (actual_rate - _equip_fire_rate_bonus) / _fire_rate_multiplier)
+	var shoot_floor: float = MIN_FIRE_RATE_BUSTED if (wand != null and "busted" in wand.wand_flaws) else MIN_FIRE_RATE
+	actual_rate = maxf(shoot_floor, (actual_rate - _equip_fire_rate_bonus) / _fire_rate_multiplier)
 
 	if _wants_shoot() and _shoot_cooldown <= 0.0:
 		var mana_cost: float
@@ -5510,6 +5572,7 @@ func _fire(wand: Item = null) -> void:
 				bProj.set("apply_freeze", st == "freeze")
 				bProj.set("apply_burn",   st == "fire")
 				bProj.set("apply_shock",  st == "shock")
+				bProj.set("apply_love",   st == "love")
 				bProj.set("status_stacks", maxi(1, wand.wand_status_stacks))
 				bProj.set("pierce_remaining",   wand.wand_pierce if st == "pierce" else 0)
 				bProj.set("ricochet_remaining", wand.wand_ricochet if st == "ricochet" else 0)
@@ -5560,6 +5623,7 @@ func _fire(wand: Item = null) -> void:
 		proj.set("apply_freeze", wand.wand_shoot_type == "freeze")
 		proj.set("apply_burn", wand.wand_shoot_type == "fire")
 		proj.set("apply_shock", wand.wand_shoot_type == "shock")
+		proj.set("apply_love", wand.wand_shoot_type == "love")
 		# Pass the wand's per-shot stack count so freeze/fire/shock apply
 		# multiple stacks per hit (was effectively 1 regardless of value).
 		proj.set("status_stacks", maxi(1, wand.wand_status_stacks))
@@ -5755,7 +5819,10 @@ func take_damage(amount: int, source: Node = null) -> void:
 	# Slope was 0.40 (deep floors one-shot); 0.30 keeps enemies dangerous
 	# without making two-bombers an instant death sentence.
 	var diff_for_dmg: float = GameState.test_difficulty if GameState.test_mode else GameState.difficulty
-	var dmg_mult: float = 1.0 + maxf(0.0, diff_for_dmg - 1.0) * 0.30
+	# Square-root curve replaces the old linear *0.30 slope. Diff 4 still feels
+	# dangerous (~1.7×) but diff 100+ no longer one-shots (~5× vs the old 30×),
+	# capping the deep-floor scaling that made even ~800 HP runs evaporate.
+	var dmg_mult: float = 1.0 + sqrt(maxf(0.0, diff_for_dmg - 1.0)) * 0.40
 	if dmg_mult > 1.0:
 		amount = max(1, int(round(float(amount) * dmg_mult)))
 	if _is_shielding:
@@ -6453,6 +6520,7 @@ func _shoot_type_color(stype: String) -> Color:
 		"homing":   return Color(1.00, 0.40, 0.80)
 		"nova":     return Color(0.85, 0.40, 1.00)
 		"melee":    return Color(0.95, 0.85, 0.55)
+		"love":     return Color(1.00, 0.45, 0.75)
 	return Color(0.95, 0.95, 0.95)
 
 func _add_lb_column(parent: Node, title: String, entries: Array, pos: Vector2, highlight_rank: int = -1) -> void:

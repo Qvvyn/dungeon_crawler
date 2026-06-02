@@ -1,0 +1,51 @@
+[gd_scene load_steps=3 format=3 uid="uid://enemy_spawner"]
+
+[ext_resource type="Script" path="res://scripts/EnemySpawner.gd" id="1_spawner"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_1"]
+size = Vector2(32, 32)
+
+[node name="EnemySpawner" type="CharacterBody2D" groups=["enemy", "enemy_spawner"]]
+script = ExtResource("1_spawner")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = SubResource("RectangleShape2D_1")
+
+[node name="Visual" type="ColorRect" parent="."]
+visible = false
+offset_left = -16.0
+offset_top = -16.0
+offset_right = 16.0
+offset_bottom = 16.0
+color = Color(0.95, 0.55, 0.25, 1)
+
+[node name="AsciiChar" type="Label" parent="."]
+z_index = 2
+offset_left = -28.0
+offset_top = -28.0
+offset_right = 28.0
+offset_bottom = 28.0
+text = " /^\\ \n[~~~]\n ‾‾‾ "
+horizontal_alignment = 1
+vertical_alignment = 1
+theme_override_font_sizes/font_size = 14
+theme_override_colors/font_color = Color(0.95, 0.55, 0.25, 1)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 1)
+theme_override_constants/outline_size = 2
+
+[node name="HealthBar" type="Node2D" parent="."]
+position = Vector2(0, 28)
+
+[node name="Background" type="ColorRect" parent="HealthBar"]
+offset_left = -22.0
+offset_top = -3.0
+offset_right = 22.0
+offset_bottom = 3.0
+color = Color(0.25, 0.05, 0.05, 1)
+
+[node name="Foreground" type="ColorRect" parent="HealthBar"]
+offset_left = -22.0
+offset_top = -3.0
+offset_right = 22.0
+offset_bottom = 3.0
+color = Color(0.95, 0.55, 0.25, 1)

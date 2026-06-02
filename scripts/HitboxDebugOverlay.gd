@@ -32,8 +32,15 @@ func _draw() -> void:
 func _scan_node(node: Node, vt: Transform2D, zoom: float) -> void:
 	if node is CollisionShape2D:
 		var cs := node as CollisionShape2D
-		if not cs.disabled and cs.shape != null:
+		# is_visible_in_tree gates the shield sector — the shield's parent
+		# Area2D flips .visible based on whether the player is holding RMB,
+		# so the H-mode outline only shows while the shield is actually up.
+		if not cs.disabled and cs.shape != null and cs.is_visible_in_tree():
 			_draw_shape(cs, _color_for(cs.get_parent()), vt, zoom)
+	elif node is CollisionPolygon2D:
+		var cp := node as CollisionPolygon2D
+		if not cp.disabled and cp.is_visible_in_tree():
+			_draw_polygon(cp, _color_for(cp.get_parent()), vt, zoom)
 	for child in node.get_children():
 		_scan_node(child, vt, zoom)
 
@@ -64,3 +71,18 @@ func _draw_shape(cs: CollisionShape2D, color: Color, vt: Transform2D, zoom: floa
 			vt * (wp + Vector2(-h.x, -h.y).rotated(rot)),
 		])
 		draw_polyline(pts, color, 1.5)
+
+# Outlines a CollisionPolygon2D (shield sector, custom hazards). Polygon points
+# are local to the node; rotate by global_rotation and offset by global_position.
+func _draw_polygon(cp: CollisionPolygon2D, color: Color, vt: Transform2D, zoom: float) -> void:
+	var poly: PackedVector2Array = cp.polygon
+	var n: int = poly.size()
+	if n < 2:
+		return
+	var origin: Vector2 = cp.global_position
+	var rot: float = cp.global_rotation
+	var screen_pts: PackedVector2Array = PackedVector2Array()
+	for i in n:
+		screen_pts.append(vt * (origin + poly[i].rotated(rot)))
+	screen_pts.append(screen_pts[0])   # close the loop
+	draw_polyline(screen_pts, color, 1.5)

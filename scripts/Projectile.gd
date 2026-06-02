@@ -18,6 +18,7 @@ var ricochet_remaining: int = 0    # wall bounces remaining
 var apply_freeze: bool      = false
 var apply_burn: bool        = false
 var apply_shock: bool       = false
+var apply_love: bool        = false   # love wand — bewitches the target
 # How many status stacks the wand applies per hit (passed via the wand's
 # wand_status_stacks). Default 1 keeps non-wand sources working unchanged.
 var status_stacks: int      = 1
@@ -86,6 +87,11 @@ func _ready() -> void:
 	# reads as forward-facing at rotation 0.
 	if shoot_type == "homing":
 		rotation = direction.angle() + PI * 0.5
+	elif shoot_type == "love":
+		# Heart glyph always points up (90° CCW from neutral) regardless of
+		# travel direction — the user wanted a static heart shape, not one
+		# that yaws into the line-of-flight.
+		rotation = -PI / 2.0
 	else:
 		rotation = direction.angle()
 	_base_direction = direction
@@ -165,10 +171,10 @@ func _ready() -> void:
 					"fire":
 						glyph = "@"
 						color = Color(1.0, 0.42, 0.08)
-						# Continuous clockwise spin in FP — ~1.6 rev/sec.
+						# Continuous clockwise spin in FP — ~2.8 rev/sec.
 						# Negative spin_rate = clockwise on screen (camera-Z
 						# points out of the screen).
-						set_meta("fp_spin_rate", -TAU * 1.6)
+						set_meta("fp_spin_rate", -TAU * 2.8)
 					"freeze":
 						glyph = "*"
 						color = Color(0.55, 0.92, 1.0)
@@ -213,6 +219,13 @@ func _ready() -> void:
 					"missile":
 						glyph = ">"
 						color = Color(1.0, 0.20, 0.10)
+					"love":
+						# Heart rotated -90° (CCW) so the glyph's tip points
+						# upward. fp_rotation_z gives a static Z-rotation in
+						# the FP rig's billboard.
+						glyph = "v"
+						color = Color(1.00, 0.45, 0.75)
+						set_meta("fp_rotation_z", -PI / 2.0)
 					_:
 						# Regular + any unmapped type — apostrophe matches
 						# the 2D apostrophe label.
@@ -318,6 +331,18 @@ func _apply_visual() -> void:
 			lbl.add_theme_color_override("font_color", Color(1.0, 0.35, 0.05))
 		"missile":
 			lbl.text = ">"
+		"love":
+			# "<3" — the parent Area2D is already locked to rotation = -PI/2
+			# for love-type, so the Label inherits the heart-up orientation
+			# without an extra local rotation. Just bump the font size so the
+			# two characters read clearly at projectile size.
+			lbl.text = "<3"
+			lbl.add_theme_font_size_override("font_size", 22)
+			lbl.offset_left   = -14.0
+			lbl.offset_top    = -14.0
+			lbl.offset_right  =  14.0
+			lbl.offset_bottom =  14.0
+			lbl.add_theme_color_override("font_color", Color(1.00, 0.45, 0.75))
 		_:
 			lbl.text = "."
 	# Single source of truth for the glyph color so the 2D shot, FP shot, and
@@ -640,6 +665,8 @@ func _on_body_entered(body: Node2D) -> void:
 			body.apply_status("shock_hit", float(status_stacks))
 			if shoot_type == "shock":
 				_do_shock_chain(body)
+		if apply_love and body.has_method("apply_status"):
+			body.apply_status("love_hit", 1.0)
 		# SHATTER — pierce / ricochet / shock hitting a frozen target
 		# detonates the freeze for bonus damage. Reads the target's
 		# `_frozen` field via reflection so it works for every enemy
@@ -1015,6 +1042,7 @@ func _type_color(stype: String) -> Color:
 		"arc":        return Color(1.0, 0.55, 0.15)
 		"grenade":    return Color(1.0, 0.45, 0.15)
 		"missile":    return Color(1.0, 0.20, 0.10)
+		"love":       return Color(1.00, 0.45, 0.75)
 	return Color(0.72, 0.72, 0.88)
 
 func _get_proj_color() -> Color:
@@ -1174,7 +1202,13 @@ func _impact_shock(pos: Vector2) -> void:
 		tw.tween_property(arc, "modulate:a", 0.0, 0.22)
 		tw.tween_callback(arc.queue_free)
 		_fp_chain(pos, end_pt, fp_col)
-	_fp_engulf(pos, "z", fp_col, 2)
+	# Shock engulf — z's wrapping the body. Was firing every hit with the
+	# default 0.007 pixel_size + count=2 across four bands, which painted
+	# over the enemy art on chunky fonts. Aggressive shrink:
+	#   pixel_size 0.007 → 0.0025 (~3× smaller)
+	#   count      2     → 1     (fewer glyphs per band, less screen clutter)
+	#   spread     0.45  → 0.30  (z's stay close to the silhouette)
+	_fp_engulf(pos, "z", fp_col, 1, 0.30, 0.24, 0.0025)
 
 func _impact_shotgun(pos: Vector2) -> void:
 	var col := Color(1.0, 0.85, 0.10)

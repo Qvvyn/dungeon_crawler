@@ -466,15 +466,17 @@ func _update_charge_line() -> void:
 	_charge_line.add_point(global_position)
 	var end_pt: Vector2 = global_position + _charge_dir * (CHARGE_SPEED * CHARGE_DURATION)
 	_charge_line.add_point(end_pt)
-	# FP charge line — pooled beam from boss along the wind-up direction.
-	# is_telegraph=true so the rig uses the dim "·" glyph for the wind-up
-	# phase; switches to bright when the dash actually launches (handled
-	# in _enter_charge_dash by re-emitting once with telegraph=false, then
-	# cleared in cooldown).
+	# FP charge line — solid yellow warning beam from boss along the wind-up
+	# direction, fading from low alpha at telegraph start to fully opaque just
+	# before the dash launches. Pure yellow keeps it visually distinct from
+	# damage-dealing red beams (BeamTrap's fire state, sniper's tracer flash).
+	# Previously dotted "·" pool which read as "already firing" at a glance
+	# and was significantly more expensive (one Label3D per step).
 	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
 			and GameState.active_rig.has_method("set_enemy_beam"):
+		var charge_t: float = clampf(1.0 - (_charge_t / CHARGE_TELEGRAPH), 0.0, 1.0)
 		GameState.active_rig.set_enemy_beam(self, global_position, end_pt,
-			Color(1.0, 0.30, 0.0, 0.85), true)
+			Color(1.0, 0.92, 0.20, lerpf(0.25, 1.0, charge_t)), false)
 
 func _enter_charge_dash() -> void:
 	_charge_state = ChargeState.DASH

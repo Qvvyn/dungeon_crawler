@@ -48,6 +48,15 @@ var _poison_stacks: int       = 0
 var _poisoned: bool           = false
 var _poison_timer: float      = 0.0
 var _poison_tick: float       = 0.0
+# Love wand — when bewitched, this enemy fights for the player instead of
+# against them. _bewitched_target is recomputed each tick (nearest non-
+# bewitched enemy in sight, falling back to the actual player if none).
+# _bewitched_heart_t is the spawn timer for the floating-heart particles
+# that flag the conversion at a glance.
+var _bewitched: bool          = false
+var _bewitched_target: Node2D = null
+var _bewitched_heart_t: float = 0.0
+var _bewitched_player_ref: Node2D = null   # cached player reference for follow distance
 
 # Visual / hit
 var _hit_flash_t: float       = 0.0
@@ -181,7 +190,9 @@ func _physics_process(delta: float) -> void:
 		_player = get_tree().get_first_node_in_group("player")
 	if not is_instance_valid(_player):
 		return
-	if not _has_aggro:
+	if _bewitched:
+		_retarget_bewitched(delta)
+	elif not _has_aggro:
 		_sight_timer -= delta
 		if _sight_timer <= 0.0:
 			_sight_timer = SIGHT_CHECK_INTERVAL
@@ -290,6 +301,8 @@ func apply_status(effect: String, _duration: float) -> void:
 			if _poison_stacks >= 10:
 				_poison_stacks = 0
 				_trigger_poisoned()
+		"love_hit":
+			_trigger_bewitched()
 
 func _trigger_enflamed() -> void:
 	FloatingText.spawn_str(global_position, "ENFLAMED!", Color(1.0, 0.3, 0.0), get_tree().current_scene)
@@ -341,6 +354,113 @@ func _trigger_poisoned() -> void:
 	_poisoned = true
 	_poison_timer = 9.0
 	_poison_tick = 0.0
+
+# Love wand effect — flip the enemy onto the player's side. Stays in the
+# "enemy" group so existing AI / combat code keeps running; joins "bewitched"
+# so autoplay / hit attribution can filter it. _player gets replaced with the
+# bewitched target each tick (see _retarget_bewitched), so the enemy's own
+# chase + attack code naturally aims at another enemy instead of the wizard.
+# Bosses are immune.
+func _trigger_bewitched() -> void:
+	if is_in_group("boss"):
+		FloatingText.spawn_str(global_position, "RESISTS!",
+			Color(1.0, 0.25, 0.45), get_tree().current_scene)
+		return
+	if _bewitched:
+		return
+	_bewitched = true
+	add_to_group("bewitched")
+	# Cache the real player so we have a "follow" anchor when no enemy is in sight.
+	_bewitched_player_ref = get_tree().get_first_node_in_group("player") as Node2D
+	# Aggro state inherited from before bewitching is meaningless now — clear it.
+	_has_aggro = false
+	# Visible callout + persistent pink tint on the body label so the conversion
+	# is unambiguous in both 2D and FP.
+	FloatingText.spawn_str(global_position, "BEWITCHED",
+		Color(1.00, 0.55, 0.85), get_tree().current_scene)
+	if _lbl != null:
+		_lbl.add_theme_color_override("font_color", Color(1.00, 0.55, 0.85))
+	# Heart particles start floating immediately.
+	_bewitched_heart_t = 0.0
+
+# Centralized melee-hit filter shared by every CharacterBody2D enemy that
+# uses an Area2D MeleeHitbox. Without it, every subclass's _on_melee_hit
+# would have to duplicate the bewitched / friendly-fire / self-collision
+# checks. Returns true when the attacker (self) should deal melee damage
+# to `body`; false otherwise.
+#   - Non-bewitched melee: hits the player only (existing behavior).
+#   - Bewitched melee: hits any non-bewitched enemy AND the player
+#     (the player can still be accidentally clipped — "camaraderie and chaos").
+#   - Never hits self, never hits a fellow bewitched ally.
+# Subclasses also need _hitbox.collision_mask to include the enemy layer
+# (mask bit 2 == layer 2) so the Area2D actually detects other enemies;
+# we leave that to the subclass since some scenes set the mask via .tscn.
+func _should_melee_hit(body: Node) -> bool:
+	return melee_hit_filter(self, body)
+
+# Static so EnemyChaser / EnemyTank (which extend CharacterBody2D directly,
+# not EnemyBase) can call this without duplicating the logic. Reads the
+# attacker's bewitched state via group membership so it works even on scripts
+# that don't have a `_bewitched` field of their own.
+static func melee_hit_filter(attacker: Node, body: Node) -> bool:
+	if body == attacker:
+		return false
+	if not is_instance_valid(body):
+		return false
+	if not body.has_method("take_damage"):
+		return false
+	if attacker.is_in_group("bewitched"):
+		if body.is_in_group("bewitched"):
+			return false
+		return body.is_in_group("enemy") or body.is_in_group("player")
+	return body.is_in_group("player")
+
+# Recomputes the bewitched target each frame: nearest non-bewitched, non-self
+# enemy. Falls back to the player so the unit at least loiters near the wizard
+# instead of standing still. Plays "_player" by swapping the field — every
+# subclass's chase / attack code already references _player.global_position.
+func _retarget_bewitched(delta: float) -> void:
+	# Heart particle spawner — ~1 / sec, floats up + sways via FloatingText.
+	_bewitched_heart_t -= delta
+	if _bewitched_heart_t <= 0.0:
+		_bewitched_heart_t = 1.0
+		var sway: float = randf_range(-12.0, 12.0)
+		FloatingText.spawn_str(
+			global_position + Vector2(sway, -8.0),
+			"v",
+			Color(1.00, 0.55, 0.85),
+			get_tree().current_scene)
+	var best: Node2D = null
+	var best_dsq: float = INF
+	for n in get_tree().get_nodes_in_group("enemy"):
+		if n == self:
+			continue
+		if not is_instance_valid(n):
+			continue
+		if (n as Node).is_in_group("bewitched"):
+			continue
+		var nd := n as Node2D
+		var dsq: float = global_position.distance_squared_to(nd.global_position)
+		if dsq < best_dsq:
+			best_dsq = dsq
+			best = nd
+	if best != null:
+		_bewitched_target = best
+		_player = best
+		# Stay aggro'd so subclass chase code actually fires (most scripts gate
+		# their attack flow on _has_aggro).
+		_has_aggro = true
+	else:
+		# No enemies in sight — drift back toward the actual player so we don't
+		# wander off the floor.
+		_bewitched_target = null
+		if not is_instance_valid(_bewitched_player_ref):
+			_bewitched_player_ref = get_tree().get_first_node_in_group("player") as Node2D
+		_player = _bewitched_player_ref
+		# Drop aggro when idling near the player so the unit doesn't try to
+		# melee the wizard.
+		_has_aggro = false
+
 
 func _check_sight() -> void:
 	if passive: return
@@ -468,16 +588,28 @@ static func _schedule_catacombs_reanimation(pos: Vector2, tree: SceneTree) -> vo
 
 func _do_volatile() -> void:
 	FloatingText.spawn_str(global_position, "BOOM!", Color(1.0, 0.55, 0.0), get_tree().current_scene)
-	var dmg := int(max_health / 3)
-	damage_player_in_radius(dmg, 90.0)
+	damage_player_in_radius(_volatile_damage(max_health), 90.0)
 	var fp := FIRE_PATCH_SCRIPT.new()
 	if fp is Node2D:
 		(fp as Node2D).position = global_position
 	get_tree().current_scene.call_deferred("add_child", fp)
 
+# Raw volatile damage with a diff-keyed cap. Was simply `hp/3`, which was
+# fine for vanilla enemies but exploded on any HP-stacked floor: at diff 28
+# with BLOODLUST + HAUNTED + elite + champion the chaser's max_health
+# stacked to ~9k, `hp/3 ≈ 3000`, then Player.take_damage's diff multiplier
+# pushed the hit past 2600. The cap is keyed to difficulty (not max_health)
+# so multiplicative HP modifiers can't turn a death-pop into a one-shot
+# while still letting a deep-floor enemy's natural HP scale the boom up.
+static func _volatile_damage(hp: int) -> int:
+	var diff: float = GameState.test_difficulty if GameState.test_mode else GameState.difficulty
+	var raw: int = int(hp / 3)
+	var cap: int = int(round(20.0 + maxf(0.0, diff - 1.0) * 2.0))
+	return mini(raw, cap)
+
 static func volatile_explosion(pos: Vector2, hp: int, player: Node, scene: Node, source: Node = null) -> void:
 	FloatingText.spawn_str(pos, "BOOM!", Color(1.0, 0.55, 0.0), scene)
-	var dmg := int(hp / 3)
+	var dmg: int = _volatile_damage(hp)
 	if is_instance_valid(player) and player.has_method("take_damage"):
 		if pos.distance_to(player.global_position) <= 90.0:
 			# Caller passes the exploding enemy so the death log attributes

@@ -136,8 +136,14 @@ func _process(delta: float) -> void:
 			var col := Color(r, g, 0.0)
 			_marker_a.add_theme_color_override("font_color", col)
 			_marker_b.add_theme_color_override("font_color", col)
-			# Update FP telegraph beam each frame.
-			_update_fp_beam(true, Color(1.0, 0.55, 0.05, 0.5))
+			# FP warning beam — pure white that flickers rapidly (~5 Hz) and
+			# also brightens as the windup progresses. The flicker reads
+			# unambiguously as "warning light, not damage" — even at a
+			# glance the player can tell this isn't the saturated red
+			# damage beam the FIRE state below renders. Was yellow but
+			# yellow can still skim past as "looks hot".
+			var flicker: float = 0.55 + 0.45 * sin(Time.get_ticks_msec() * 0.035)
+			_update_fp_beam(false, Color(1.0, 1.0, 1.0, lerpf(0.25, 1.0, t) * flicker))
 			if _timer <= 0.0:
 				_enter_fire()
 
@@ -147,7 +153,7 @@ func _process(delta: float) -> void:
 			if _tick_t <= 0.0:
 				_tick_t = TICK_RATE
 				_tick_damage()
-			_update_fp_beam(false, Color(1.0, 0.42, 0.0, 1.0))
+			_update_fp_beam(false, Color(1.0, 0.18, 0.0, 1.0))
 			if _timer <= 0.0:
 				_enter_cooldown()
 

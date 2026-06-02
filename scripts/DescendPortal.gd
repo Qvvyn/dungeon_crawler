@@ -60,7 +60,15 @@ func _on_body_exited(body: Node2D) -> void:
 func _open_menu() -> void:
 	_ui = CanvasLayer.new()
 	_ui.layer = 28
+	# Tree pauses while the menu is up (set_interface_open below), so the
+	# UI + this portal both need ALWAYS process mode to keep their input /
+	# button callbacks alive. Same pattern as Bank / Shop.
+	_ui.process_mode = Node.PROCESS_MODE_ALWAYS
 	get_tree().current_scene.add_child(_ui)
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	var ply := get_tree().get_first_node_in_group("player")
+	if ply != null and ply.has_method("set_interface_open"):
+		ply.set_interface_open(true)
 
 	var dim := ColorRect.new()
 	dim.color = Color(0.0, 0.0, 0.0, 0.78)
@@ -76,9 +84,15 @@ func _open_menu() -> void:
 		_build_tier_panel()
 
 func _close_menu() -> void:
+	var was_open := is_instance_valid(_ui)
 	if is_instance_valid(_ui):
 		_ui.queue_free()
 	_ui = null
+	if was_open:
+		var ply := get_tree().get_first_node_in_group("player")
+		if ply != null and ply.has_method("set_interface_open"):
+			ply.set_interface_open(false)
+		process_mode = Node.PROCESS_MODE_INHERIT
 
 # ── Resume panel ──────────────────────────────────────────────────────────
 

@@ -192,13 +192,20 @@ func _update_tether_line(target_global: Vector2, col: Color) -> void:
 	_tether_line.add_point(_tether_line.to_local(target_global))
 	_tether_line.default_color = col
 	# FP mirror — emit a beam from the boss to the tether target so the
-	# pull telegraph + the active pull both read in first-person. is_telegraph
-	# differentiates the dim "·" vs bright "X" glyph along the line.
+	# pull telegraph + the active pull both read in first-person. Telegraph
+	# state shows a solid YELLOW beam (clear "warming up" cue, easy to read
+	# at a glance as non-damaging); the PULL state uses the caller's hot
+	# orange for the actual pull. Both render as a single MeshInstance3D
+	# tube — the old dotted "·" pool was more expensive and read as
+	# "already firing" peripherally.
 	if GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
 			and GameState.active_rig.has_method("set_enemy_beam"):
-		var is_telegraph: bool = (_tether_state == TetherState.TELEGRAPH)
+		var beam_col: Color = col
+		if _tether_state == TetherState.TELEGRAPH:
+			var pulse: float = 0.55 + 0.45 * sin(Time.get_ticks_msec() * 0.012)
+			beam_col = Color(1.0, 0.92, 0.20, clampf(pulse, 0.25, 1.0))
 		GameState.active_rig.set_enemy_beam(self, global_position, target_global,
-			col, is_telegraph)
+			beam_col, false)
 
 func _apply_tether_pull() -> void:
 	if not is_instance_valid(_player):
