@@ -32,6 +32,7 @@ const SCRIPT_TO_KEY := {
 	"EnemyFrostSentinel": "ice_sentinel",
 	"EnemyGrenadier": "grenadier",
 	"EnemyBomber": "bomber",
+	"EnemySpawner": "spawner",
 }
 var _sprite: AsciiSpriteDriver = null
 var _dying: bool               = false
@@ -162,7 +163,7 @@ func _ready() -> void:
 		# the consolidated multi-line billboard path instead of single-glyph.
 		if _sprite != null and _lbl != null and _lbl.text != "":
 			enemy_glyph = _lbl.text
-		GameState.active_rig.register_entity(self, enemy_glyph, GameState.enemy_fp_color(tier))
+		GameState.active_rig.register_entity(self, enemy_glyph, GameState.enemy_fp_color_for(self, tier))
 	_on_ready_extra()
 	if _sprite != null:
 		_sprite.reapply()   # sprite wins over any label art the subclass set in _on_ready_extra

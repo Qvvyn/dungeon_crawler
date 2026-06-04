@@ -44,6 +44,8 @@ in the script (standalone enemies). Size tiers: 1 tiny/low · 2 small · 3 human
 | Frost Sentinel | `ice_sentinel` | 4 | tall ornate ice golem |
 | Grenadier | `grenadier` | 2 | y-axis flip (rotate-on-axis) |
 | Bomber | `bomber` | 3 | spherical lit-fuse bomb |
+| Archer | `archer` | 2 | 2-frame bow-draw |
+| Spawner | `spawner` | 4 | flying portal, 2-frame eye flicker |
 | Boss (Brute) | `boss_brute` | 4 | |
 | *(all others)* | original inline glyph | — | not yet wired |
 
@@ -97,6 +99,82 @@ Spawn on every **5th floor** (`portals_used % 5 == 4`); **floor 50** is a 3-boss
 - **Magma Boss** — HP 280. **5-shot fan** (70° arc, 4.5s) + a close melt AoE (90px).
 - **Architect** — HP 260. Aimed **spread** + 12-shot **nova** + lays **mines** + deploys **turrets**. SPEED 130.
 - **Devourer** — HP 600 (tankiest). Heavy **bite** (12 dmg, 90px) + a **tether that yanks you in** from up to 280px.
+
+---
+
+## ASCII forms & attack glyphs
+
+### Projectile / attack glyph reference
+The character an attack draws in **top-down 2D** (set in `Projectile.gd`). In
+**first-person every enemy projectile renders as a red `o`** regardless of type.
+
+| shoot_type | 2D glyph | colour | used by (enemies) |
+|---|---|---|---|
+| regular | `'` | white | Shooter, Phantom, Spiral Mage, all boss bolts |
+| arc | `)` | orange | Archer |
+| grenade | `O` | orange | Grenadier |
+| missile | `>` | red | Missile Turret |
+| pierce | `)` | blue | Wizard (pierce wand) |
+| freeze | `*` | ice-blue | Wizard (freeze wand) |
+| fire | `@` | red-orange | Wizard (fire wand) |
+| shock | `~` (FP `z`) | purple | Wizard (shock wand) |
+| shotgun | `#` | grey | Wizard (shotgun wand) |
+
+*(ricochet `o`, homing `^`, nova `+`↔`x`, nova_shard `✦`, love `<3` are player-only wand types.)*
+
+**Non-projectile attackers** use beams / rings / hazard tiles instead of a glyph:
+beam enemies (Beam Sweep, Sniper, Devourer tether, Boss charge) mirror into FP via
+`set_enemy_beam` — a dotted `·` line during the telegraph, a solid beam on the hit;
+Banshee/Bomber use expanding ring `Line2D`s; melee enemies show the FP `><` impact
+flash; hazard enemies drop tiles (lava `~`, ice patches, mines `[#X#]`).
+
+### Per-enemy forms & attacks
+Sprite-driven enemies render the listed `.txt` frame(s) (browse them in the **F9
+gallery**); **+flip** = horizontal y-axis mirror frame, **tint** = recoloured death
+frame. Each enemy also keeps a small inline-art fallback drawn only if its sprite
+fails to load.
+
+**Melee / rushers**
+- **Chaser** — `goblin.txt` idle/walk (+flip run cycle), death tint. *Attack:* melee swing, no glyph; FP `><` flash.
+- **Spider** — `spider2.txt` idle/walk (+flip), death tint. *Attack:* contact + brief web-slow, no glyph.
+- **Tank** — `tank_man.txt` idle, death tint. *Attack:* melee + knockback, plus a telegraphed straight charge; no glyph; FP `><`.
+- **Berserker** — `knight.txt` idle, death tint. *Attack:* rage-scaled melee swing; FP `><`.
+- **Charger** — `minotaur.txt` idle/walk (+flip), death tint. *Attack:* telegraphed straight dash, contact; no glyph.
+- **Stalker** — `bat1.txt`↔`bat2.txt` wing-flap idle/walk, death. *Attack:* melee bite after a rush; near-invisible until it has LOS.
+- **Bomber** — `bomber.txt` idle, death tint. *Attack:* contact self-detonation (orange shockwave ring), no glyph.
+- **BoneDrake** — `bone_drake.txt` idle, death tint. *Attack:* 2-hit melee combo; FP `><`.
+
+**Ranged / kiters**
+- **Shooter** — `shooter.txt` idle, death tint. *Attack:* regular bolt `'` (FP `o`).
+- **Archer** — `archer1.txt`↔`archer2.txt` 2-frame bow-draw, death tint. *Attack:* arcing lob `)` orange (FP `o`).
+- **Sniper** — `swimmer.txt` idle (+flip), death tint. *Attack:* hitscan beam — orange aim line → red shot; FP red laser tube.
+- **Wizard** — sprite ` (*-*)`↔` (*3*)`, death ` (x_x)`. *Attack:* its equipped wand's type — pierce `)` / freeze `*` / fire `@` / shock `~` (FP `z`) / shotgun `#` / default `'`. Drops the wand on death.
+- **Phantom** — `ghost_big` (`ghost.txt`↔`ghost_blink.txt`, hurt `ghost_hurt.txt`). *Attack:* regular bolt `'` (FP `o`); fades to ~15% alpha between shots.
+- **Spiral Mage** — `jester.txt` idle/walk (+flip), death tint. *Attack:* rotating spiral of regular bolts `'` (FP `o`).
+- **Missile Turret** — `eye2.txt` idle, death tint. *Attack:* homing missile `>` red (FP `o`); pulsing red lock telegraph.
+- **Grenadier** — `grenadier.txt` idle/walk (+flip), death tint. *Attack:* grenade `O` orange (FP `o`) with a ground warning ring.
+
+**Hazard / zone**
+- **Magma Slug** — inline `()(`↔`)()` art (`magma_slug` gallery sprite; not driver-wired). *Attack:* trail of lava `~` hazard tiles; no glyph.
+- **Frost Sentinel** — `ice_sentinel.txt` idle, death tint. *Attack:* spawns 5 ice patches around itself; no glyph.
+- **Beam Sweep** — `jester_head.txt` idle↔attack, hurt, death. *Attack:* swept beam — 0.85 s telegraph (FP dotted `·`) → orange beam.
+- **Mine Layer** — `brute` sprite (inline idle/walk/hurt/death frames). *Attack:* drops `Mine` (`[#X#]` armed) that detonate by proximity.
+- **Banshee** — `ghost_big` (`ghost.txt`↔`ghost_blink.txt`, hurt). *Attack:* AoE scream — expanding purple→red ring; no glyph.
+
+**Support / special**
+- **Enchanter** — `fairy.txt` idle, death tint. *Attack:* non-damaging buff projectile (own scene) + purple tether to the ally it buffs.
+- **Summoner** — `gnome.txt` idle, death tint. *Attack:* summons Chaser minions (≤3); glyph swap `|o|`↔`|*|` on cast.
+- **Reflector** — `reflector.txt` idle, death tint. *Attack:* 110° teal reflect arc that bounces your shots back; no glyph of its own.
+- **Splitter** — `ghost` sprite (inline idle/walk/hurt/death). *Attack:* melee (Chaser-inherited); bursts into 2 half-HP Chasers on death.
+- **Spawner / Nest** — `spawner1.txt`↔`spawner2.txt` (2-frame eye flicker), death tint. *Attack:* none — continuously spawns one fixed species.
+
+**Bosses** *(inline art shown is the actual sprite; idle alternates F0↔F1, death tints F1)*
+- **Brute / Void Herald** — `boss_brute` (`brute_boss.txt`), death tint. *Attack:* spiral + radial bursts of regular bolts `'` (FP `o`) + melee charge dash (FP yellow wind-up beam).
+- **Architect** — `.+.`/`>*<`/`.+.` ↔ `-+-`/`>X<`/`-+-`. *Attack:* aimed spread + 12-shot nova (regular `'`, FP `o`) + lays Mines `[#X#]` + deploys turrets.
+- **Devourer** — `/(O)\`/`\m/` ↔ `/(o)\`/`/M\`. *Attack:* tether yank (orange line → hot pull beam; FP beam) + contact bite AoE; no glyph.
+- **Lich** — `/=\`/`|O|`/`/^\` ↔ `/=\`/`|o|`/`/v\`. *Attack:* summons Chaser minions every 5 s + self-heal below half HP; no projectile.
+- **Magma Tyrant** — `/^\`/`[#X#]`/`/|\` ↔ `\^/`/`(#X#)`/`/|\`. *Attack:* fireball (regular `'`, FP `o`) + erupt ring of lava `~` tiles.
+- **Wraith** — `/W\`/`~~` ↔ `\W/`/`~~~`. *Attack:* blink + multi-shot volley (regular `'`, FP `o`); more shots at ≤45% HP.
 
 ---
 

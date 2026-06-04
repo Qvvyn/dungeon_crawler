@@ -160,7 +160,8 @@ func _enemy_anim_update(delta: float) -> void:
 	if _anim_t >= 0.40:
 		_anim_t = 0.0
 		_anim_f = 1 - _anim_f
-		_lbl.text = ART_F0 if _anim_f == 0 else ART_F1
+		if _sprite == null:   # AsciiSprite driver owns the label when wired
+			_lbl.text = ART_F0 if _anim_f == 0 else ART_F1
 	# Brief brightening pulse right before / after a spawn so the player can
 	# read "this just produced something" even if the minion ran off-screen.
 	if _telegraph_t > 0.0 and _hit_flash_t <= 0.0:

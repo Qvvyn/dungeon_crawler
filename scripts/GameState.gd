@@ -82,6 +82,17 @@ func enemy_fp_color(tier: int = 0) -> Color:
 		3: return base.lightened(0.55)
 		_: return base
 
+# FP colour for an enemy: prefer its AsciiChar's explicit font_color (an
+# AsciiSprite's tuned base colour, or an elite tint applied at spawn) over the
+# generic biome enemy tint. This is why sprite-driven enemies kept rendering
+# clay-red/molten-orange in FP — they were registered with the biome colour
+# instead of the colour the sprite was actually set to.
+func enemy_fp_color_for(body: Node, tier: int = 0) -> Color:
+	var lbl := body.get_node_or_null("AsciiChar")
+	if lbl is Label and (lbl as Label).has_theme_color_override("font_color"):
+		return (lbl as Label).get_theme_color("font_color")
+	return enemy_fp_color(tier)
+
 # Refresh an already-attached entity's FP glyph/color without re-registering.
 # Used by LootBag when its rarity tier changes mid-floor so the FP bag re-
 # shapes and re-tints to match the 2D view. Also updates the meta fields so

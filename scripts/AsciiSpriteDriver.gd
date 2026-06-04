@@ -45,14 +45,37 @@ func setup(label: Label, key: String) -> bool:
 	set_state("idle", true)
 	return true
 
+# Top-down (2D) on-screen height per size tier, in px (≈ 1 tile = 32px). The
+# curated art is authored tall for the FP billboard, so the 2D Label auto-fits
+# its font to land near these instead of sprawling across the room.
+const TD_HEIGHTS := {1: 26.0, 2: 34.0, 3: 42.0, 4: 56.0, 5: 70.0}
+
 # Sole writer of the label's font / size / spacing / offsets / base colour
 # for sprite-driven entities. EnemyBase._setup_label_font() is skipped when a
 # driver is active, so there's no font_size tug-of-war.
 func _apply_label_style() -> void:
-	_lbl.add_theme_font_override("font", MonoFont.get_font())
-	_lbl.add_theme_font_size_override("font_size", int(_meta.get("font_size", 14)))
-	_lbl.add_theme_constant_override("line_separation", int(_meta.get("line_sep", -4)))
-	_lbl.add_theme_constant_override("outline_size", int(_meta.get("outline", 3)))
+	var font := MonoFont.get_font()
+	_lbl.add_theme_font_override("font", font)
+	# Auto-fit the 2D font: rendered at its declared font_size, a 25-row sprite
+	# spans ~8 tiles in top-down. Shrink the font so the whole sprite stands
+	# roughly its tier height (≈1–2 tiles); never grow past the declared size.
+	var first := first_frame_text()
+	var lines := first.split("\n")
+	var rows := maxi(1, lines.size())
+	var max_cols := 1
+	for ln in lines:
+		max_cols = maxi(max_cols, String(ln).length())
+	var declared_fs := int(_meta.get("font_size", 14))
+	var tier := clampi(int(_meta.get("size", 3)), 1, 5)
+	var target_h: float = float(TD_HEIGHTS.get(tier, 42.0))
+	var hr: float = maxf(font.get_height(32) / 32.0, 0.5)   # px per font-size unit
+	var fs := clampi(int(round(target_h / (float(rows) * hr))), 3, declared_fs)
+	_lbl.add_theme_font_size_override("font_size", fs)
+	# Scale spacing + outline so they stay proportional at the smaller size.
+	var ls := int(round(float(int(_meta.get("line_sep", -4))) * float(fs) / float(maxi(1, declared_fs))))
+	_lbl.add_theme_constant_override("line_separation", ls)
+	var ol := maxi(1, int(round(float(int(_meta.get("outline", 3))) * float(fs) / float(maxi(1, declared_fs)))))
+	_lbl.add_theme_constant_override("outline_size", ol)
 	_lbl.add_theme_color_override("font_color", _base_color)
 	_lbl.add_theme_color_override("font_outline_color", _meta.get("outline_color", Color(0, 0, 0, 1)))
 	# Large hand-curated art relies on per-row leading whitespace (left-aligned
@@ -64,11 +87,16 @@ func _apply_label_style() -> void:
 	else:
 		_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	var box: Rect2 = _meta.get("box", Rect2(-24.0, -24.0, 48.0, 48.0))
-	_lbl.offset_left = box.position.x
-	_lbl.offset_top = box.position.y
-	_lbl.offset_right = box.position.x + box.size.x
-	_lbl.offset_bottom = box.position.y + box.size.y
+	# Centre the art on the hitbox origin: a symmetric box sized to the fitted
+	# text keeps CENTER alignment locked to (0,0) so the sprite sits on its
+	# collider instead of drifting off to one corner.
+	var char_w: float = font.get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+	var w: float = maxf(float(max_cols) * char_w + 6.0, 16.0)
+	var h: float = maxf(float(rows) * (font.get_height(fs) + float(ls)) + 6.0, 16.0)
+	_lbl.offset_left = -w * 0.5
+	_lbl.offset_right = w * 0.5
+	_lbl.offset_top = -h * 0.5
+	_lbl.offset_bottom = h * 0.5
 
 func _frames_for(state: String) -> Array:
 	# Go through AsciiSprites.frames() so file-backed frames resolve to text.

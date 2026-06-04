@@ -1,4 +1,19 @@
 {
+	"archer": {
+		"color": "99c78c",
+		"height_offset": 0.0,
+		"size": 2
+	},
+	"bat": {
+		"color": "b3b8cc",
+		"height_offset": 0.0,
+		"size": 1.0
+	},
+	"bomber": {
+		"color": "eb8ccc",
+		"height_offset": 0.0,
+		"size": 2.0
+	},
 	"bone_drake": {
 		"color": "e0dbc7",
 		"height_offset": -0.1,
@@ -12,7 +27,7 @@
 	"brute": {
 		"color": "db755c",
 		"height_offset": -0.1,
-		"size": 1.0
+		"size": 2
 	},
 	"centaur": {
 		"color": "cca880",
@@ -32,27 +47,37 @@
 	"ghost": {
 		"color": "d1e6ff",
 		"height_offset": -0.1,
-		"size": 1.0
+		"size": 2
 	},
 	"ghost_big": {
 		"color": "cce6ff",
 		"height_offset": 0.1,
-		"size": 2
+		"size": 3
 	},
 	"gnome": {
-		"color": "bd9e6b",
+		"color": "ebd966",
 		"height_offset": 0.0,
-		"size": 1.0
+		"size": 2
 	},
 	"goblin": {
 		"color": "8cd973",
 		"height_offset": -0.1,
-		"size": 1.0
+		"size": 2
 	},
 	"gollum": {
 		"color": "9eb885",
 		"height_offset": -0.4,
 		"size": 3.0
+	},
+	"grenadier": {
+		"color": "b3c780",
+		"height_offset": 0.0,
+		"size": 3.0
+	},
+	"ice_sentinel": {
+		"color": "b3ebff",
+		"height_offset": -0.3,
+		"size": 4.0
 	},
 	"jester": {
 		"color": "d973b3",
@@ -65,9 +90,14 @@
 		"size": 2.0
 	},
 	"knight": {
-		"color": "b8c2db",
+		"color": "b3b8cc",
 		"height_offset": -0.1,
-		"size": 3.0
+		"size": 4
+	},
+	"minotaur": {
+		"color": "c77359",
+		"height_offset": -0.1,
+		"size": 4.0
 	},
 	"reflector": {
 		"color": "b3d9f2",
@@ -77,6 +107,11 @@
 	"shooter": {
 		"color": "b3d199",
 		"height_offset": -0.1,
+		"size": 2
+	},
+	"spider": {
+		"color": "b3b8cc",
+		"height_offset": 0.0,
 		"size": 1.0
 	},
 	"spider2": {
@@ -91,7 +126,7 @@
 	},
 	"tank_man": {
 		"color": "bfc7d9",
-		"height_offset": 0.0,
+		"height_offset": -0.1,
 		"size": 4.0
 	}
 }

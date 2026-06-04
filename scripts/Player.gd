@@ -5926,6 +5926,21 @@ func take_damage(amount: int, source: Node = null) -> void:
 		return
 	if GameState.infinite_health:
 		return
+	# FP feedback: melee / contact enemies (Tank, Berserker, Charger, Spider,
+	# Chaser…) have no projectile to telegraph their hit, so in first-person
+	# the attack was invisible. Whenever an enemy *body* (not a projectile —
+	# those self-visualise) lands a hit, flash a "><" impact just in front of
+	# the player toward the attacker so the swing reads.
+	if source != null and is_instance_valid(source) and source.is_in_group("enemy") \
+			and GameState.render_mode != GameState.RenderMode.TOPDOWN \
+			and GameState.active_rig != null and is_instance_valid(GameState.active_rig) \
+			and GameState.active_rig.has_method("flash_melee"):
+		var imp: Vector2 = global_position
+		if source is Node2D:
+			var d: Vector2 = (source as Node2D).global_position - global_position
+			if d.length() > 0.0:
+				imp = global_position + d.normalized() * 26.0
+		GameState.active_rig.flash_melee(imp, Color(1.0, 0.35, 0.2))
 	# Higher difficulties make enemies more deadly — scale incoming damage
 	# before shield/DEF so both sources of mitigation apply consistently.
 	# Slope was 0.40 (deep floors one-shot); 0.30 keeps enemies dangerous

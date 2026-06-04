@@ -646,7 +646,7 @@ func _register_all_entities_with(rig: Node) -> void:
 				var ascii := child.get_node_or_null("AsciiChar")
 				if ascii is Label and (ascii as Label).text != "":
 					glyph = (ascii as Label).text
-				rig.register_entity(child, glyph, GameState.enemy_fp_color(tier))
+				rig.register_entity(child, glyph, GameState.enemy_fp_color_for(child, tier))
 	# Everything else (shrines / traps / loot / portals / village shops /
 	# floor hazards) self-tags into "fp_visible" via GameState.attach_fp_visual,
 	# storing its preferred glyph + color as metadata. One loop handles them all.

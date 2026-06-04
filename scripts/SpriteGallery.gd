@@ -32,6 +32,18 @@ const SPRITE_TO_ENEMY := {
 	"reflector": "Reflector", "bone_drake": "Bone Drake", "shooter": "Shooter",
 	"eye2": "Missile Turret", "ice_sentinel": "Frost Sentinel",
 	"grenadier": "Grenadier", "bomber": "Bomber",
+	"archer": "Archer", "spawner": "Spawner",
+	"wizard": "Enemy Wizard", "magma_slug": "Magma Slug",
+	"boss_architect": "The Architect", "boss_devourer": "The Devourer",
+	"boss_lich": "The Lich", "boss_magma": "Magma Tyrant", "boss_wraith": "The Wraith",
+}
+# Object / interactable sprites — labelled + grouped after the enemies.
+const SPRITE_TO_OBJECT := {
+	"shrine": "Shrine", "loot_bag": "Loot Bag", "enchant_table": "Enchant Table",
+	"mine": "Mine", "training_dummy": "Training Dummy", "exit_portal": "Exit Portal",
+	"portal": "Portal", "teleporter": "Teleporter", "descend_portal": "Descend Portal",
+	"gold_pickup": "Gold", "bank": "Bank", "shop": "Shop", "quest_board": "Quest Board",
+	"reroller": "Reroller", "sell_chest": "Sell Chest", "spike_trap": "Spike Trap",
 }
 const STATES := ["idle", "walk", "hurt", "death"]
 
@@ -157,8 +169,22 @@ func _update_help() -> void:
 
 func _build_entries() -> void:
 	_entries.clear()
+	# Order: enemy-wired sprites first, then objects/interactables, then
+	# unassigned sprite drafts, then raw set-piece .txt last.
+	var enemies: Array = []
+	var objects: Array = []
+	var unassigned: Array = []
 	for key in AsciiSprites.SPRITES.keys():
-		_entries.append({"kind": "sprite", "key": String(key), "name": String(key)})
+		var entry := {"kind": "sprite", "key": String(key), "name": String(key)}
+		if SPRITE_TO_ENEMY.has(String(key)):
+			enemies.append(entry)
+		elif SPRITE_TO_OBJECT.has(String(key)):
+			objects.append(entry)
+		else:
+			unassigned.append(entry)
+	_entries.append_array(enemies)
+	_entries.append_array(objects)
+	_entries.append_array(unassigned)
 	var dir := DirAccess.open("res://assets/ascii")
 	if dir != null:
 		for f in dir.get_files():
@@ -266,8 +292,10 @@ func _apply_frame() -> void:
 		else:
 			var e: Dictionary = _entries[_idx]
 			if e["kind"] == "sprite":
-				_stage.add_theme_color_override("font_color",
-					AsciiSprites.meta(e["key"]).get("color", Color.WHITE))
+				# Use the live tuning colour (seeded from meta, updated by C) so a
+				# colour pick survives frame animation instead of snapping back to
+				# the preset a tick later.
+				_stage.add_theme_color_override("font_color", _base_color)
 	else:
 		_stage.text = str(fr)
 	# Mirror text + colour onto the 3D billboard rows.
@@ -327,7 +355,8 @@ func _update_info() -> void:
 		cols = maxi(cols, (ln as String).length())
 	var head := "%d/%d  %s  [%s]" % [_idx + 1, _entries.size(), e["name"], e["kind"]]
 	if e["kind"] == "sprite":
-		var en: String = SPRITE_TO_ENEMY.get(String(e.get("key", "")), "")
+		var k := String(e.get("key", ""))
+		var en: String = SPRITE_TO_ENEMY.get(k, SPRITE_TO_OBJECT.get(k, ""))
 		head += "   → %s" % (en if en != "" else "(unassigned)")
 	var line2 := "font: %s   size: %d   zoom: %.1fx   %dx%d chars" % [
 		MonoFont.current_name(), _stage.get_theme_font_size("font_size"), _zoom, cols, rows]

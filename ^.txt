@@ -34,6 +34,18 @@ we can modify the difficulty of enemies as the difficulty goes up, ie: sniper tr
 bosses from early levels can become regular enemies later on. centaur, brute, 
 
 
+concentrating spells can increase consumption by x?
+first person 50% slowdown with a mana cost attached?
+
+range of shot can be determined bby int or wis
+
+i want the enemy wizard added to the gallery, as well as any other monsters (bosses included) which have not been thrown in there yet.
+
+and along with the gallery, i would like you to make a document for all of the ascii art in the game. 
+
+please additionally add all of the ascii art for objects like teleporters and shrines to the gallery.
+
+
 =================  VISUALS  ==================
 spider, ghost, slime, eye, brute, bat need help
 gryphon and lion are too sideways to make sense visually?

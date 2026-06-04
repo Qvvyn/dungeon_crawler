@@ -36,6 +36,13 @@ var _col_shape: CollisionShape2D = null
 var _trigger: Area2D = null
 var _glyphs: Array[Label] = []   # top-down 2D visual (one "+" per covered tile)
 
+# Autoplay pre-open: the bot path-walks straight into the wall and snags on the
+# narrow proximity trigger. Opening the moment it has line-of-sight (from across
+# the room) gives the wall time to sink before the bot arrives.
+const AUTOPLAY_LOS_RANGE: float = 640.0   # ~20 tiles
+var _player: Node2D = null
+var _los_check_t: float = 0.0
+
 static var _shared_font: Font = null
 
 func _ready() -> void:
@@ -168,6 +175,13 @@ func _process(delta: float) -> void:
 		and GameState.render_mode != GameState.RenderMode.TOPDOWN
 	if fp_active != _segments_built:
 		_sync_fp_segments()
+	# Autoplay: open early whenever the bot can see this wall, so it never
+	# stalls against a still-rising segment. Throttled (~5×/sec) — a raycast
+	# per door every frame would add up with many doors.
+	_los_check_t -= delta
+	if _los_check_t <= 0.0:
+		_los_check_t = 0.2
+		_autoplay_los_open()
 	# Top-down glyphs: hidden in FP (rig draws the 3D segments instead), and
 	# fade out / swap "+"→"/" as the door opens.
 	var topdown: bool = GameState.render_mode == GameState.RenderMode.TOPDOWN
@@ -195,6 +209,36 @@ func _push_open_amount() -> void:
 		return
 	for id in _seg_ids:
 		rig.set_wall_segment_open(id, _open_amount)
+
+# Opens the door for the autoplay bot the instant it has a clear line-of-sight
+# to the wall (no other wall between). Manual players keep the proximity feel;
+# this only fires for the bot so it stops snagging on closed segments.
+func _autoplay_los_open() -> void:
+	if remote_only or _open_target == 1.0:
+		return
+	if not is_instance_valid(_player):
+		_player = get_tree().get_first_node_in_group("player")
+	if not is_instance_valid(_player) or _player.get("_autoplay") != true:
+		return
+	var ppos: Vector2 = _player.global_position
+	if global_position.distance_squared_to(ppos) > AUTOPLAY_LOS_RANGE * AUTOPLAY_LOS_RANGE:
+		return
+	# Raycast door → bot against walls only (excluding this door + the bot). An
+	# empty result means nothing blocks the sightline, so the bot can see us.
+	var space := get_world_2d().direct_space_state
+	var params := PhysicsRayQueryParameters2D.create(global_position, ppos)
+	params.collision_mask = 1   # walls
+	var ex: Array[RID] = []
+	if _body != null:
+		ex.append(_body.get_rid())
+	if _player is CollisionObject2D:
+		ex.append((_player as CollisionObject2D).get_rid())
+	params.exclude = ex
+	if space.intersect_ray(params).is_empty():
+		_open_target = 1.0
+		_has_opened = true
+		if SoundManager:
+			SoundManager.play("whoosh", randf_range(0.85, 0.95))
 
 func _on_trigger_entered(body: Node2D) -> void:
 	if remote_only:

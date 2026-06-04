@@ -68,6 +68,7 @@ var _telegraphing: bool     = false
 var _dmg_text_cd: float     = 0.0
 var _lbl: Label              = null
 var _health_bar_fg: Control  = null
+var _sprite: AsciiSpriteDriver = null   # archer sprite (standalone enemy, manual driver)
 
 # Arc-shot specific
 var _predicted_target: Vector2  = Vector2.ZERO
@@ -90,18 +91,27 @@ func _ready() -> void:
 	_health_bar_fg = get_node_or_null("HealthBar/Foreground")
 	_lbl = get_node_or_null("AsciiChar")
 	if _lbl:
-		if _shared_font == null:
-			_shared_font = MonoFont.get_font()
-		_lbl.add_theme_font_override("font", _shared_font)
-		_lbl.add_theme_font_size_override("font_size", 13)
-		_lbl.add_theme_constant_override("line_separation", -4)
-		_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_TOP
-		_lbl.offset_left   = -34
-		_lbl.offset_top    = -44
-		_lbl.offset_right  =  38
-		_lbl.offset_bottom =  14
-		_lbl.text = ARCHER_F0
+		# Archers use the bow-draw sprite. Drive the label and publish FP metas
+		# before the rig registers us.
+		_sprite = AsciiSpriteDriver.new()
+		if _sprite.setup(_lbl, "archer"):
+			var fm := _sprite.fp_metas()
+			for mk in fm:
+				set_meta(mk, fm[mk])
+		else:
+			_sprite = null
+			if _shared_font == null:
+				_shared_font = MonoFont.get_font()
+			_lbl.add_theme_font_override("font", _shared_font)
+			_lbl.add_theme_font_size_override("font_size", 13)
+			_lbl.add_theme_constant_override("line_separation", -4)
+			_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+			_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_TOP
+			_lbl.offset_left   = -34
+			_lbl.offset_top    = -44
+			_lbl.offset_right  =  38
+			_lbl.offset_bottom =  14
+			_lbl.text = ARCHER_F0
 	_update_health_bar()
 	_pick_wander_dir()
 
@@ -295,13 +305,16 @@ func _pick_wander_dir() -> void:
 func _tick_anim(delta: float) -> void:
 	if _lbl == null:
 		return
-	_anim_timer += delta
-	if _anim_timer >= 0.4:
-		_anim_timer = 0.0
-		_anim_frame = 1 - _anim_frame
-	var new_text := ARCHER_F0 if _anim_frame == 0 else ARCHER_F1
-	if _lbl.text != new_text:
-		_lbl.text = new_text
+	if _sprite != null:
+		_sprite.tick(delta, velocity.length_squared() > 100.0)
+	else:
+		_anim_timer += delta
+		if _anim_timer >= 0.4:
+			_anim_timer = 0.0
+			_anim_frame = 1 - _anim_frame
+		var new_text := ARCHER_F0 if _anim_frame == 0 else ARCHER_F1
+		if _lbl.text != new_text:
+			_lbl.text = new_text
 
 	FrozenBlock.sync_to(self, _frozen)
 	EnflameOverlay.sync_to(self, _enflamed)
@@ -453,6 +466,8 @@ func take_damage(amount: int, _source: Node = null) -> void:
 	var actual := int(float(amount) * 1.25) if (_frozen or _chill_stacks > 0) else amount
 	health -= actual
 	_hit_flash_t = 0.14
+	if _sprite != null and health > 0:
+		_sprite.set_state("hurt")
 	if _dmg_text_cd <= 0.0:
 		FloatingText.spawn(global_position, actual, false, get_tree().current_scene)
 		_dmg_text_cd = 0.22

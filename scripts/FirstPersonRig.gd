@@ -891,6 +891,10 @@ func register_entity(body: Node2D, glyph: String = "X", color: Color = Color(0.9
 			row_lbl.outline_modulate = Color(0, 0, 0, 1)
 			row_lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
 			row_lbl.layers = LAYER_ENT
+			# Nearest filtering keeps the glyph strokes crisp when the billboard
+			# is minified at distance; linear+mipmap (the default) blurs dense
+			# ASCII art into mush a few tiles out.
+			row_lbl.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST_WITH_MIPMAPS
 			row_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 			row_lbl.position = Vector3(-half_w, (mid_row - float(i)) * line_h, 0.0)
 			lbl.add_child(row_lbl)
@@ -915,6 +919,7 @@ func register_entity(body: Node2D, glyph: String = "X", color: Color = Color(0.9
 		sl_c.outline_modulate = Color(0, 0, 0, 1)
 		sl_c.alpha_cut = Label3D.ALPHA_CUT_DISCARD
 		sl_c.layers = LAYER_ENT
+		sl_c.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST_WITH_MIPMAPS
 		sl_c.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		lbl = sl_c
 	else:
@@ -932,6 +937,7 @@ func register_entity(body: Node2D, glyph: String = "X", color: Color = Color(0.9
 		sl.outline_modulate = Color(0, 0, 0, 1)
 		sl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
 		sl.layers = LAYER_ENT
+		sl.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST_WITH_MIPMAPS
 		if body.has_meta("fp_rotation_z") or body.has_meta("fp_spin_rate") or is_floor_decal:
 			sl.billboard = BaseMaterial3D.BILLBOARD_DISABLED
 		lbl = sl
@@ -1086,7 +1092,18 @@ func _process(delta: float) -> void:
 				continue
 			if _entities.has(e.get_instance_id()):
 				continue
-			register_entity(e as Node2D, "D", Color(0.95, 0.28, 0.22))
+			# Register stragglers with their real art + tuned colour (not a red
+			# placeholder) so a sprite enemy spawned mid-FP reads correctly.
+			var s_glyph: String = "D"
+			var s_col: Color = Color(0.95, 0.28, 0.22)
+			var s_ac: Node = e.get_node_or_null("AsciiChar")
+			if s_ac is Label:
+				var s_lbl: Label = s_ac as Label
+				if s_lbl.text != "":
+					s_glyph = s_lbl.text
+				if s_lbl.has_theme_color_override("font_color"):
+					s_col = s_lbl.get_theme_color("font_color")
+			register_entity(e as Node2D, s_glyph, s_col)
 
 	# Camera-forward, hoisted out of the entity loop — used by the frustum
 	# early-out below. Computed once per frame since the camera transform is
@@ -1367,6 +1384,7 @@ func _process(delta: float) -> void:
 				new_row.outline_modulate = Color(0, 0, 0, 1)
 				new_row.alpha_cut = Label3D.ALPHA_CUT_DISCARD
 				new_row.layers = LAYER_ENT
+				new_row.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST_WITH_MIPMAPS
 				new_row.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 				lbl.add_child(new_row)
 				row_labels.append(new_row)

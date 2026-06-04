@@ -440,6 +440,190 @@ const SPRITES := {
 			"death": [{"file": "res://assets/ascii/sprites/bomber.txt", "d": 0.5, "mod": Color(0.3, 0.2, 0.16)}],
 		},
 	},
+	"archer": {   # → Archer. 2-frame bow-draw idle.
+		"font_size": 13, "line_sep": -2, "color": Color(0.6, 0.78, 0.55), "size": 2,
+		"outline": 3, "crop": true, "box": Rect2(-90.0, -110.0, 190.0, 220.0), "fp_outline_size": 8,
+		"anims": {
+			"idle": [{"file": "res://assets/ascii/sprites/archer1.txt", "d": 0.55},
+					 {"file": "res://assets/ascii/sprites/archer2.txt", "d": 0.55}],
+			"walk": [{"file": "res://assets/ascii/sprites/archer1.txt", "d": 0.25},
+					 {"file": "res://assets/ascii/sprites/archer2.txt", "d": 0.25}],
+			"death": [{"file": "res://assets/ascii/sprites/archer1.txt", "d": 0.5, "mod": Color(0.24, 0.3, 0.22)}],
+		},
+	},
+	"spawner": {   # → Spawner. 2-frame portal with a flickering eye.
+		"font_size": 9, "line_sep": -2, "color": Color(0.7, 0.6, 0.92), "size": 4, "flying": true,
+		"outline": 3, "crop": true, "box": Rect2(-150.0, -160.0, 310.0, 320.0), "fp_outline_size": 8,
+		"anims": {
+			"idle": [{"file": "res://assets/ascii/sprites/spawner1.txt", "d": 0.7},
+					 {"file": "res://assets/ascii/sprites/spawner2.txt", "d": 0.7}],
+			"death": [{"file": "res://assets/ascii/sprites/spawner1.txt", "d": 0.5, "mod": Color(0.26, 0.22, 0.34)}],
+		},
+	},
+	# ── Remaining enemies (current in-game art, in the gallery for review) ────
+	"wizard": {   # → Enemy Wizard
+		"font_size": 15, "line_sep": -4, "color": Color(0.70, 0.50, 0.95), "size": 3,
+		"outline": 3, "box": Rect2(-44.0, -48.0, 90.0, 96.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+		"anims": {
+			"idle": [{"t": "   >\n__/_\\__\n (*-*)\n /)V(\\|\n /___\\|", "d": 0.6},
+					 {"t": "   >\n__/_\\__\n (*3*)\n /)V(\\|\n /___\\|", "d": 0.6}],
+			"death": [{"t": "   >\n__/_\\__\n (x_x)\n /)V(\\|\n /___\\|", "d": 0.5, "mod": Color(0.32, 0.22, 0.4)}],
+		},
+	},
+	"magma_slug": {   # → Magma Slug
+		"font_size": 16, "line_sep": -4, "color": Color(1.0, 0.5, 0.2), "size": 2,
+		"outline": 3, "box": Rect2(-30.0, -28.0, 60.0, 56.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+		"anims": {
+			"idle": [{"t": " ()(\n((O))\n ))( ", "d": 0.55}, {"t": " )()\n((o))\n )(( ", "d": 0.55}],
+			"death": [{"t": " )()\n((o))\n )(( ", "d": 0.5, "mod": Color(0.35, 0.18, 0.08)}],
+		},
+	},
+	"boss_architect": {   # → The Architect (boss)
+		"font_size": 18, "line_sep": -4, "color": Color(0.5, 0.8, 0.9), "size": 4,
+		"outline": 3, "box": Rect2(-30.0, -30.0, 60.0, 60.0), "fp_pixel_size": 0.02, "fp_outline_size": 10,
+		"anims": {
+			"idle": [{"t": ".+.\n>*<\n.+.", "d": 0.5}, {"t": "-+-\n>X<\n-+-", "d": 0.5}],
+			"death": [{"t": "-+-\n>X<\n-+-", "d": 0.5, "mod": Color(0.2, 0.3, 0.34)}],
+		},
+	},
+	"boss_devourer": {   # → The Devourer (boss)
+		"font_size": 18, "line_sep": -4, "color": Color(1.0, 0.45, 0.10), "size": 4,
+		"outline": 3, "box": Rect2(-34.0, -26.0, 70.0, 56.0), "fp_pixel_size": 0.02, "fp_outline_size": 10,
+		"anims": {
+			"idle": [{"t": "/(O)\\\n \\m/ ", "d": 0.5}, {"t": "/(o)\\\n /M\\ ", "d": 0.5}],
+			"death": [{"t": "/(o)\\\n /M\\ ", "d": 0.5, "mod": Color(0.35, 0.16, 0.05)}],
+		},
+	},
+	"boss_lich": {   # → The Lich (boss)
+		"font_size": 18, "line_sep": -4, "color": Color(0.55, 1.0, 0.55), "size": 4,
+		"outline": 3, "box": Rect2(-30.0, -30.0, 60.0, 60.0), "fp_pixel_size": 0.02, "fp_outline_size": 10,
+		"anims": {
+			"idle": [{"t": " /=\\ \n |O| \n /^\\ ", "d": 0.5}, {"t": " /=\\ \n |o| \n /v\\ ", "d": 0.5}],
+			"death": [{"t": " /=\\ \n |o| \n /v\\ ", "d": 0.5, "mod": Color(0.22, 0.4, 0.22)}],
+		},
+	},
+	"boss_magma": {   # → Magma Tyrant (boss)
+		"font_size": 18, "line_sep": -4, "color": Color(1.0, 0.45, 0.10), "size": 4,
+		"outline": 3, "box": Rect2(-32.0, -30.0, 66.0, 60.0), "fp_pixel_size": 0.02, "fp_outline_size": 10,
+		"anims": {
+			"idle": [{"t": " /^\\\n[#X#]\n /|\\", "d": 0.5}, {"t": " \\^/\n(#X#)\n /|\\", "d": 0.5}],
+			"death": [{"t": " \\^/\n(#X#)\n /|\\", "d": 0.5, "mod": Color(0.35, 0.16, 0.05)}],
+		},
+	},
+	"boss_wraith": {   # → The Wraith (boss)
+		"font_size": 18, "line_sep": -4, "color": Color(0.7, 0.1, 1.0), "size": 3,
+		"outline": 3, "box": Rect2(-26.0, -24.0, 52.0, 48.0), "fp_pixel_size": 0.018, "fp_outline_size": 10,
+		"anims": {
+			"idle": [{"t": "/W\\\n ~~", "d": 0.4}, {"t": "\\W/\n~~~", "d": 0.4}],
+			"death": [{"t": "\\W/\n~~~", "d": 0.5, "mod": Color(0.28, 0.06, 0.4)}],
+		},
+	},
+	# ── Objects / interactables (current in-game art, for gallery reference) ──
+	"shrine": {   # → Shrine
+		"font_size": 16, "line_sep": -4, "color": Color(0.75, 0.95, 1.0), "size": 2,
+		"outline": 3, "box": Rect2(-26.0, -26.0, 52.0, 52.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+		"anims": {
+			"idle":  [{"t": " /^\\ \n[ + ]\n \\v/ ", "d": 1.0}],
+			"death": [{"t": " ,_, \n[ . ]\n '_' ", "d": 0.5, "mod": Color(0.4, 0.4, 0.5)}],
+		},
+	},
+	"loot_bag": {   # → Loot Bag
+		"font_size": 18, "line_sep": -4, "color": Color(0.85, 0.55, 0.15), "size": 1,
+		"outline": 3, "box": Rect2(-24.0, -20.0, 48.0, 40.0), "fp_pixel_size": 0.011, "fp_outline_size": 10,
+		"anims": {
+			"idle":  [{"t": ",---,\n)___(", "d": 1.0}],
+			"death": [{"t": ",---,\n)___(", "d": 0.5, "mod": Color(0.3, 0.2, 0.08)}],
+		},
+	},
+	"enchant_table": {   # → Enchant Table
+		"font_size": 16, "line_sep": -4, "color": Color(0.85, 0.45, 1.0), "size": 2,
+		"outline": 3, "box": Rect2(-26.0, -26.0, 52.0, 52.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+		"anims": {
+			"idle":  [{"t": " ___ \n[✦✦✦]\n |_| ", "d": 1.0}],
+			"death": [{"t": " ___ \n[✦✦✦]\n |_| ", "d": 0.5, "mod": Color(0.3, 0.16, 0.36)}],
+		},
+	},
+	"mine": {   # → Mine (idle unarmed, walk = arming pulse)
+		"font_size": 16, "line_sep": -4, "color": Color(0.9, 0.9, 0.9), "size": 1,
+		"outline": 3, "box": Rect2(-26.0, -26.0, 52.0, 52.0), "fp_pixel_size": 0.011, "fp_outline_size": 10,
+		"anims": {
+			"idle":  [{"t": " ,_, \n( . )\n '_' ", "d": 1.0}],
+			"walk":  [{"t": " \\!/ \n(>X<)\n /_\\ ", "d": 0.18}, {"t": " -!- \n[#X#]\n /_\\ ", "d": 0.18}],
+			"death": [{"t": " -!- \n[#X#]\n /_\\ ", "d": 0.5, "mod": Color(0.45, 0.2, 0.1)}],
+		},
+	},
+	"training_dummy": {   # → Training Dummy
+		"font_size": 16, "line_sep": -4, "color": Color(0.95, 0.82, 0.55), "size": 2,
+		"outline": 3, "box": Rect2(-26.0, -26.0, 52.0, 52.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+		"anims": {
+			"idle":  [{"t": "[O_O]\n |Y| \n /_\\ ", "d": 1.0}],
+			"death": [{"t": "[x_x]\n |Y| \n /_\\ ", "d": 0.5, "mod": Color(0.4, 0.32, 0.2)}],
+		},
+	},
+	"exit_portal": {   # → Exit Portal
+		"font_size": 13, "line_sep": -3, "color": Color(0.4, 1.0, 0.7), "size": 3,
+		"outline": 3, "box": Rect2(-60.0, -44.0, 124.0, 90.0), "fp_pixel_size": 0.012, "fp_outline_size": 9,
+		"anims": {
+			"idle": [{"t": "  ,-^^^-.  \n /  ###  \\ \n|>> [EX] >>|\n \\  ###  / \n  `-vvv-'  ", "d": 0.4},
+					 {"t": "  ,-^^^-.  \n /  ###  \\ \n|>> [XE] >>|\n \\  ###  / \n  `-vvv-'  ", "d": 0.4}],
+			"death": [{"t": "  ,-^^^-.  \n /  ###  \\ \n|>> [==] >>|\n \\  ###  / \n  `-vvv-'  ", "d": 0.5, "mod": Color(0.18, 0.4, 0.3)}],
+		},
+	},
+	"portal": {   # → Portal
+		"font_size": 13, "line_sep": -3, "color": Color(0.6, 0.8, 1.0), "size": 3,
+		"outline": 3, "box": Rect2(-60.0, -44.0, 124.0, 90.0), "fp_pixel_size": 0.012, "fp_outline_size": 9,
+		"anims": {
+			"idle": [{"t": "  ,-===-.  \n /  >>>  \\ \n|>> [<>] >>|\n \\  >>>  / \n  `-===-'  ", "d": 0.4},
+					 {"t": "  ,-===-.  \n /  >>>  \\ \n|>> [><] >>|\n \\  >>>  / \n  `-===-'  ", "d": 0.4}],
+			"death": [{"t": "  ,-===-.  \n /  >>>  \\ \n|>> [==] >>|\n \\  >>>  / \n  `-===-'  ", "d": 0.5, "mod": Color(0.24, 0.32, 0.4)}],
+		},
+	},
+	# Single-glyph objects — minimal entries so they still show in the gallery.
+	"teleporter": {
+		"font_size": 22, "line_sep": -4, "color": Color(0.30, 0.65, 1.0), "size": 1,
+		"outline": 3, "box": Rect2(-18.0, -18.0, 36.0, 36.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+		"anims": {"idle": [{"t": "O", "d": 1.0}]},
+	},
+	"descend_portal": {
+		"font_size": 22, "line_sep": -4, "color": Color(0.65, 0.45, 1.0), "size": 1,
+		"outline": 3, "box": Rect2(-18.0, -18.0, 36.0, 36.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+		"anims": {"idle": [{"t": "v", "d": 1.0}]},
+	},
+	"gold_pickup": {
+		"font_size": 22, "line_sep": -4, "color": Color(1.0, 0.95, 0.30), "size": 1,
+		"outline": 3, "box": Rect2(-18.0, -18.0, 36.0, 36.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+		"anims": {"idle": [{"t": "$", "d": 1.0}]},
+	},
+	"bank": {
+		"font_size": 22, "line_sep": -4, "color": Color(0.55, 1.0, 0.55), "size": 1,
+		"outline": 3, "box": Rect2(-18.0, -18.0, 36.0, 36.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+		"anims": {"idle": [{"t": "B", "d": 1.0}]},
+	},
+	"shop": {
+		"font_size": 22, "line_sep": -4, "color": Color(0.55, 1.0, 0.55), "size": 1,
+		"outline": 3, "box": Rect2(-18.0, -18.0, 36.0, 36.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+		"anims": {"idle": [{"t": "S", "d": 1.0}]},
+	},
+	"quest_board": {
+		"font_size": 22, "line_sep": -4, "color": Color(1.0, 0.95, 0.45), "size": 1,
+		"outline": 3, "box": Rect2(-18.0, -18.0, 36.0, 36.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+		"anims": {"idle": [{"t": "!", "d": 1.0}]},
+	},
+	"reroller": {
+		"font_size": 22, "line_sep": -4, "color": Color(0.95, 0.65, 1.0), "size": 1,
+		"outline": 3, "box": Rect2(-18.0, -18.0, 36.0, 36.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+		"anims": {"idle": [{"t": "?", "d": 1.0}]},
+	},
+	"sell_chest": {
+		"font_size": 22, "line_sep": -4, "color": Color(0.95, 0.65, 0.30), "size": 1,
+		"outline": 3, "box": Rect2(-18.0, -18.0, 36.0, 36.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+		"anims": {"idle": [{"t": "[", "d": 1.0}]},
+	},
+	"spike_trap": {
+		"font_size": 22, "line_sep": -4, "color": Color(0.9, 0.5, 0.5), "size": 1,
+		"outline": 3, "box": Rect2(-18.0, -18.0, 36.0, 36.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+		"anims": {"idle": [{"t": "^", "d": 1.0}]},
+	},
 }
 
 static var _file_cache: Dictionary = {}
