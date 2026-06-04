@@ -20,6 +20,7 @@ var _gate: BossGate = BossGate.new()    # Theme C HP threshold gates — see Bos
 var health: int            = 600
 var _player: Node2D        = null
 var _lbl: Label            = null
+var _sprite: AsciiSpriteDriver = null   # boss_devourer sprite (standalone, manual driver)
 var _anim_t: float         = 0.0
 var _anim_f: int           = 0
 var _hit_flash_t: float    = 0.0
@@ -91,6 +92,14 @@ func _ready() -> void:
 	_lbl.size = Vector2(120, 90)
 	_lbl.position = Vector2(-50, -40)
 	add_child(_lbl)
+	_sprite = AsciiSpriteDriver.new()
+	if _sprite.setup(_lbl, "boss_devourer"):
+		var fm := _sprite.fp_metas()
+		for mk in fm:
+			set_meta(mk, fm[mk])
+		AsciiSprites.apply_hitbox(self, "boss_devourer")
+	else:
+		_sprite = null
 
 	_tether_line = Line2D.new()
 	_tether_line.width = 0.0   # invisible until telegraph fires
@@ -118,7 +127,8 @@ func _physics_process(delta: float) -> void:
 	if _anim_t >= 0.5:
 		_anim_t = 0.0
 		_anim_f = 1 - _anim_f
-		_lbl.text = BOSS_F0 if _anim_f == 0 else BOSS_F1
+		if _sprite == null:   # driver owns the label (its idle art) when wired
+			_lbl.text = BOSS_F0 if _anim_f == 0 else BOSS_F1
 
 	# Slow shamble toward the player. Tether handles the burst pressure.
 	if is_instance_valid(_player):

@@ -1,0 +1,78 @@
+  How enemies hurt/impede you (damage types)
+
+  - Contact (touch you): Spider, Charger, Bomber
+  - Melee hitbox swing (telegraphed reach): Chaser, Tank, Berserker, Stalker, BoneDrake
+  - Projectiles: Shooter, Archer, Sniper, Wizard, Phantom, Spiral Mage, Missile Turret, Grenadier
+  - Zone/AoE hazards: Banshee (pulse), Magma Slug (lava trail), Frost Sentinel (ice patches), Beam Sweep (sweeping
+  beam), Mine Layer (mines)
+  - Impede, not damage: Tank knockback, Devourer tether-pull, Spider web-slow, Frost Sentinel/Ice biome freeze,
+  Enchanter (buffs other enemies)
+
+  All HP scales ~+50% per +1.0 difficulty; numbers below are the floor-1 base.
+
+  Regular enemies
+
+  Melee / rushers
+  - Chaser — HP 10, spd 150. Flanks in, telegraphed melee (1 dmg). Patrols until it spots you. In Catacombs, 10% of
+  corpses reanimate into a Chaser 5s later.
+  - Spider — HP 2, spd 310 (fast swarm). Phases through other enemies; contact = 1 dmg + a web slow (0.55s cd).
+  - Tank — HP 100, spd 52 (a wall). Melee 2 dmg + heavy knockback; periodically charges (560 spd, 0.45s telegraph).
+  - Berserker — spd 95, melee 2 dmg; attacks and moves faster as its HP drops (rage).
+  - Charger — spd 95; closes, then dashes in a straight line (720 spd, 0.7s telegraph) for 4 contact dmg.
+  - Stalker — HP 14. Near-invisible until it has line-of-sight; then spots (0.4s), rushes (220 spd) and bites (4 dmg),
+  retreats, re-hides. SCP-173-ish.
+  - Bomber — spd 145. Rushes and self-detonates on contact or after an 8s fuse (8 dmg, 70px radius).
+  - BoneDrake (Catacombs) — approaches (130) and does a 2-hit melee combo (3 dmg each, every 2.5s).
+
+  Ranged / kiters (kite at a preferred distance, telegraph before firing, won't fire through walls)
+  - Shooter — HP 10, kites ~350px, straight bolt (320 spd) every 2s.
+  - Archer — HP 14, kites ~280px, arcing lobbed shot at your predicted position (2 dmg, 3.5s).
+  - Sniper — HP 12, kites far (~480px, sees 900px), 1.5s wind-up then a long-range shot (5s cycle); retreats fast if
+  rushed.
+  - Wizard — HP 55, kites ~300px, fires a real lootable wand (random school) — drops that wand when killed. One guards
+  the exit portal each floor.
+  - Phantom — kites; fades to near-invisible between shots, flickering visible only as it fires (380-spd bolt, 2 dmg,
+  1.6s).
+  - Spiral Mage — fires a continuous rotating spiral barrage (4 shots/0.28s, slow bullets) — bullet-hell zoning.
+  - Missile Turret — stationary, locks on, fires a slow homing-ish missile (4 dmg, 4s).
+  - Grenadier — kites ~280px, lobs grenades with a ground warning circle (5 dmg, 3.6s).
+
+  Hazard / zone
+  - Magma Slug (Lava Rift) — very slow (30); leaves a trail of damaging lava tiles behind it.
+  - Frost Sentinel (Ice Cavern) — slow (50); periodically spawns ice patches around itself (4s) that chill/freeze you.
+  - Beam Sweep — telegraphs (0.85s) then sweeps a ~99° beam (range 380, ticks 1 dmg/0.25s).
+  - Mine Layer — kites ~380px, drops proximity mines (max 4 active, every 2.5s).
+  - Banshee — floats; telegraphed (1.4s) AoE scream pulse around itself (6 dmg, 130px radius, every 4s).
+
+  Support / special
+  - Enchanter (gnome) — HP 10; ignores you, chases the nearest ally and buffs it (2× speed/attack) via a tethered cast.
+  Kill it first.
+  - Summoner — HP 8; keeps distance and summons minions (up to 3 alive).
+  - Reflector — very slow (35); reflects your projectiles back in a 110° frontal arc — flank it.
+  - Splitter — a Chaser that bursts into two half-HP Chasers on death.
+  - Spawner / Nest — static, hidden until you see it; HP 90+ (soaks); continuously pumps out minions (one fixed species,
+  3–7 cap) until destroyed. Diff ≥ 4 only, parked in the farthest room.
+
+  Bosses (every 5th floor; floor 50 =  3-boss gauntlet)
+
+  - Brute (Boss) — HP 200. 3 phases; radial bullet-hell bursts (4 → 8 → 16 shots) + melee.
+  - Lich — HP 280. Summons 3 minions every 5s and self-heals 12% when below half HP — a war of attrition.
+  - Wraith — HP 220. Mobile, fires fast aimed shots.
+  - Magma Boss — HP 280. 5-shot fan (70° arc, 4.5s) + a close-range melt AoE (90px).
+  - Architect — HP 260. The kit boss: aimed spread, 12-shot nova, lays mines, and deploys turrets.
+  - Devourer — HP 600 (tankiest). Heavy bite (12 dmg, 90px) + a tether that yanks you toward it from up to 280px.
+
+  Spawn conditions
+
+  - Floors: boss arena every 5th floor (4, 9, 14…); floor 50 is a 3-boss gauntlet. A portal Wizard guards the exit on
+  every non-boss floor (floor ≥1). Mini-boss (reduced-HP boss in a far room) on non-boss floors at diff ≥ 4 (chance up
+  to 40%). Nests at diff ≥ 4 (1 nest, 2 at diff ≥15, 3 at diff ≥30).
+  - Difficulty gates for the "surprise" enemies: Bomber ≥1.5, Berserker ≥2.0, Phantom/Stalker ≥2.5, Banshee ≥3.0 (30%),
+  Reflector ≥3.5 (25%); Splitter any floor (35%). The base pool (Chaser, Shooter, Tank, Sniper, Archer, Spider,
+  Enchanter, Summoner, Spiral, Grenadier, Charger, Mine Layer, Beam Sweep, Missile Turret) is always eligible, with
+  counts/HP scaling by difficulty (higher diff = fewer but bulkier).
+  - Biomes: 0 Dungeon · 1 Catacombs (+BoneDrake, corpse revives) · 2 Ice Cavern (+Frost Sentinel, enemies spawn
+  pre-frozen) · 3 Lava Rift (+Magma Slug, periodic eruptions).
+  - Elite/Champion modifiers (any enemy): Shielded (blocks 1 hit), Splitting, Enraged (speeds up at low HP), Volatile
+  (explodes on death). Champions appear at diff ≥4 (2 per floor); the HAUNTED floor modifier makes every enemy elite.
+  - Cap: 45 live enemies at once.

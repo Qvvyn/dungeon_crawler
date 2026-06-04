@@ -14,6 +14,7 @@ const BOSS_COLOR := Color(0.7, 0.1, 1.0)
 var health: int             = 45
 var _player: Node2D         = null
 var _lbl: Label             = null
+var _sprite: AsciiSpriteDriver = null   # boss_wraith sprite (standalone, manual driver)
 var _anim_timer: float      = 0.0
 var _anim_frame: int        = 0
 var _blink_timer: float     = 2.0
@@ -86,6 +87,14 @@ func _ready() -> void:
 	_lbl.offset_bottom =  34
 	_lbl.text = BOSS_F0
 	add_child(_lbl)
+	_sprite = AsciiSpriteDriver.new()
+	if _sprite.setup(_lbl, "boss_wraith"):
+		var fm := _sprite.fp_metas()
+		for mk in fm:
+			set_meta(mk, fm[mk])
+		AsciiSprites.apply_hitbox(self, "boss_wraith")
+	else:
+		_sprite = null
 
 	_create_boss_bar()
 	FloatingText.spawn_str(global_position, "BOSS!", Color(0.7, 0.1, 1.0), get_tree().current_scene)
@@ -253,7 +262,8 @@ func _tick_anim(delta: float) -> void:
 		_anim_timer = 0.0
 		_anim_frame = 1 - _anim_frame
 	if _lbl == null: return
-	_lbl.text = BOSS_F0 if _anim_frame == 0 else BOSS_F1
+	if _sprite == null:   # driver owns the label (its idle art) when wired
+		_lbl.text = BOSS_F0 if _anim_frame == 0 else BOSS_F1
 	if _blink_flash_t > 0.0:
 		_blink_flash_t -= delta
 		_lbl.modulate = Color(0.7, 0.1, 1.0, lerpf(0.2, 1.0, 1.0 - _blink_flash_t / 0.4))

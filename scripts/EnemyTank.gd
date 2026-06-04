@@ -105,6 +105,7 @@ func _ready() -> void:
 			var fm := _sprite.fp_metas()
 			for mk in fm:
 				set_meta(mk, fm[mk])
+			AsciiSprites.apply_hitbox(self, "tank_man")
 		else:
 			_sprite = null
 			if _shared_font == null:

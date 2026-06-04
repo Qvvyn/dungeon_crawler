@@ -470,52 +470,52 @@ const SPRITES := {
 			"death": [{"t": "   >\n__/_\\__\n (x_x)\n /)V(\\|\n /___\\|", "d": 0.5, "mod": Color(0.32, 0.22, 0.4)}],
 		},
 	},
-	"magma_slug": {   # → Magma Slug
-		"font_size": 16, "line_sep": -4, "color": Color(1.0, 0.5, 0.2), "size": 2,
-		"outline": 3, "box": Rect2(-30.0, -28.0, 60.0, 56.0), "fp_pixel_size": 0.012, "fp_outline_size": 10,
+	"magma_slug": {   # → Magma Slug / Worm.
+		"font_size": 13, "line_sep": -2, "color": Color(1.0, 0.5, 0.2), "size": 3,
+		"outline": 3, "crop": true, "box": Rect2(-90.0, -70.0, 190.0, 150.0), "fp_outline_size": 8,
 		"anims": {
-			"idle": [{"t": " ()(\n((O))\n ))( ", "d": 0.55}, {"t": " )()\n((o))\n )(( ", "d": 0.55}],
-			"death": [{"t": " )()\n((o))\n )(( ", "d": 0.5, "mod": Color(0.35, 0.18, 0.08)}],
+			"idle":  [{"file": "res://assets/ascii/sprites/magma_slug.txt", "d": 1.0}],
+			"death": [{"file": "res://assets/ascii/sprites/magma_slug.txt", "d": 0.5, "mod": Color(0.35, 0.18, 0.08)}],
 		},
 	},
-	"boss_architect": {   # → The Architect (boss)
-		"font_size": 18, "line_sep": -4, "color": Color(0.5, 0.8, 0.9), "size": 4,
-		"outline": 3, "box": Rect2(-30.0, -30.0, 60.0, 60.0), "fp_pixel_size": 0.02, "fp_outline_size": 10,
+	"boss_architect": {   # → The Architect (boss). Floating ocular construct.
+		"font_size": 11, "line_sep": -2, "color": Color(0.5, 0.8, 0.9), "size": 5,
+		"outline": 3, "crop": true, "box": Rect2(-150.0, -160.0, 310.0, 320.0), "fp_outline_size": 8,
 		"anims": {
-			"idle": [{"t": ".+.\n>*<\n.+.", "d": 0.5}, {"t": "-+-\n>X<\n-+-", "d": 0.5}],
-			"death": [{"t": "-+-\n>X<\n-+-", "d": 0.5, "mod": Color(0.2, 0.3, 0.34)}],
+			"idle":  [{"file": "res://assets/ascii/sprites/boss_architect.txt", "d": 1.0}],
+			"death": [{"file": "res://assets/ascii/sprites/boss_architect.txt", "d": 0.5, "mod": Color(0.2, 0.3, 0.34)}],
 		},
 	},
-	"boss_devourer": {   # → The Devourer (boss)
-		"font_size": 18, "line_sep": -4, "color": Color(1.0, 0.45, 0.10), "size": 4,
-		"outline": 3, "box": Rect2(-34.0, -26.0, 70.0, 56.0), "fp_pixel_size": 0.02, "fp_outline_size": 10,
+	"boss_devourer": {   # → The Devourer (boss). Vast maw-ship.
+		"font_size": 9, "line_sep": -2, "color": Color(1.0, 0.45, 0.10), "size": 5,
+		"outline": 3, "crop": true, "box": Rect2(-200.0, -150.0, 410.0, 300.0), "fp_outline_size": 8,
 		"anims": {
-			"idle": [{"t": "/(O)\\\n \\m/ ", "d": 0.5}, {"t": "/(o)\\\n /M\\ ", "d": 0.5}],
-			"death": [{"t": "/(o)\\\n /M\\ ", "d": 0.5, "mod": Color(0.35, 0.16, 0.05)}],
+			"idle":  [{"file": "res://assets/ascii/sprites/boss_devourer.txt", "d": 1.0}],
+			"death": [{"file": "res://assets/ascii/sprites/boss_devourer.txt", "d": 0.5, "mod": Color(0.35, 0.16, 0.05)}],
 		},
 	},
-	"boss_lich": {   # → The Lich (boss)
-		"font_size": 18, "line_sep": -4, "color": Color(0.55, 1.0, 0.55), "size": 4,
-		"outline": 3, "box": Rect2(-30.0, -30.0, 60.0, 60.0), "fp_pixel_size": 0.02, "fp_outline_size": 10,
+	"boss_lich": {   # → The Lich (boss). Towering hooded reaper.
+		"font_size": 10, "line_sep": -2, "color": Color(0.55, 1.0, 0.55), "size": 5,
+		"outline": 3, "crop": true, "box": Rect2(-160.0, -200.0, 330.0, 400.0), "fp_outline_size": 8,
 		"anims": {
-			"idle": [{"t": " /=\\ \n |O| \n /^\\ ", "d": 0.5}, {"t": " /=\\ \n |o| \n /v\\ ", "d": 0.5}],
-			"death": [{"t": " /=\\ \n |o| \n /v\\ ", "d": 0.5, "mod": Color(0.22, 0.4, 0.22)}],
+			"idle":  [{"file": "res://assets/ascii/sprites/boss_lich.txt", "d": 1.0}],
+			"death": [{"file": "res://assets/ascii/sprites/boss_lich.txt", "d": 0.5, "mod": Color(0.22, 0.4, 0.22)}],
 		},
 	},
-	"boss_magma": {   # → Magma Tyrant (boss)
-		"font_size": 18, "line_sep": -4, "color": Color(1.0, 0.45, 0.10), "size": 4,
-		"outline": 3, "box": Rect2(-32.0, -30.0, 66.0, 60.0), "fp_pixel_size": 0.02, "fp_outline_size": 10,
+	"boss_magma": {   # → Magma Tyrant (boss). Towering molten colossus.
+		"font_size": 10, "line_sep": -2, "color": Color(1.0, 0.45, 0.10), "size": 5,
+		"outline": 3, "crop": true, "box": Rect2(-170.0, -160.0, 350.0, 320.0), "fp_outline_size": 8,
 		"anims": {
-			"idle": [{"t": " /^\\\n[#X#]\n /|\\", "d": 0.5}, {"t": " \\^/\n(#X#)\n /|\\", "d": 0.5}],
-			"death": [{"t": " \\^/\n(#X#)\n /|\\", "d": 0.5, "mod": Color(0.35, 0.16, 0.05)}],
+			"idle":  [{"file": "res://assets/ascii/sprites/boss_magma.txt", "d": 1.0}],
+			"death": [{"file": "res://assets/ascii/sprites/boss_magma.txt", "d": 0.5, "mod": Color(0.35, 0.16, 0.05)}],
 		},
 	},
-	"boss_wraith": {   # → The Wraith (boss)
-		"font_size": 18, "line_sep": -4, "color": Color(0.7, 0.1, 1.0), "size": 3,
-		"outline": 3, "box": Rect2(-26.0, -24.0, 52.0, 48.0), "fp_pixel_size": 0.018, "fp_outline_size": 10,
+	"boss_wraith": {   # → The Wraith (boss). Towering tattered spectre.
+		"font_size": 9, "line_sep": -2, "color": Color(0.7, 0.1, 1.0), "size": 5,
+		"outline": 3, "crop": true, "box": Rect2(-200.0, -200.0, 410.0, 400.0), "fp_outline_size": 8,
 		"anims": {
-			"idle": [{"t": "/W\\\n ~~", "d": 0.4}, {"t": "\\W/\n~~~", "d": 0.4}],
-			"death": [{"t": "\\W/\n~~~", "d": 0.5, "mod": Color(0.28, 0.06, 0.4)}],
+			"idle":  [{"file": "res://assets/ascii/sprites/boss_wraith.txt", "d": 1.0}],
+			"death": [{"file": "res://assets/ascii/sprites/boss_wraith.txt", "d": 0.5, "mod": Color(0.28, 0.06, 0.4)}],
 		},
 	},
 	# ── Objects / interactables (current in-game art, for gallery reference) ──
@@ -691,6 +691,37 @@ static func save_overrides() -> void:
 		push_warning("AsciiSprites: could not write " + OVERRIDES_PATH)
 		return
 	f.store_string(JSON.stringify(_overrides, "\t"))
+
+# Applies a gallery-tuned hitbox (size + shape) to an enemy's body collider.
+# No-op unless the sprite has an EXPLICIT hitbox override saved — so enemies
+# whose collider wasn't tuned keep their scene shape untouched. Called from the
+# enemy's _ready after the sprite driver is set up.
+static func apply_hitbox(body: Node, key: String) -> void:
+	if body == null:
+		return
+	_ensure_overrides()
+	var ov: Dictionary = _overrides.get(key, {}) as Dictionary
+	if not ov.has("hitbox_size"):
+		return
+	var sz: float = float(ov["hitbox_size"])
+	var kind: String = String(ov.get("hitbox_shape", "circle"))
+	# Find the body's collision shape (named node first, then any child).
+	var cs := body.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if cs == null:
+		for child in body.get_children():
+			if child is CollisionShape2D:
+				cs = child as CollisionShape2D
+				break
+	if cs == null:
+		return
+	if kind == "square":
+		var r := RectangleShape2D.new()
+		r.size = Vector2(sz * 2.0, sz * 2.0)
+		cs.shape = r
+	else:
+		var c := CircleShape2D.new()
+		c.radius = sz
+		cs.shape = c
 
 static func anims(key: String) -> Dictionary:
 	return (SPRITES.get(key, {}) as Dictionary).get("anims", {}) as Dictionary

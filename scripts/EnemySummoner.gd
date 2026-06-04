@@ -69,6 +69,7 @@ func _ready() -> void:
 			var fm := _sprite.fp_metas()
 			for mk in fm:
 				set_meta(mk, fm[mk])
+			AsciiSprites.apply_hitbox(self, "gnome")
 		else:
 			_sprite = null
 			var mono := MonoFont.get_font()

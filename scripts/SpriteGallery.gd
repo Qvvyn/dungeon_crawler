@@ -96,6 +96,12 @@ var _dirty: bool = false
 # sprite's meta on load; committed to the overrides file on Enter like the rest.
 var _base_color: Color = Color.WHITE
 var _palette_idx: int = -1
+# Hitbox tuning (Ctrl+↑/↓ size, Ctrl+←/→ shape). Seeded from a saved override
+# only — left unset, the enemy keeps its scene collider untouched. Preview is
+# drawn at game scale (px) over the 2D view against the tile grid.
+var _hitbox_size: float = 14.0
+var _hitbox_shape: String = "circle"   # "circle" | "square"
+var _hitbox_tuned: bool = false        # true once it differs from the scene default
 const COLOR_PALETTE: Array = [
 	Color(0.90, 0.90, 0.95),   # near-white
 	Color(0.70, 0.72, 0.80),   # cool grey
@@ -161,11 +167,11 @@ func _ready() -> void:
 
 func _update_help() -> void:
 	if _mode == "3d":
-		_help.text = "F1 1st-person   ←/→ sprite   ↑/↓ size · shift ↑/↓ height · C colour · Enter save   1-4 state   WASD orbit·QE eye   F font   Esc"
+		_help.text = "F1 1st-person   ←/→ sprite   ↑/↓ size·shift height·ctrl hitbox · ctrl←/→ shape · C colour · Enter save   1-4 state   WASD·QE cam   F font   Esc"
 	elif _mode == "fp":
-		_help.text = "F1 2D view   ←/→ sprite   ↑/↓ size · shift ↑/↓ height · C colour · Enter save   1-4 state   F font   Esc  (head-on 1st-person)"
+		_help.text = "F1 2D view   ←/→ sprite   ↑/↓ size·shift height·ctrl hitbox · ctrl←/→ shape · C colour · Enter save   1-4 state   F font   Esc"
 	else:
-		_help.text = "F1 3rd-person room   ←/→ sprite   C colour · Enter save   1-4 state   F font   G grid   +/- zoom   R reload   Esc quit"
+		_help.text = "F1 3rd-person   ←/→ sprite   ctrl↑/↓ hitbox · ctrl←/→ shape · C colour · Enter save   1-4 state   F font   G grid   +/- zoom   Esc"
 
 func _build_entries() -> void:
 	_entries.clear()
@@ -214,16 +220,23 @@ func _load_current() -> void:
 		_size_tier = clampi(int(m.get("size", 3)), 1, 5)
 		_height_offset = float(m.get("height_offset", 0.0))
 		_base_color = m.get("color", Color.WHITE)
+		_hitbox_tuned = AsciiSprites.override_value(e["key"], "hitbox_size", null) != null
+		_hitbox_size = float(AsciiSprites.override_value(e["key"], "hitbox_size", 14.0))
+		_hitbox_shape = String(AsciiSprites.override_value(e["key"], "hitbox_shape", "circle"))
 	else:
 		_size_tier = 3
 		_height_offset = 0.0
 		_base_color = Color(0.85, 0.82, 0.95)
+		_hitbox_tuned = false
+		_hitbox_size = 14.0
+		_hitbox_shape = "circle"
 	_stage.add_theme_font_override("font", MonoFont.get_font())
 	_stage.add_theme_color_override("font_outline_color", Color(0, 0, 0))
 	if e["kind"] == "sprite":
 		_load_sprite(e["key"])
 	else:
 		_load_piece(e["path"])
+	_grid.queue_redraw()   # refresh the hitbox overlay for the new entry
 
 func _load_sprite(key: String) -> void:
 	var meta: Dictionary = AsciiSprites.meta(key)
@@ -367,9 +380,10 @@ func _update_info() -> void:
 		var th: float = AsciiSprites.SIZE_HEIGHTS.get(_size_tier, 1.05)
 		var fly: bool = bool(AsciiSprites.meta(e["key"]).get("flying", false))
 		var dirty := "  ●UNSAVED (Enter to save)" if _dirty else ""
-		sz = "size tier: %d (↑/↓)   height: %.2f  offset %+.2f (shift ↑/↓)   colour #%s (C)%s%s" % [
+		var hb := "%.0f %s" % [_hitbox_size, _hitbox_shape] + ("" if _hitbox_tuned else " (scene default)")
+		sz = "size tier: %d (↑/↓)   height: %.2f  offset %+.2f (shift ↑/↓)   colour #%s (C)\nhitbox: %s (ctrl ↑/↓ size · ctrl ←/→ shape)%s%s" % [
 			_size_tier, th, _height_offset, _base_color.to_html(false),
-			("   (flying)" if fly else ""), dirty]
+			hb, ("   (flying)" if fly else ""), dirty]
 	_info.text = "%s\n%s\n%s\n%s" % [head, line2, line3, sz]
 
 func _process(delta: float) -> void:
@@ -387,22 +401,30 @@ func _process(delta: float) -> void:
 		_update_info()
 
 func _draw_grid() -> void:
-	if not _show_grid:
-		return
-	var col := Color(1, 1, 1, 0.06)
 	var cx := size.x * 0.5
 	var cy := size.y * 0.5
-	var x := fmod(cx, TILE)
-	while x < size.x:
-		_grid.draw_line(Vector2(x, 0), Vector2(x, size.y), col, 1.0)
-		x += TILE
-	var y := fmod(cy, TILE)
-	while y < size.y:
-		_grid.draw_line(Vector2(0, y), Vector2(size.x, y), col, 1.0)
-		y += TILE
-	# Highlight the central tile so 1-tile scale is obvious.
-	_grid.draw_rect(Rect2(cx - TILE * 0.5, cy - TILE * 0.5, TILE, TILE),
-		Color(0.4, 0.8, 1.0, 0.25), false, 1.5)
+	if _show_grid:
+		var col := Color(1, 1, 1, 0.06)
+		var x := fmod(cx, TILE)
+		while x < size.x:
+			_grid.draw_line(Vector2(x, 0), Vector2(x, size.y), col, 1.0)
+			x += TILE
+		var y := fmod(cy, TILE)
+		while y < size.y:
+			_grid.draw_line(Vector2(0, y), Vector2(size.x, y), col, 1.0)
+			y += TILE
+		# Highlight the central tile so 1-tile scale is obvious (1 tile = 32px).
+		_grid.draw_rect(Rect2(cx - TILE * 0.5, cy - TILE * 0.5, TILE, TILE),
+			Color(0.4, 0.8, 1.0, 0.25), false, 1.5)
+	# Hitbox footprint, drawn at game scale (px vs the 32px tile) over the 2D
+	# sprite so it can be sized against the art.
+	if _mode == "2d" and not _entries.is_empty() and _entries[_idx]["kind"] == "sprite":
+		var hc := Color(1.0, 0.85, 0.2, 0.85) if _hitbox_tuned else Color(1.0, 0.85, 0.2, 0.45)
+		if _hitbox_shape == "square":
+			_grid.draw_rect(Rect2(cx - _hitbox_size, cy - _hitbox_size,
+				_hitbox_size * 2.0, _hitbox_size * 2.0), hc, false, 2.0)
+		else:
+			_grid.draw_arc(Vector2(cx, cy), _hitbox_size, 0.0, TAU, 64, hc, 2.0)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not (event is InputEventKey) or not event.pressed or event.echo:
@@ -414,16 +436,24 @@ func _unhandled_input(event: InputEvent) -> void:
 			var order := ["2d", "3d", "fp"]
 			_set_mode(order[(order.find(_mode) + 1) % order.size()])
 		KEY_RIGHT:
-			_idx = (_idx + 1) % maxi(_entries.size(), 1); _state = "idle"; _load_current()
+			if (event as InputEventKey).ctrl_pressed: _set_hitbox_shape("square")
+			else:
+				_idx = (_idx + 1) % maxi(_entries.size(), 1); _state = "idle"; _load_current()
 		KEY_LEFT:
-			_idx = (_idx - 1 + _entries.size()) % maxi(_entries.size(), 1); _state = "idle"; _load_current()
+			if (event as InputEventKey).ctrl_pressed: _set_hitbox_shape("circle")
+			else:
+				_idx = (_idx - 1 + _entries.size()) % maxi(_entries.size(), 1); _state = "idle"; _load_current()
 		KEY_UP:
-			if _mode != "2d":
-				if (event as InputEventKey).shift_pressed: _adjust_height(0.1)
+			var ev_u := event as InputEventKey
+			if ev_u.ctrl_pressed: _adjust_hitbox(1.0)
+			elif _mode != "2d":
+				if ev_u.shift_pressed: _adjust_height(0.1)
 				else: _adjust_size(1)
 		KEY_DOWN:
-			if _mode != "2d":
-				if (event as InputEventKey).shift_pressed: _adjust_height(-0.1)
+			var ev_d := event as InputEventKey
+			if ev_d.ctrl_pressed: _adjust_hitbox(-1.0)
+			elif _mode != "2d":
+				if ev_d.shift_pressed: _adjust_height(-0.1)
 				else: _adjust_size(-1)
 		KEY_ENTER, KEY_KP_ENTER:
 			_save_tuning()
@@ -613,6 +643,26 @@ func _adjust_height(d: float) -> void:
 	_reposition_sprite3d()
 	_update_info()
 
+# Ctrl+Up/Down: resize the collision hitbox (px). Ctrl+Left/Right: shape.
+# Preview only — Enter saves it (and applies in-game to the wired enemy).
+func _adjust_hitbox(d: float) -> void:
+	if _entries.is_empty() or _entries[_idx]["kind"] != "sprite":
+		return
+	_hitbox_size = clampf(_hitbox_size + d, 2.0, 64.0)
+	_hitbox_tuned = true
+	_dirty = true
+	_grid.queue_redraw()
+	_update_info()
+
+func _set_hitbox_shape(s: String) -> void:
+	if _entries.is_empty() or _entries[_idx]["kind"] != "sprite" or _hitbox_shape == s:
+		return
+	_hitbox_shape = s
+	_hitbox_tuned = true
+	_dirty = true
+	_grid.queue_redraw()
+	_update_info()
+
 # C / Shift+C: cycle the base colour through the palette. Preview only — Enter
 # saves it. The stage's font_color drives both the 2D label and the 3D rows.
 func _cycle_color(d: int) -> void:
@@ -639,10 +689,14 @@ func _save_tuning() -> void:
 	AsciiSprites.set_override(key, "size", _size_tier)
 	AsciiSprites.set_override(key, "height_offset", snappedf(_height_offset, 0.01))
 	AsciiSprites.set_override(key, "color", _base_color.to_html(false))
+	if _hitbox_tuned:
+		AsciiSprites.set_override(key, "hitbox_size", snappedf(_hitbox_size, 0.5))
+		AsciiSprites.set_override(key, "hitbox_shape", _hitbox_shape)
 	AsciiSprites.save_overrides()
 	_dirty = false
-	_help.text = "✓ saved %s — size %d, height %+.2f, #%s   (applies in-game)" % [
-		key, _size_tier, _height_offset, _base_color.to_html(false)]
+	var hb := "  hitbox %.0f %s" % [_hitbox_size, _hitbox_shape] if _hitbox_tuned else ""
+	_help.text = "✓ saved %s — size %d, height %+.2f, #%s%s   (applies in-game)" % [
+		key, _size_tier, _height_offset, _base_color.to_html(false), hb]
 	_update_info()
 
 func _set_mode(m: String) -> void:
@@ -650,7 +704,8 @@ func _set_mode(m: String) -> void:
 	var threed := (m == "3d" or m == "fp")
 	_vp_container.visible = threed
 	_stage.visible = not threed
-	_grid.visible = (m == "2d") and _show_grid
+	_grid.visible = (m == "2d")   # grid Control also hosts the hitbox overlay
+	_grid.queue_redraw()
 	# The player-wizard scale reference belongs in the 3rd-person room; the
 	# 1st-person view is a clean head-on encounter, so hide it there.
 	if _ref_root != null:

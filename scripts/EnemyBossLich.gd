@@ -21,6 +21,7 @@ var _gate: BossGate = BossGate.new()    # Theme C HP threshold gates — see Bos
 var health: int            = 280
 var _player: Node2D        = null
 var _lbl: Label            = null
+var _sprite: AsciiSpriteDriver = null   # boss_lich sprite (standalone, manual driver)
 var _anim_t: float         = 0.0
 var _anim_f: int           = 0
 var _summon_t: float       = 3.0   # first summon shortly after intro
@@ -86,6 +87,14 @@ func _ready() -> void:
 	_lbl.size = Vector2(96, 96)
 	_lbl.position = Vector2(-40, -40)
 	add_child(_lbl)
+	_sprite = AsciiSpriteDriver.new()
+	if _sprite.setup(_lbl, "boss_lich"):
+		var fm := _sprite.fp_metas()
+		for mk in fm:
+			set_meta(mk, fm[mk])
+		AsciiSprites.apply_hitbox(self, "boss_lich")
+	else:
+		_sprite = null
 
 	BossIntro.show_for(get_tree().current_scene, BOSS_NAME, BOSS_COLOR)
 	_create_boss_bar()
@@ -101,11 +110,14 @@ func _physics_process(delta: float) -> void:
 		velocity = Vector2.ZERO
 		move_and_slide()
 		return
-	_anim_t += delta
-	if _anim_t >= 0.45:
-		_anim_t = 0.0
-		_anim_f = 1 - _anim_f
-		_lbl.text = BOSS_F0 if _anim_f == 0 else BOSS_F1
+	if _sprite != null:
+		_sprite.tick(delta, velocity.length_squared() > 100.0)
+	else:
+		_anim_t += delta
+		if _anim_t >= 0.45:
+			_anim_t = 0.0
+			_anim_f = 1 - _anim_f
+			_lbl.text = BOSS_F0 if _anim_f == 0 else BOSS_F1
 
 	# Light kite — drift slowly perpendicular to the player vector with
 	# occasional reversals so the lich doesn't park in melee range.

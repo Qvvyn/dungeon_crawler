@@ -2,7 +2,7 @@
 	"archer": {
 		"color": "99c78c",
 		"height_offset": 0.0,
-		"size": 2
+		"size": 2.0
 	},
 	"bat": {
 		"color": "b3b8cc",
@@ -19,15 +19,40 @@
 		"height_offset": -0.1,
 		"size": 4.0
 	},
+	"boss_architect": {
+		"color": "eb8ccc",
+		"height_offset": -0.3,
+		"size": 4
+	},
 	"boss_brute": {
 		"color": "d98066",
 		"height_offset": -0.3,
 		"size": 4.0
 	},
+	"boss_devourer": {
+		"color": "b3b8cc",
+		"height_offset": -0.2,
+		"size": 4
+	},
+	"boss_lich": {
+		"color": "b3b8cc",
+		"height_offset": -0.2,
+		"size": 5
+	},
+	"boss_magma": {
+		"color": "ff731a",
+		"height_offset": -0.5,
+		"size": 5
+	},
+	"boss_wraith": {
+		"color": "b31aff",
+		"height_offset": -0.2,
+		"size": 5
+	},
 	"brute": {
 		"color": "db755c",
 		"height_offset": -0.1,
-		"size": 2
+		"size": 2.0
 	},
 	"centaur": {
 		"color": "cca880",
@@ -47,22 +72,22 @@
 	"ghost": {
 		"color": "d1e6ff",
 		"height_offset": -0.1,
-		"size": 2
+		"size": 2.0
 	},
 	"ghost_big": {
 		"color": "cce6ff",
 		"height_offset": 0.1,
-		"size": 3
+		"size": 3.0
 	},
 	"gnome": {
 		"color": "ebd966",
 		"height_offset": 0.0,
-		"size": 2
+		"size": 2.0
 	},
 	"goblin": {
 		"color": "8cd973",
 		"height_offset": -0.1,
-		"size": 2
+		"size": 2.0
 	},
 	"gollum": {
 		"color": "9eb885",
@@ -92,7 +117,12 @@
 	"knight": {
 		"color": "b3b8cc",
 		"height_offset": -0.1,
-		"size": 4
+		"size": 4.0
+	},
+	"magma_slug": {
+		"color": "ff8033",
+		"height_offset": -0.2,
+		"size": 1
 	},
 	"minotaur": {
 		"color": "c77359",
@@ -107,7 +137,7 @@
 	"shooter": {
 		"color": "b3d199",
 		"height_offset": -0.1,
-		"size": 2
+		"size": 2.0
 	},
 	"spider": {
 		"color": "b3b8cc",

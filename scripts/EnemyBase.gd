@@ -137,6 +137,7 @@ func _ready() -> void:
 				var fm := _sprite.fp_metas()
 				for mk in fm:
 					set_meta(mk, fm[mk])
+				AsciiSprites.apply_hitbox(self, key)   # gallery-tuned collider, if any
 			else:
 				_sprite = null
 		# Legacy single-glyph styling only when no sprite drives the label.

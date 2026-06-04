@@ -20,6 +20,7 @@ const BOSS_COLOR := Color(1.00, 0.45, 0.10)
 var health: int             = 280
 var _player: Node2D         = null
 var _lbl: Label             = null
+var _sprite: AsciiSpriteDriver = null   # boss_magma sprite (standalone, manual driver)
 var _anim_timer: float      = 0.0
 var _anim_frame: int        = 0
 var _phase: int             = 1
@@ -99,6 +100,14 @@ func _ready() -> void:
 	_lbl.offset_bottom =  40
 	_lbl.text = BOSS_F0
 	add_child(_lbl)
+	_sprite = AsciiSpriteDriver.new()
+	if _sprite.setup(_lbl, "boss_magma"):
+		var fm := _sprite.fp_metas()
+		for mk in fm:
+			set_meta(mk, fm[mk])
+		AsciiSprites.apply_hitbox(self, "boss_magma")
+	else:
+		_sprite = null
 
 	_create_boss_bar()
 	FloatingText.spawn_str(global_position, "BOSS!", BOSS_COLOR, get_tree().current_scene)
@@ -253,7 +262,8 @@ func _tick_anim(delta: float) -> void:
 		_anim_timer = 0.0
 		_anim_frame = 1 - _anim_frame
 	if _lbl == null: return
-	_lbl.text = BOSS_F0 if _anim_frame == 0 else BOSS_F1
+	if _sprite == null:   # driver owns the label (its idle art) when wired
+		_lbl.text = BOSS_F0 if _anim_frame == 0 else BOSS_F1
 	if _hit_flash_t > 0.0:
 		_hit_flash_t -= delta
 		_lbl.modulate = Color(1.0, 0.4, 0.4)

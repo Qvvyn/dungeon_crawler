@@ -447,7 +447,7 @@ func _ready() -> void:
 	_spawn_traps()
 	_spawn_beam_traps()
 	_spawn_doors()
-	_spawn_enemy_nests(player_room)
+	_spawn_enemy_nests(player_room, portal_room)
 	_spawn_ambush()
 	_spawn_switch_alcove()
 	_spawn_lava_tiles()
@@ -3560,7 +3560,7 @@ func _nest_pool_for_biome() -> Array[String]:
 		3:   return _NEST_POOL_LAVA
 		_:   return _NEST_POOL_DUNGEON
 
-func _spawn_enemy_nests(player_room: Rect2i) -> void:
+func _spawn_enemy_nests(player_room: Rect2i, portal_room: Rect2i = Rect2i()) -> void:
 	# Off below diff 4 — early floors should stay readable; nests escalate the
 	# room-clear pressure and deserve a few minutes of regular play first.
 	if GameState.difficulty < 4.0:
@@ -3577,6 +3577,8 @@ func _spawn_enemy_nests(player_room: Rect2i) -> void:
 	for r: Rect2i in _rooms:
 		if r == player_room:
 			continue
+		if r == portal_room:
+			continue   # never nest in the exit/portal room (was spawning on the portal)
 		if r.size.x < 4 or r.size.y < 4:
 			continue
 		candidates.append(r)

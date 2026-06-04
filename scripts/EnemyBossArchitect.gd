@@ -16,6 +16,7 @@ const BOSS_COLOR := Color(0.1, 0.9, 0.85)
 var health: int              = 55
 var _player: Node2D          = null
 var _lbl: Label              = null
+var _sprite: AsciiSpriteDriver = null   # boss_architect sprite (standalone, manual driver)
 var _anim_timer: float       = 0.0
 var _anim_frame: int         = 0
 var _shoot_timer: float      = 1.0
@@ -90,6 +91,14 @@ func _ready() -> void:
 	_lbl.offset_bottom =  42
 	_lbl.text = BOSS_F0
 	add_child(_lbl)
+	_sprite = AsciiSpriteDriver.new()
+	if _sprite.setup(_lbl, "boss_architect"):
+		var fm := _sprite.fp_metas()
+		for mk in fm:
+			set_meta(mk, fm[mk])
+		AsciiSprites.apply_hitbox(self, "boss_architect")
+	else:
+		_sprite = null
 
 	_create_boss_bar()
 	FloatingText.spawn_str(global_position, "BOSS!", Color(0.1, 0.9, 0.85), get_tree().current_scene)
@@ -295,7 +304,8 @@ func _tick_anim(delta: float) -> void:
 		_anim_timer = 0.0
 		_anim_frame = 1 - _anim_frame
 	if _lbl == null: return
-	_lbl.text = BOSS_F0 if _anim_frame == 0 else BOSS_F1
+	if _sprite == null:   # driver owns the label (its idle art) when wired
+		_lbl.text = BOSS_F0 if _anim_frame == 0 else BOSS_F1
 	FrozenBlock.sync_to(self, _frozen)
 	EnflameOverlay.sync_to(self, _enflamed)
 	PoisonOverlay.sync_to(self, _poisoned)
