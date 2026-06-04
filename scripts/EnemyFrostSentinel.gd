@@ -64,6 +64,8 @@ func _drop_ice() -> void:
 		SoundManager.play("crystal", randf_range(0.85, 1.05))
 
 func _enemy_anim_update(delta: float) -> void:
+	if _sprite != null:
+		return   # AsciiSprite driver owns the label when a sprite is wired
 	_anim_t += delta
 	if _anim_t >= 0.40:
 		_anim_t = 0.0

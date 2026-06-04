@@ -181,6 +181,8 @@ func _cleanup_visuals() -> void:
 		GameState.active_rig.clear_enemy_beam(self)
 
 func _enemy_anim_update(delta: float) -> void:
+	if _sprite != null:
+		return   # driver owns the label (jester-head sprite)
 	_anim_t += delta
 	if _anim_t >= 0.3:
 		_anim_t = 0.0

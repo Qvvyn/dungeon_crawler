@@ -157,6 +157,9 @@ func _lob_grenade() -> void:
 	_telegraphing = false
 	_clear_warning()
 	if not is_instance_valid(_player) or _proj_scene == null: return
+	# Don't lob through a wall — a raised door / moving wall between us and the
+	# player blocks the throw instead of arcing through it.
+	if not EnemyVision.has_los(self, _player.global_position): return
 	var to_target := (_predicted - global_position).normalized()
 	var arc_sign  := 1.0 if randf() > 0.5 else -1.0
 	var p := _proj_scene.instantiate()
@@ -179,6 +182,8 @@ func _exit_tree() -> void:
 	_clear_warning()
 
 func _enemy_anim_update(delta: float) -> void:
+	if _sprite != null:
+		return   # AsciiSprite driver owns the label when a sprite is wired
 	_anim_t += delta
 	if _anim_t >= 0.4:
 		_anim_t = 0.0

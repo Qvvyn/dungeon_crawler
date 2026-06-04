@@ -72,6 +72,7 @@ var _hit_flash_t: float    = 0.0
 var _dmg_text_cd: float    = 0.0
 var _lbl: Label             = null
 var _health_bar_fg: Control = null
+var _sprite: AsciiSpriteDriver = null   # swimmer sprite (standalone enemy, manual driver)
 
 static var _shared_font: Font = null
 
@@ -89,18 +90,27 @@ func _ready() -> void:
 	_health_bar_fg = get_node_or_null("HealthBar/Foreground")
 	_lbl = get_node_or_null("AsciiChar")
 	if _lbl:
-		if _shared_font == null:
-			_shared_font = MonoFont.get_font()
-		_lbl.add_theme_font_override("font", _shared_font)
-		_lbl.add_theme_font_size_override("font_size", 13)
-		_lbl.add_theme_constant_override("line_separation", -4)
-		_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_TOP
-		_lbl.offset_left   = -30
-		_lbl.offset_top    = -44
-		_lbl.offset_right  =  32
-		_lbl.offset_bottom =  14
-		_lbl.text = SNIPER_F0
+		# Snipers are cloaked swimmers. Drive the label via the swimmer sprite
+		# and publish FP metas before the rig registers us.
+		_sprite = AsciiSpriteDriver.new()
+		if _sprite.setup(_lbl, "swimmer"):
+			var fm := _sprite.fp_metas()
+			for mk in fm:
+				set_meta(mk, fm[mk])
+		else:
+			_sprite = null
+			if _shared_font == null:
+				_shared_font = MonoFont.get_font()
+			_lbl.add_theme_font_override("font", _shared_font)
+			_lbl.add_theme_font_size_override("font_size", 13)
+			_lbl.add_theme_constant_override("line_separation", -4)
+			_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+			_lbl.vertical_alignment   = VERTICAL_ALIGNMENT_TOP
+			_lbl.offset_left   = -30
+			_lbl.offset_top    = -44
+			_lbl.offset_right  =  32
+			_lbl.offset_bottom =  14
+			_lbl.text = SNIPER_F0
 
 func _physics_process(delta: float) -> void:
 	if _buff_timer > 0.0:
@@ -112,6 +122,13 @@ func _physics_process(delta: float) -> void:
 		_player = get_tree().get_first_node_in_group("player")
 	if not is_instance_valid(_player):
 		return
+
+	if is_in_group("bewitched"):
+		var bt: Node2D = EnemyBase.bewitched_target_for(self)
+		if bt != null:
+			_player = bt
+			_has_aggro = true
+		EnemyBase.tick_bewitched_visuals(self, delta)
 
 	var raw_vel := (_player.global_position - _prev_player_pos) / delta
 	_player_vel_est = _player_vel_est.lerp(raw_vel, 0.15)
@@ -215,6 +232,8 @@ func _pick_wander_dir() -> void:
 func _tick_anim(delta: float) -> void:
 	if _lbl == null:
 		return
+	if _sprite != null:
+		_sprite.tick(delta, velocity.length_squared() > 100.0)
 	FrozenBlock.sync_to(self, _frozen)
 	EnflameOverlay.sync_to(self, _enflamed)
 	PoisonOverlay.sync_to(self, _poisoned)
@@ -304,7 +323,7 @@ func _abort_windup() -> void:
 		_aim_line = null
 	_clear_fp_aim_beam()
 	var lbl := get_node_or_null("AsciiChar")
-	if lbl:
+	if lbl and _sprite == null:
 		lbl.text = SNIPER_F0
 
 func _start_windup() -> void:
@@ -320,7 +339,7 @@ func _start_windup() -> void:
 	_aim_line.add_point(Vector2.ZERO)
 	add_child(_aim_line)
 	var lbl := get_node_or_null("AsciiChar")
-	if lbl:
+	if lbl and _sprite == null:
 		lbl.text = SNIPER_F1
 	FloatingText.spawn_str(global_position, "...", Color(1.0, 0.6, 0.2), get_tree().current_scene)
 
@@ -351,7 +370,7 @@ func _finish_windup() -> void:
 		_aim_line.queue_free()
 		_aim_line = null
 	var lbl := get_node_or_null("AsciiChar")
-	if lbl:
+	if lbl and _sprite == null:
 		lbl.text = SNIPER_F0
 	_shoot_timer = SHOOT_INTERVAL
 	if not is_instance_valid(_player):
@@ -369,7 +388,12 @@ func _finish_windup() -> void:
 	if not hit.is_empty():
 		beam_end = hit.get("position", beam_end)
 		var collider: Object = hit.get("collider")
-		if collider != null and collider.is_in_group("player") and collider.has_method("take_damage"):
+		# Reuse the shared melee filter so a bewitched sniper's instant beam
+		# damages whatever enemy it just aimed at, while a normal sniper only
+		# damages the player. Both cases respect the bewitched no-friendly-
+		# fire rule and ignore self-hits.
+		var hit_node: Node = collider as Node
+		if hit_node != null and EnemyBase.melee_hit_filter(self, hit_node) and collider.has_method("take_damage"):
 			collider.take_damage(4, self)
 
 	# Outer glow
@@ -479,6 +503,8 @@ func apply_status(effect: String, _duration: float) -> void:
 			if _poison_stacks >= 10:
 				_poison_stacks = 0
 				_trigger_poisoned()
+		"love_hit":
+			EnemyBase.bewitch(self)
 
 func _add_burn_stacks(count: int) -> void:
 	_burn_stacks = mini(_burn_stacks + count, 9)
@@ -521,7 +547,7 @@ func apply_buff(duration: float) -> void:
 	_speed_multiplier = 2.0
 	_buff_timer += duration
 
-func take_damage(amount: int) -> void:
+func take_damage(amount: int, _source: Node = null) -> void:
 	if _shield_active:
 		_shield_active = false
 		FloatingText.spawn_str(global_position, "BLOCKED!", Color(0.4, 0.9, 1.0), get_tree().current_scene)
@@ -532,6 +558,8 @@ func take_damage(amount: int) -> void:
 	var actual := int(float(amount) * 1.25) if (_frozen or _chill_stacks > 0) else amount
 	health -= actual
 	_hit_flash_t = 0.14
+	if _sprite != null and health > 0:
+		_sprite.set_state("hurt")
 	if _dmg_text_cd <= 0.0:
 		FloatingText.spawn(global_position, actual, false, get_tree().current_scene)
 		_dmg_text_cd = 0.22

@@ -260,7 +260,7 @@ func apply_status(effect: String, _duration: float) -> void:
 			_poisoned = true
 			_poison_timer = 9.0
 
-func take_damage(amount: int) -> void:
+func take_damage(amount: int, _source: Node = null) -> void:
 	var actual := int(float(amount) * 1.25) if (_frozen or _chill_stacks > 0) else amount
 	var r: Dictionary = _gate.apply(actual, health, max_health)
 	if r.triggered:

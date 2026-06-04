@@ -12,5 +12,13 @@ static func has_los(shooter: Node2D, target_pos: Vector2) -> bool:
 	params.collision_mask = 1   # walls / static geometry only
 	params.exclude = [shooter.get_rid()]
 	var hit := space.intersect_ray(params)
-	# Empty hit = clear sightline. A hit means a wall is in the way.
-	return hit.is_empty()
+	# Empty hit = clear sightline.
+	if hit.is_empty():
+		return true
+	# The player body sits on layer 1 too, so a ray aimed at the player lands
+	# ON the player. That's the shot reaching its mark, NOT a wall block — only
+	# treat it as blocked when something OTHER than the target (a wall) is hit.
+	var collider: Object = hit.get("collider")
+	if collider is Node and (collider as Node).is_in_group("player"):
+		return true
+	return false

@@ -12,15 +12,20 @@ class_name MonoFont
 # hasn't been added yet.
 
 const FONTS: Array = [
-	{"name": "JetBrains Mono",   "path": "res://assets/fonts/JetBrainsMono-Regular.ttf",   "system": []},
 	{"name": "VT323",            "path": "res://assets/fonts/VT323-Regular.ttf",           "system": []},
-	{"name": "Special Elite",    "path": "res://assets/fonts/SpecialElite-Regular.ttf",    "system": []},
-	{"name": "Cutive Mono",      "path": "res://assets/fonts/CutiveMono-Regular.ttf",      "system": []},
-	{"name": "Share Tech Mono",  "path": "res://assets/fonts/ShareTechMono-Regular.ttf",   "system": []},
 	{"name": "Major Mono",       "path": "res://assets/fonts/MajorMonoDisplay-Regular.ttf","system": []},
 	{"name": "Press Start 2P",   "path": "res://assets/fonts/PressStart2P-Regular.ttf",    "system": []},
+	# ── 8-bit / pixel MONOSPACE picks (crunchy like Press Start 2P + VT323, but
+	# narrower so complex multi-line art stays readable). Each lights up the
+	# moment its .ttf is dropped into res://assets/fonts/ with the exact filename
+	# below; until then MonoFont falls back to a system mono so nothing breaks.
+	#   Departure Mono  - departuremono.com (free) — purpose-built pixel monospace
+	#   Pixel Operator  - dafont "Pixel Operator" (free) — use the Mono variant
+	{"name": "Departure Mono",   "path": "res://assets/fonts/DepartureMono-Regular.otf",   "system": []},
+	{"name": "Pixel Operator Mono","path": "res://assets/fonts/PixelOperatorMono.ttf",     "system": []},
+	{"name": "Spleen 8x16",      "path": "res://assets/fonts/spleen-8x16.otf",             "system": []},
+	{"name": "Cozette",          "path": "res://assets/fonts/CozetteVector.ttf",           "system": []},
 	{"name": "Consolas",         "path": "", "system": ["Consolas"]},
-	{"name": "Courier New",      "path": "", "system": ["Courier New"]},
 ]
 
 static var _cached: Font = null
@@ -87,7 +92,9 @@ static func _propagate(n: Node, old_font: Font, new_font: Font) -> void:
 		# add_theme_font_override("font", ...) is the universal one; the
 		# rest cover RichTextLabel and any future variants.
 		for fn in ["font", "normal_font", "bold_font", "italics_font", "bold_italics_font", "mono_font"]:
-			if c.get_theme_font_override(fn) == old_font:
+			# Control has no get_theme_font_override(); check the override exists
+			# then resolve it (get_theme_font returns the override when present).
+			if c.has_theme_font_override(fn) and c.get_theme_font(fn) == old_font:
 				c.add_theme_font_override(fn, new_font)
 	elif n is Label3D:
 		if (n as Label3D).font == old_font:

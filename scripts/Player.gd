@@ -17,7 +17,11 @@ var _is_paused: bool = false
 # the pause correct if two interfaces overlap (e.g. inventory over a table).
 var _interface_open_count: int = 0
 var _pause_menu: CanvasLayer = null
+# Last successful _toggle_pause() timestamp (ms). Used to debounce the
+# browser's double-fire on ESC during pointer-lock release on web builds.
+var _last_pause_toggle_msec: int = 0
 var _pause_autoplay_label: Label = null
+var _pause_viewmode_label: Label = null
 # Mobile-only run-stats line shown on the pause menu (kills / gold / floor).
 # Built unconditionally; visibility is gated on GameState.is_mobile so the
 # desktop layout is unaffected.
@@ -167,6 +171,18 @@ func _effective_fire_rate(wand: Item) -> float:
 			rate /= 1.5
 	var floor_rate: float = MIN_FIRE_RATE_BUSTED if (wand != null and "busted" in wand.wand_flaws) else MIN_FIRE_RATE
 	return maxf(floor_rate, (rate - _equip_fire_rate_bonus) / _fire_rate_multiplier)
+
+# Returns the per-hit status-stack count for the given wand, applying the
+# debug_status_x100 override so a single freeze / fire / shock projectile can
+# pop its 10-stack threshold immediately. Other shoot types (regular, pierce,
+# beam, …) don't carry stacks — wand.wand_status_stacks is what the projectile
+# would have used regardless, and the override leaves them alone.
+func _effective_status_stacks(wand: Item) -> int:
+	if wand == null:
+		return 1
+	if GameState.debug_status_x100 and wand.wand_shoot_type in ["freeze", "fire", "shock"]:
+		return 100
+	return maxi(1, wand.wand_status_stacks)
 
 # Dash uses mana now (Theme A stat overhaul — stamina removed). Cost picked
 # so a fresh-mana dash still leaves room for ~5 wand shots before the pool
@@ -418,7 +434,7 @@ func _ready() -> void:
 	# FP per-row x nudge — rows 4 & 5 (the legs, 6-char even content) center
 	# 0.5 char left of the parent under Label3D CENTER alignment. Push them
 	# back to centered. Other rows fine at 0.
-	set_meta("fp_line_x_offsets", [0.0, 0.0, 0.0, 0.5, 0.5])
+	set_meta("fp_grid", true)   # render via the per-row grid path (clean leading-space columns)
 	var _mono := MonoFont.get_font()
 	_ascii_label.add_theme_font_override("font", _mono)
 	_ascii_label.add_theme_constant_override("line_separation", -6)
@@ -821,6 +837,17 @@ func _setup_hud_additions() -> void:
 	nova_lbl.add_theme_color_override("font_color", Color(0.75, 0.3, 1.0))
 	hud.add_child(nova_lbl)
 
+	# Current font readout (debug) — sits just under the ability list and
+	# updates when F3 cycles MonoFont, so it's clear which typeface is active.
+	var font_lbl := Label.new()
+	font_lbl.name = "FontLabel"
+	font_lbl.text = "Font: " + MonoFont.current_name()
+	font_lbl.position = Vector2(10, 120)
+	font_lbl.size = Vector2(200, 16)
+	font_lbl.add_theme_font_size_override("font_size", 10)
+	font_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.72))
+	hud.add_child(font_lbl)
+
 # ── Pause menu ────────────────────────────────────────────────────────────────
 
 func _setup_pause_menu() -> void:
@@ -933,21 +960,26 @@ func _setup_pause_menu() -> void:
 	# Autoplay toggle — label refreshes via _refresh_autoplay_pause_label()
 	# whenever the pause menu opens or the toggle is pressed.
 	_pause_autoplay_btn(Vector2(640, 348))
-	_pause_btn("SAVE RUN",     Vector2(640, 400), Color(0.5, 0.75, 1.0), _save_run,       true)
-	_pause_btn("SETTINGS",     Vector2(640, 452), Color(0.85, 0.7, 1.0), _open_settings,  true)
-	_pause_btn("TITLE SCREEN", Vector2(640, 504), Color(0.7, 0.55, 1.0), _on_title,       true)
-	_pause_btn("QUIT",         Vector2(640, 556), Color(0.55, 0.55, 0.6),_on_quit,        true)
+	# View-mode cycle — label refreshes via _refresh_viewmode_pause_label()
+	# so 1ST / 3RD / TOP-DOWN updates on click without rebuilding the menu.
+	# Same role as the F1 hotkey but discoverable for players who never
+	# realize the keyboard shortcut exists.
+	_pause_viewmode_btn(Vector2(640, 400))
+	_pause_btn("SAVE RUN",     Vector2(640, 452), Color(0.5, 0.75, 1.0), _save_run,       true)
+	_pause_btn("SETTINGS",     Vector2(640, 504), Color(0.85, 0.7, 1.0), _open_settings,  true)
+	_pause_btn("TITLE SCREEN", Vector2(640, 556), Color(0.7, 0.55, 1.0), _on_title,       true)
+	_pause_btn("QUIT",         Vector2(640, 608), Color(0.55, 0.55, 0.6),_on_quit,        true)
 	# DEBUG opens a sub-panel listing devtest toggles (hitboxes, names,
 	# blind, …). Mirrors the SETTINGS pattern: hides main buttons on open,
 	# BACK restores them. Kept in the always-built section (not just
 	# test_mode) so anyone running locally can quickly poke at the toggles.
-	_pause_btn("DEBUG",        Vector2(640, 596), Color(0.8, 0.6, 0.4),  _open_debug,     true)
+	_pause_btn("DEBUG",        Vector2(640, 648), Color(0.8, 0.6, 0.4),  _open_debug,     true)
 	# Volume slider lives directly on the main pause panel so the player
 	# doesn't need to dive into the settings sub-panel just to nudge volume.
 	# Track the just-added widgets so they hide alongside the other main
 	# buttons when SETTINGS opens.
 	var _pre_count: int = _pause_menu.get_child_count()
-	_add_volume_slider(648, _pause_menu)
+	_add_volume_slider(700, _pause_menu)
 	# Mobile run-stats line — only visible on phones since the HUD's gold
 	# / kills / floor readouts are hidden there. Refreshed on every
 	# pause-menu open via _refresh_pause_run_stats().
@@ -1019,6 +1051,53 @@ func _refresh_autoplay_pause_label() -> void:
 	_pause_autoplay_label.add_theme_color_override("font_color",
 		_autoplay_pause_btn_color())
 
+# View-mode cycle — same role as the F1 hotkey but exposed as a discoverable
+# pause-menu button. Pressing cycles TOPDOWN → 3RD PERSON → 1ST PERSON →
+# TOPDOWN, mirrors GameState.RENDER_MODE_NAMES, and persists via save_settings.
+const _VIEWMODE_PAUSE_COLOR := Color(0.55, 0.85, 1.0)
+
+func _pause_viewmode_btn(pos: Vector2) -> void:
+	_pause_viewmode_label = Label.new()
+	_pause_viewmode_label.position = pos
+	_pause_viewmode_label.size = Vector2(320, 36)
+	_pause_viewmode_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_pause_viewmode_label.add_theme_font_size_override("font_size", 20)
+	_pause_viewmode_label.add_theme_color_override("font_color", _VIEWMODE_PAUSE_COLOR)
+	_pause_menu.add_child(_pause_viewmode_label)
+
+	var btn := Button.new()
+	btn.flat = true
+	btn.text = ""
+	btn.position = pos - Vector2(4, 2)
+	btn.size = Vector2(328, 40)
+	btn.pressed.connect(func() -> void:
+		# Village can't host TOPDOWN restrictions any more (it builds its own
+		# FP rig as of the village FP pass), so cycle freely from inside the
+		# pause menu in any scene.
+		GameState.cycle_render_mode()
+		GameState.save_settings()
+		_refresh_viewmode_pause_label())
+	btn.mouse_entered.connect(func() -> void:
+		if not is_instance_valid(_pause_viewmode_label):
+			return
+		_pause_viewmode_label.add_theme_color_override("font_color",
+			_VIEWMODE_PAUSE_COLOR.lightened(0.35)))
+	btn.mouse_exited.connect(func() -> void:
+		if not is_instance_valid(_pause_viewmode_label):
+			return
+		_pause_viewmode_label.add_theme_color_override("font_color",
+			_VIEWMODE_PAUSE_COLOR))
+	_pause_menu.add_child(btn)
+	_pause_main_buttons.append(_pause_viewmode_label)
+	_pause_main_buttons.append(btn)
+	_refresh_viewmode_pause_label()
+
+func _refresh_viewmode_pause_label() -> void:
+	if _pause_viewmode_label == null:
+		return
+	var name_idx: int = clampi(GameState.render_mode, 0, GameState.RENDER_MODE_NAMES.size() - 1)
+	_pause_viewmode_label.text = "[ VIEW: %s ]" % GameState.RENDER_MODE_NAMES[name_idx]
+
 func _refresh_pause_run_stats() -> void:
 	if _pause_run_stats_label == null:
 		return
@@ -1088,7 +1167,6 @@ func _build_settings_panel() -> void:
 	_settings_root.add_child(title)
 
 	_add_crt_toggle(Vector2(640, 360), _settings_root)
-	_add_limb_drift_toggle(Vector2(640, 398), _settings_root)
 	_add_flash_toggle(Vector2(640, 562), _settings_root)
 	_add_volume_slider(422, _settings_root)
 	_add_difficulty_slider(496, _settings_root)
@@ -1220,6 +1298,13 @@ func _build_debug_panel() -> void:
 			GameState.font_choice = (GameState.font_choice + 1) % MonoFont.choice_count()
 			MonoFont.invalidate()
 			GameState.save_settings())
+	# Elemental overstack — overrides the active wand's per-shot stack count
+	# to 100 for freeze / fire / shock, so a single hit immediately pops
+	# ENFLAMED / FROZEN / ELECTRIFIED. Useful for stress-testing the status
+	# overlays. No effect on regular / pierce / nova / love etc.
+	_add_debug_toggle(Vector2(640, 600), _debug_root, "STATUS x100",
+		func() -> bool: return GameState.debug_status_x100,
+		func(v: bool) -> void: GameState.debug_status_x100 = v)
 
 	# BACK button — mirrors _build_settings_panel's back row.
 	var back_lbl := Label.new()
@@ -1807,6 +1892,17 @@ func _humanize_test_key(key: String) -> String:
 	return key.capitalize()
 
 func _toggle_pause() -> void:
+	# Debounce — on the web build, pressing plain ESC fires twice in quick
+	# succession: once from the browser's pointer-lock release synthetic
+	# event, and once from the actual user keypress. Without this guard the
+	# pause toggles on then immediately off, the menu flickers, and the
+	# cursor re-locks. 150 ms is well above any human double-tap and well
+	# under the browser's double-fire delay. Use Shift+Esc on web — the
+	# browser doesn't intercept it, so only one toggle fires (cleaner path).
+	var now: int = Time.get_ticks_msec()
+	if now - _last_pause_toggle_msec < 150:
+		return
+	_last_pause_toggle_msec = now
 	_is_paused = not _is_paused
 	_pause_menu.visible = _is_paused
 	# Force-close the inventory when toggling the pause menu; decrement its
@@ -1820,6 +1916,7 @@ func _toggle_pause() -> void:
 	if _is_paused:
 		_refresh_weapon_stats_panel()
 		_refresh_autoplay_pause_label()
+		_refresh_viewmode_pause_label()
 		_refresh_pause_run_stats()
 	else:
 		# Make sure the settings sub-panel doesn't linger on next pause-open.
@@ -2813,6 +2910,10 @@ func _input(event: InputEvent) -> void:
 		return
 	match event.physical_keycode:
 		KEY_ESCAPE:
+			# Shift+Esc is the web-friendly pause hotkey — the browser
+			# doesn't intercept Shift+Esc for pointer-lock release, so
+			# the menu opens once and stays open. Plain Esc still works
+			# (with the debounce in _toggle_pause guarding the double-fire).
 			if not _is_dead:
 				_toggle_pause()
 				get_viewport().set_input_as_handled()
@@ -2852,6 +2953,9 @@ func _input(event: InputEvent) -> void:
 			GameState.font_choice = (GameState.font_choice + 1) % MonoFont.choice_count()
 			MonoFont.invalidate()
 			GameState.save_settings()
+			var fl := get_node_or_null("HUD/FontLabel")
+			if fl is Label:
+				(fl as Label).text = "Font: " + MonoFont.current_name()
 			FloatingText.spawn_str(global_position + Vector2(0.0, -32.0),
 				"FONT: " + MonoFont.current_name(),
 				Color(0.85, 0.75, 0.5), get_tree().current_scene)
@@ -3538,6 +3642,8 @@ func _find_nearest_visible_enemy() -> Node2D:
 	for e in get_tree().get_nodes_in_group("enemy"):
 		if not is_instance_valid(e):
 			continue
+		if (e as Node).is_in_group("bewitched"):
+			continue   # love-wand ally — autoplay won't fire on them
 		var ne := e as Node2D
 		var is_boss := ne.is_in_group("boss")
 		var d_sq: float = global_position.distance_squared_to(ne.global_position)
@@ -3568,6 +3674,8 @@ func _autoplay_find_visible_enemy() -> Node2D:
 	for e in get_tree().get_nodes_in_group("enemy"):
 		if not is_instance_valid(e):
 			continue
+		if (e as Node).is_in_group("bewitched"):
+			continue   # love-wand ally — autoplay won't fire on them
 		if _autoplay_skipped_enemies.has(e.get_instance_id()):
 			continue
 		var ne := e as Node2D
@@ -3828,6 +3936,8 @@ func _autoplay_enemy_pressure_force() -> Vector2:
 	for e in get_tree().get_nodes_in_group("enemy"):
 		if not is_instance_valid(e):
 			continue
+		if (e as Node).is_in_group("bewitched"):
+			continue   # don't dodge our own allies
 		var ne := e as Node2D
 		var to_e: Vector2 = ne.global_position - global_position
 		var d_sq := to_e.length_squared()
@@ -5573,7 +5683,7 @@ func _fire(wand: Item = null) -> void:
 				bProj.set("apply_burn",   st == "fire")
 				bProj.set("apply_shock",  st == "shock")
 				bProj.set("apply_love",   st == "love")
-				bProj.set("status_stacks", maxi(1, wand.wand_status_stacks))
+				bProj.set("status_stacks", _effective_status_stacks(wand))
 				bProj.set("pierce_remaining",   wand.wand_pierce if st == "pierce" else 0)
 				bProj.set("ricochet_remaining", wand.wand_ricochet if st == "ricochet" else 0)
 				var bSpd: float = wand.wand_proj_speed * (1.0 + randf_range(-BURST_SPEED_JIT, BURST_SPEED_JIT))
@@ -5626,7 +5736,9 @@ func _fire(wand: Item = null) -> void:
 		proj.set("apply_love", wand.wand_shoot_type == "love")
 		# Pass the wand's per-shot stack count so freeze/fire/shock apply
 		# multiple stacks per hit (was effectively 1 regardless of value).
-		proj.set("status_stacks", maxi(1, wand.wand_status_stacks))
+		# Debug menu's STATUS x100 toggle overrides this to 100 for elemental
+		# types so a single shot pops ENFLAMED / FROZEN / ELECTRIFIED.
+		proj.set("status_stacks", _effective_status_stacks(wand))
 		var proj_speed := wand.wand_proj_speed
 		if "slow_shots" in wand.wand_flaws:
 			proj_speed *= 0.5
@@ -6209,11 +6321,25 @@ func _on_death() -> void:
 	RunHistory.add_run(GameState.portals_used, GameState.kills, GameState.gold,
 		GameState.damage_dealt, GameState.biome)
 	_build_death_leaderboard(ranks)
+	_show_death_reaper()
 	$HUD/DeathMenu.visible = true
 	# If the run cracked the local top 10 in any category, prompt for a name
 	# and submit to the global leaderboard.
 	if _made_top_10(ranks) and OnlineLeaderboard.is_configured():
 		_show_global_submit_prompt()
+
+# Loads the curated grim-reaper ASCII art behind the "YOU DIED" title. Uses
+# the project monospace font so the art's columns line up. Drawn between the
+# dark overlay and the title (scene child order), tinted faint blood-red.
+func _show_death_reaper() -> void:
+	var art := get_node_or_null("HUD/DeathMenu/ReaperArt") as Label
+	if art == null:
+		return
+	art.add_theme_font_override("font", MonoFont.get_font())
+	if art.text == "":
+		var path := "res://assets/ascii/grim_reaper.txt"
+		if FileAccess.file_exists(path):
+			art.text = FileAccess.get_file_as_string(path)
 
 func _respawn_test() -> void:
 	health = _max_hp()

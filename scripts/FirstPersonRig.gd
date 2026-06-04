@@ -852,50 +852,38 @@ func register_entity(body: Node2D, glyph: String = "X", color: Color = Color(0.9
 	var line_labels: Array[Label3D] = []
 	# Multi-line entities take one of two paths:
 	#  - Consolidated (default): a single Label3D with embedded \n. Native
-	#    Godot multi-line text — 1 draw call regardless of row count, and
-	#    status overlays just append more \n lines. The headline win for
-	#    bigger ASCII sprites.
-	#  - Legacy per-row: a Node3D parent with one Label3D child per row.
-	#    Required when the entity needs sub-row positioning (the wizard's
-	#    `fp_line_x_offsets` half-shifts the robe) or floor-decal flat
-	#    layout. Opt-in via those metas.
+	#    Godot multi-line text — 1 draw call regardless of row count. Works for
+	#    the symmetric small enemy art (center-aligned).
+	#  - Per-row grid: a Node3D parent with one Label3D child per row. Each row
+	#    KEEPS its leading spaces (single-line labels preserve them; a multi-line
+	#    label trims continuation-row leading), left-aligns, and shares a left
+	#    origin shifted by half the block width — so columns line up and the
+	#    block centres. The parent turns to face the camera as a rigid plane.
+	#    Used for leading-space "grid" art (the wizard via `fp_grid`) and for
+	#    floor decals (which lie flat instead of facing the camera).
 	var is_consolidated: bool = is_multiline \
 		and not is_floor_decal \
-		and not body.has_meta("fp_line_x_offsets")
+		and not body.has_meta("fp_grid")
 	if is_multiline and not is_consolidated:
 		lbl = Node3D.new()
-		# Scale per-row pixel_size so the whole multi-line entity fits in
-		# the same vertical envelope as a single-line entity (mirrors the
-		# pixel_size / line_count auto-scale the old single-Label3D path
-		# used). Without this, each row renders at the base size and a
-		# 5-row wizard towers 5x taller than it should.
 		var line_count: int = raw_lines.size()
 		var row_ps: float = pixel_size / float(maxi(1, line_count))
 		var line_h: float = 64.0 * row_ps * ROW_SPACING
 		var mid_row: float = float(line_count - 1) * 0.5
-		# Per-row x offset (in CHARS) for fine-tuning rows that the
-		# even-char-count CENTER alignment lands a half-char off. Body
-		# may expose `fp_line_x_offsets` as an Array[float], one entry
-		# per row; missing entries default to 0.
-		var x_offsets: Array = []
-		if body.has_meta("fp_line_x_offsets"):
-			var xv: Variant = body.get_meta("fp_line_x_offsets")
-			if xv is Array:
-				x_offsets = xv
-		# 1 char in world units ≈ font_size * row_ps * advance_ratio.
-		const CHAR_ADVANCE_RATIO: float = 0.55
-		var char_world: float = 64.0 * row_ps * CHAR_ADVANCE_RATIO
+		var font_ref: Font = MonoFont.get_font()
+		var char_w: float = font_ref.get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, 64).x * row_ps
+		var max_cols: int = 1
+		for rl0 in raw_lines:
+			max_cols = maxi(max_cols, String(rl0).length())
+		var half_w: float = 0.5 * float(max_cols) * char_w
 		for i in line_count:
-			# Strip leading AND trailing whitespace so each row's visible
-			# content centers around the parent X position.
-			var row_text: String = (raw_lines[i] as String).strip_edges()
 			var row_lbl := Label3D.new()
-			row_lbl.text = row_text
-			row_lbl.font = MonoFont.get_font()
+			row_lbl.text = String(raw_lines[i])   # keep leading spaces — they place the columns
+			row_lbl.font = font_ref
 			row_lbl.font_size = 64
 			row_lbl.outline_size = outline_size
 			row_lbl.pixel_size = row_ps
-			row_lbl.billboard = BaseMaterial3D.BILLBOARD_DISABLED if is_floor_decal else BaseMaterial3D.BILLBOARD_ENABLED
+			row_lbl.billboard = BaseMaterial3D.BILLBOARD_DISABLED
 			row_lbl.no_depth_test = false
 			row_lbl.shaded = false
 			row_lbl.double_sided = true
@@ -903,17 +891,16 @@ func register_entity(body: Node2D, glyph: String = "X", color: Color = Color(0.9
 			row_lbl.outline_modulate = Color(0, 0, 0, 1)
 			row_lbl.alpha_cut = Label3D.ALPHA_CUT_DISCARD
 			row_lbl.layers = LAYER_ENT
-			var row_x_off: float = 0.0
-			if i < x_offsets.size():
-				row_x_off = float(x_offsets[i]) * char_world
-			row_lbl.position = Vector3(row_x_off, (mid_row - float(i)) * line_h, 0.0)
+			row_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+			row_lbl.position = Vector3(-half_w, (mid_row - float(i)) * line_h, 0.0)
 			lbl.add_child(row_lbl)
 			line_labels.append(row_lbl)
 	elif is_consolidated:
-		# Single Label3D with the full multi-line glyph. Godot Label3D
-		# centers each line independently around the local X axis when
-		# HORIZONTAL_ALIGNMENT_CENTER is set, matching the legacy stacked
-		# look without per-row children.
+		# Single Label3D with the full multi-line glyph. Godot Label3D centers
+		# each line independently — fine for the symmetric small enemy art that
+		# uses this path. (Asymmetric leading-space "grid" art can't use a single
+		# Label3D because continuation rows get their leading whitespace trimmed;
+		# such sprites render per-row instead — see the grid branch below.)
 		var sl_c := Label3D.new()
 		sl_c.text = glyph
 		sl_c.font = MonoFont.get_font()
@@ -1380,19 +1367,27 @@ func _process(delta: float) -> void:
 				new_row.outline_modulate = Color(0, 0, 0, 1)
 				new_row.alpha_cut = Label3D.ALPHA_CUT_DISCARD
 				new_row.layers = LAYER_ENT
+				new_row.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 				lbl.add_child(new_row)
 				row_labels.append(new_row)
 			entry["line_labels"] = row_labels
 			# Position + text + modulate per row. Hide leftover rows.
 			var line_h: float = 64.0 * ps_now * ROW_SPACING
-			var mid_row: float = float(live_lines_arr.size() - 1) * 0.5
+			# Anchor the base art to a fixed vertical envelope (designed_rows) so
+			# status lines prepended on top (burn/shock/poison glyphs) extend
+			# UPWARD instead of shoving the whole sprite down — this was the
+			# "limbs jump when burn procs" bug. Bottom art row stays put.
+			var bottom_y: float = -0.5 * float(maxi(1, designed_rows) - 1) * line_h
 			var x_offsets2: Array = []
 			if body.has_meta("fp_line_x_offsets"):
 				var xv2: Variant = body.get_meta("fp_line_x_offsets")
 				if xv2 is Array:
 					x_offsets2 = xv2
-			const CHAR_ADVANCE_RATIO_2: float = 0.55
-			var char_world2: float = 64.0 * ps_now * CHAR_ADVANCE_RATIO_2
+			# Real monospace advance from the live font (was a 0.55 estimate that
+			# under-counted wide fonts like Press Start 2P → the half-width
+			# centering offset was too small and the whole grid sprite drifted
+			# right; the player wizard was a visible example).
+			var char_world2: float = MonoFont.get_font().get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, 64).x * ps_now
 			# Limb drift — each row is its own billboard, so an x offset
 			# fixed in WORLD space parallax-swings relative to the body as
 			# the camera orbits (the rows "float" loosely). Default OFF:
@@ -1400,7 +1395,7 @@ func _process(delta: float) -> void:
 			# vector so it always reads as a consistent screen-space shift
 			# (rows stay locked to the body). Opt in via the `fp_limb_drift`
 			# meta for the floaty effect.
-			var drift_on: bool = GameState.fp_limb_drift
+			var drift_on: bool = false   # limb drift retired — rows are a rigid camera-facing block
 			var cam_right := _camera.global_transform.basis.x
 			cam_right.y = 0.0
 			cam_right = cam_right.normalized() if cam_right.length() > 0.001 else Vector3.RIGHT
@@ -1425,13 +1420,13 @@ func _process(delta: float) -> void:
 				var row_lbl: Label3D = row_labels[i] as Label3D
 				if i < live_lines_arr.size():
 					row_lbl.visible = true
-					row_lbl.text = (live_lines_arr[i] as String).strip_edges()
+					row_lbl.text = String(live_lines_arr[i])   # keep leading spaces (grid columns)
 					row_lbl.modulate = final_modulate
 					row_lbl.pixel_size = ps_now
-					var row_x_off2: float = 0.0
+					var row_x_off2: float = -0.5 * char_world2 * float(live_lines_arr.reduce(func(a, l): return maxi(a, String(l).length()), 1))
 					if i < x_offsets2.size():
 						row_x_off2 = float(x_offsets2[i]) * char_world2
-					var row_y: float = (mid_row - float(i)) * line_h
+					var row_y: float = bottom_y + float(live_lines_arr.size() - 1 - i) * line_h
 					if is_floor_decal:
 						# Parent is rotated flat; keep rows in plain local
 						# space (local Y → world Z spreads them across the

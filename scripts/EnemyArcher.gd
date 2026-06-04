@@ -117,6 +117,13 @@ func _physics_process(delta: float) -> void:
 	if not is_instance_valid(_player):
 		return
 
+	if is_in_group("bewitched"):
+		var t: Node2D = EnemyBase.bewitched_target_for(self)
+		if t != null:
+			_player = t
+			_has_aggro = true
+		EnemyBase.tick_bewitched_visuals(self, delta)
+
 	if not _has_aggro:
 		_sight_timer -= delta
 		if _sight_timer <= 0.0:
@@ -209,6 +216,8 @@ func apply_status(effect: String, _duration: float) -> void:
 			if _poison_stacks >= 10:
 				_poison_stacks = 0
 				_trigger_poisoned()
+		"love_hit":
+			EnemyBase.bewitch(self)
 
 func _trigger_enflamed() -> void:
 	FloatingText.spawn_str(global_position, "ENFLAMED!", Color(1.0, 0.3, 0.0), get_tree().current_scene)
@@ -397,6 +406,11 @@ func _fire() -> void:
 
 	if projectile_scene == null or not is_instance_valid(_player):
 		return
+	# Re-check line of sight each shot so a wall that rose AFTER aggro — most
+	# notably a raised door / moving wall — stops the volley instead of letting
+	# arrows pass through it.
+	if not EnemyVision.has_los(self, _player.global_position):
+		return
 
 	var proj := projectile_scene.instantiate()
 	proj.global_position = global_position
@@ -428,7 +442,7 @@ func apply_buff(duration: float) -> void:
 	_effective_interval = shoot_interval / 2.0
 	_buff_timer        += duration
 
-func take_damage(amount: int) -> void:
+func take_damage(amount: int, _source: Node = null) -> void:
 	if _shield_active:
 		_shield_active = false
 		FloatingText.spawn_str(global_position, "BLOCKED!", Color(0.4, 0.9, 1.0), get_tree().current_scene)

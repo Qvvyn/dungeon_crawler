@@ -21,6 +21,7 @@ var is_elite: bool    = false
 var is_champion: bool = false
 var _anim_timer: float = 0.0
 var _anim_frame: int   = 0
+var _sprite: AsciiSpriteDriver = null   # gnome sprite (standalone enemy, manual driver)
 
 # Elite modifiers (0=none 1=shielded 2=splitting 3=enraged)
 var elite_modifier: int     = 0
@@ -60,19 +61,18 @@ func _ready() -> void:
 		enchant_scene = load("res://scenes/EnchantProjectile.tscn")
 	if elite_modifier == 1:
 		_shield_active = true
-	var lbl := get_node_or_null("AsciiChar")
+	var lbl := get_node_or_null("AsciiChar") as Label
 	if lbl:
-		var mono := MonoFont.get_font()
-		lbl.add_theme_font_override("font", mono)
-		lbl.add_theme_font_size_override("font_size", 13)
-		lbl.add_theme_constant_override("line_separation", -4)
-		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		lbl.vertical_alignment   = VERTICAL_ALIGNMENT_TOP
-		lbl.offset_left   = -30
-		lbl.offset_top    = -58
-		lbl.offset_right  =  32
-		lbl.offset_bottom =  12
-		lbl.text = ENCHANTER_F0
+		# Enchanters are gnomes. Drive the label with the gnome sprite; set the
+		# FP metas (size/grid/height) before World registers us with the rig.
+		_sprite = AsciiSpriteDriver.new()
+		if _sprite.setup(lbl, "fairy"):
+			var fm := _sprite.fp_metas()
+			for mk in fm:
+				set_meta(mk, fm[mk])
+		else:
+			_sprite = null
+			lbl.text = ENCHANTER_F0
 
 func _physics_process(delta: float) -> void:
 	if _buff_timer > 0.0:
@@ -83,6 +83,13 @@ func _physics_process(delta: float) -> void:
 
 	_tick_status(delta)
 	if not is_instance_valid(self): return
+
+	# Bewitched: still buffs the nearest "enemy"-group node, which now
+	# includes any bewitched allies the player has charmed too. Net effect
+	# is "random-target buffer" rather than a clean ally, but it doesn't
+	# crash and the heart particle keeps the conversion legible.
+	if is_in_group("bewitched"):
+		EnemyBase.tick_bewitched_visuals(self, delta)
 
 	_target = _nearest_ally()
 
@@ -189,6 +196,8 @@ func apply_status(effect: String, _duration: float) -> void:
 				_poison_tick = 0.0
 			else:
 				FloatingText.spawn_str(global_position, "VENOM %d/10" % _poison_stacks, Color(0.35, 1.0, 0.4), get_tree().current_scene)
+		"love_hit":
+			EnemyBase.bewitch(self)
 
 func _add_burn_stacks(count: int) -> void:
 	_burn_stacks = mini(_burn_stacks + count, 9)
@@ -216,11 +225,14 @@ func _tick_anim(delta: float) -> void:
 	var lbl := get_node_or_null("AsciiChar")
 	if lbl == null:
 		return
-	_anim_timer += delta
-	if _anim_timer >= 0.5:
-		_anim_timer = 0.0
-		_anim_frame = 1 - _anim_frame
-	lbl.text = ENCHANTER_F0 if _anim_frame == 0 else ENCHANTER_F1
+	if _sprite != null:
+		_sprite.tick(delta, velocity.length_squared() > 100.0)
+	else:
+		_anim_timer += delta
+		if _anim_timer >= 0.5:
+			_anim_timer = 0.0
+			_anim_frame = 1 - _anim_frame
+		lbl.text = ENCHANTER_F0 if _anim_frame == 0 else ENCHANTER_F1
 	# Status overlays: ice / fire glyphs follow this enemy when frozen / enflamed.
 	FrozenBlock.sync_to(self, _frozen)
 	EnflameOverlay.sync_to(self, _enflamed)
@@ -274,13 +286,15 @@ func apply_buff(duration: float) -> void:
 	_effective_interval = enchant_interval / 2.0
 	_buff_timer += duration
 
-func take_damage(amount: int) -> void:
+func take_damage(amount: int, _source: Node = null) -> void:
 	if _shield_active:
 		_shield_active = false
 		FloatingText.spawn_str(global_position, "BLOCKED!", Color(0.4, 0.9, 1.0), get_tree().current_scene)
 		return
 	var actual := int(float(amount) * 1.25) if (_frozen or _chill_stacks > 0) else amount
 	health -= actual
+	if _sprite != null and health > 0:
+		_sprite.set_state("hurt")
 	FloatingText.spawn(global_position, actual, false, get_tree().current_scene)
 	_update_health_bar()
 	if elite_modifier == 3 and not _enrage_triggered and health > 0 and health * 2 <= max_health:

@@ -115,6 +115,8 @@ func _cleanup_visual() -> void:
 	_telegraph_line = null
 
 func _enemy_anim_update(delta: float) -> void:
+	if _sprite != null:
+		return   # driver owns the label (minotaur sprite)
 	_anim_t += delta
 	var rate := 0.12 if _state == State.DASH else 0.32
 	if _anim_t >= rate:

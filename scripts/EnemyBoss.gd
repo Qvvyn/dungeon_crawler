@@ -15,6 +15,7 @@ var health: int             = 40
 var _player: Node2D         = null
 var _anim_timer: float      = 0.0
 var _anim_frame: int        = 0
+var _sprite: AsciiSpriteDriver = null   # boss_brute sprite (standalone boss, manual driver)
 var _shoot_timer: float     = 0.5
 var _teleport_timer: float  = 10.0
 var _phase: int             = 1
@@ -100,19 +101,17 @@ func _ready() -> void:
 	BossIntro.show_for(get_tree().current_scene, "THE VOID HERALD", Color(1.0, 0.45, 0.20))
 	if SoundManager:
 		SoundManager.play("boss_roar")
-	var lbl := get_node_or_null("AsciiChar")
+	var lbl := get_node_or_null("AsciiChar") as Label
 	if lbl:
-		var mono := MonoFont.get_font()
-		lbl.add_theme_font_override("font", mono)
-		lbl.add_theme_font_size_override("font_size", 22)
-		lbl.add_theme_constant_override("line_separation", -4)
-		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		lbl.vertical_alignment   = VERTICAL_ALIGNMENT_TOP
-		lbl.offset_left   = -64
-		lbl.offset_top    = -42
-		lbl.offset_right  =  68
-		lbl.offset_bottom =  72
-		lbl.text = BOSS_F0
+		_sprite = AsciiSpriteDriver.new()
+		if _sprite.setup(lbl, "boss_brute"):
+			var fm := _sprite.fp_metas()
+			for mk in fm:
+				set_meta(mk, fm[mk])
+		else:
+			_sprite = null
+			lbl.add_theme_font_override("font", MonoFont.get_font())
+			lbl.text = BOSS_F0
 
 func _physics_process(delta: float) -> void:
 	if not is_instance_valid(_player):
@@ -200,7 +199,10 @@ func _physics_process(delta: float) -> void:
 		_anim_frame = 1 - _anim_frame
 	var _lbl := get_node_or_null("AsciiChar")
 	if _lbl:
-		_lbl.text = BOSS_F0 if _anim_frame == 0 else BOSS_F1
+		if _sprite != null:
+			_sprite.tick(delta, velocity.length_squared() > 100.0)
+		else:
+			_lbl.text = BOSS_F0 if _anim_frame == 0 else BOSS_F1
 		FrozenBlock.sync_to(self, _frozen)
 		EnflameOverlay.sync_to(self, _enflamed)
 		PoisonOverlay.sync_to(self, _poisoned)
@@ -356,6 +358,10 @@ func _get_status_modulate() -> Color:
 	return Color.WHITE
 
 func _fire() -> void:
+	# Don't fire through walls — a raised door / moving wall between the boss
+	# and the player holds the volley instead of phasing through it.
+	if not is_instance_valid(_player) or not EnemyVision.has_los(self, _player.global_position):
+		return
 	if _phase == 3:
 		for i in 16:
 			var angle := _spiral_angle + (TAU / 16.0) * float(i)
@@ -574,7 +580,7 @@ func _update_boss_bar() -> void:
 	# +699 (full) so the fill expands rightward from the same start point.
 	_boss_bar_fg.offset_right = -699.0 + 1398.0 * ratio
 
-func take_damage(amount: int) -> void:
+func take_damage(amount: int, _source: Node = null) -> void:
 	var actual := int(float(amount) * 1.25) if (_frozen or _chill_stacks > 0) else amount
 	var r: Dictionary = _gate.apply(actual, health, max_health)
 	if r.triggered:

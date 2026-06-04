@@ -7,28 +7,49 @@ __/_\__
 A DISCLAIMER FOR CLAUDE: not all of these are things to definitely implement, its more of a malleable soft idea board
 
 =================  IDEAS / BUGS / NOTES  =================
+
+monster thoughts:
+created the grim reaper, nigh unkillable just run. other very threatening enemies which can be added. if you cant handle it, run.
+enemy that must be looked at to stop its movement toward you? isn't dmgable normally? scp 173? mmmm fun 
+-have the minotaur be an enemy that chases after the player, does damage to them if they are touching, and periodically sends out small circular aoe's around it. be sure to give this expanding ring a visual in fp. perhaps he will charge quickly in a straight line at the player periodically, and occasionally send out the ring which can stun the player if it hits them, enabling him to pounce on them.
+
 change Q to a burst ability around player pushing everything away and out of its range. if it pushes an enemy into a wall, make them take dmg?
 
-adjust the shield. if pressing control it will do a concentrate, and for shield it will give a full circle protection and cost 4x. need to animate the shield in fp, both versions.
-ctrl 4xing mana cost to 3x dmg? would it ever not be used?
+adjust the shield. if pressing control it will do a concentrate, and for shield it will give a full circle protection and cost 4x
 
 as well as further consider and contemplate the moving away from gear... i think gear can stay but the manual equipping would get quite tedious. 
-straying away from loot as a whole tbh.. put ppl love getting loot....
-im thinking of straying away from wand flaws for now.
-
-
-created the grim reaper, nigh unkillable just run. other very threatening enemies which can be added. if you cant handle it, run.
-enemy that must be looked at to stop its movement toward you? isn't dmgable normally? scp 173? mmmm fun difficulty.... and creepy....
+straying away from loot as a whole tbh.. put ppl love getting loot.... i think its just too much to reasonably or enjoyably go through at the moment. progression can be more player based?
+im thinking of straying away from wand flaws for now too
 
 more deadly traps
 
-map geometry for ambushes still needed
+hp regen feels bad. give more or get rid of it. 
+
+some story, some flavor, incentivize the intrepid wizard...
+
+i am feeling some inspiration for the ascii art... perhaps the number of lines for a piece will determine the severity of the enemy
+
+we can modify the difficulty of enemies as the difficulty goes up, ie: sniper tracking gets faster.
+
+bosses from early levels can become regular enemies later on. centaur, brute, 
+
 
 =================  VISUALS  ==================
+spider, ghost, slime, eye, brute, bat need help
+gryphon and lion are too sideways to make sense visually?
+
+the newly added enemies need to be given more animations.
+
+if animations fail, just flip them on the y axis to simulate animation repeatedly. only works with symmetrical characters tho!! (weapons)
+
+
+i want to give the pretty pretty man a place in the town
+
 player wizard needs more animation, he is boring to look at.
 
-wall beam hazard waRMup is a bit visually ambiguous... should we come up with a more universal warning beam now?
+also get rid of the BEAM! text. we should cull a bunch text of text....
 
+beam warning color tweaks
 adjust flickering lighting
 
 fire ascii dot burn looks good from afar, should just have it stay in place longer? seems resource intensive
@@ -39,23 +60,39 @@ get rid of the overhead ()( and ZzZ?
 
 the fire dot needs sliiiiight tweaking. a more robust mid section? stop disappearing, instead, shift the )(... oh but the space mid might cause the orange....
 
-the size cap of an enemy will have to be tweaked enemy-to-enemy. some should be bigger.
-
-what if setting the flames around helped visibility?
-
 =================  4 l8r  ==================
 -you can hire help. but they may die. in fact, likely will. charge you more based on difficulty and their own usefulness. most are swordsmen. but this is a game for wizards. you are judged by the world for the magiks you use. 
 -okay but this as an mmo.... hmmmmmmmmm..... will you walk the dungeon with me...?
 -you once again contemplate adding a melee class to play... perhaps a wizard of PUNCHING? lets you keep the same magic types...
 -secret treats for players who figure out to lure certain creatures behind the enemy trap wall?
 -what if enemies all had eyes and a dying animation where the eyes turned to Xs, the entire body goes black, then fades away
--fonts: i like press start 2p for crunch.
+-what if setting the flames around helped visibility?
+Shadow Tower (1998)
+
 
 
 =================  OLDER (some already shipped)  =================
 
 done?
 
+please give me a list of all enemy types and a description of their behavior/stats. how do they do damage and try to impede the player? are there any spawn conditions for them? bosses included too please.
+
+remove these fonts: cutive mono, share tech mono, pxplus IBM vga, perfect dos vga, courier new, jetbrains mono, 
+
+also, assign the gnome sprite to be the summoner, change knight (8 in gallery) to be the berserker, let the bat (#13) be the new lurker, make jester animate with the y axis, and switch spider2 to be the spider sprite.
+
+make a debug feature that will make whatever shot type (if applicable) stack 100 times (so only shock, ice and fire).
+
+very line dense enemies like Gollum seem to change the player's view orientation in fp, they should always be looking straight ahead like they are playing.. what is being done? we are also going to have to more intentionally choose what heights to portray different size enemies at relative to the floor. lets small enemies feel smaller and down low, or enemies of various sizes which can fly at the player at eye level like bats, or large lumbering beasts who tower above the player. 5 different sizes, determining ceilings for enemy size. and in the gallery, remove the pill shaped cylinder, and place the player wizard. lets have them be size 3 for now
+
+-fonts: i like press start 2p and VT323 for the crunchy feel they have. start 2p seems to make things a bit too wide for the complex ascii art, but i really like it for many of the single character projectiles. adds to the feel of the game. i want to find more fonts like these (almost 8-bit like?) to experiment with. also get rid of the special elite font
+
+of the sprites created, the ghost and the reaper are my clear favorites, the reaper reads beautifully with the correct font, but its a huge number of lines. would that be a problem? also the knight with two weapons made me want to create some armored humanoid baseline art which can be given different weapons and armor tweaks for variance...
+
+its time for a big overhaul of graphics, lets delve into ascii art that looks good and is intentional. have a list of things ive found and linked in a file called ascii art i like. 
+should we make something or use something to turn images into ascii art? how should we approach this efficiently?
+
+do we need to undo the shrinking of other z visuals? after finding what actually needed to be shrunk?
 
 the hitbox for the shield is too big, being a full quarter of a circle rather than just the edge of the quarter of a circle. shots should still be able to make it past the thin shield wall if it doesn't go up in time. also the visualization for the shield in fp need works. can we just have an object get crunched like with the beam but in the appropriate curvature?
 

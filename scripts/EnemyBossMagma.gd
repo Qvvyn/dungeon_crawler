@@ -218,6 +218,8 @@ func _tick_fan(delta: float) -> void:
 		return
 	_fan_timer = FAN_INT
 	if not is_instance_valid(_player): return
+	# Don't fan-fire through a raised door / moving wall.
+	if not EnemyVision.has_los(self, _player.global_position): return
 	var base_dir: Vector2 = (_player.global_position - global_position).normalized()
 	var arc_rad: float = deg_to_rad(FAN_ARC_DEG)
 	for i in FAN_COUNT:
@@ -362,7 +364,7 @@ func _get_status_modulate() -> Color:
 		pulse = 0.92
 	return Color(1.0, 0.45 * pulse, 0.10 * pulse)
 
-func take_damage(amount: int) -> void:
+func take_damage(amount: int, _source: Node = null) -> void:
 	# Shock crit — same +25% as other bosses.
 	var actual := int(float(amount) * 1.25) if (_shock_stacks >= 5) else amount
 	var r: Dictionary = _gate.apply(actual, health, max_health)

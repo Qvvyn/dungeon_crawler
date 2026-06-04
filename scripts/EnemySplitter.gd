@@ -16,3 +16,7 @@ func _ready() -> void:
 	# manage halfling lifecycle ourselves.
 	elite_modifier = 2
 	_split_scene = SPLIT_SCENE
+
+# Splitters use the ghost sprite (gallery #2) instead of the goblin.
+func _chaser_sprite_key() -> String:
+	return "ghost"

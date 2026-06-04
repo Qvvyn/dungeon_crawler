@@ -1,10 +1,9 @@
 extends EnemyBase
 
 # Tiny, fast, fragile chaser. Spawned in groups, passes through other enemies,
-# damages the player on contact.
-
-const F0 := " \\|/ \n-(*)-\n /|\\ "
-const F1 := " /|\\ \n=(o)=\n \\|/ "
+# damages the player on contact. Its ASCII art + idle/walk/hurt/death frames
+# live in AsciiSprites under the "spider" key (resolved via EnemyBase's
+# SCRIPT_TO_KEY map), driven by AsciiSpriteDriver — no inline frame swapping.
 
 const MOVE_SPEED       := 310.0
 const CONTACT_DAMAGE   := 1
@@ -13,25 +12,11 @@ const CONTACT_COOLDOWN := 0.55
 const SIGHT            := 560.0
 
 var _contact_cd: float = 0.0
-var _anim_t: float     = 0.0
-var _anim_f: int       = 0
 
 func _on_ready_extra() -> void:
 	max_health  = 2   # kept low — spiders are swarm fodder, the threat is volume
 	health      = max_health
 	_sight_range = SIGHT
-	if _lbl:
-		_lbl.text = F0
-		_lbl.add_theme_font_size_override("font_size", 13)
-		_lbl.add_theme_constant_override("line_separation", -3)
-		# EnemyBase positions the glyph label high to leave room below for big
-		# enemy glyphs (Chaser "Z" at font 36, Tank "T" etc). The spider art
-		# is small — recentre on the body so the visual sits over the
-		# collision shape and the health bar sits directly below.
-		_lbl.offset_left   = -22.0
-		_lbl.offset_top    = -22.0
-		_lbl.offset_right  =  22.0
-		_lbl.offset_bottom =  18.0
 
 func _enemy_tick(delta: float) -> void:
 	if _frozen or _stun_timer > 0.0:
@@ -60,6 +45,9 @@ func _enemy_tick(delta: float) -> void:
 			_player.apply_status("slow", 1.2)
 		_contact_cd = CONTACT_COOLDOWN
 
+# Animation is fully driven by AsciiSpriteDriver via EnemyBase._tick_anim_base;
+# the spider no longer swaps _lbl.text itself.
+
 func _move_through(delta: float, vel: Vector2) -> void:
 	var motion := vel * delta
 	if motion.length_squared() < 0.0001:
@@ -87,11 +75,3 @@ func _move_through(delta: float, vel: Vector2) -> void:
 	# Fell through all iterations without hitting a wall — just move
 	global_position += motion
 
-func _enemy_anim_update(delta: float) -> void:
-	_anim_t += delta
-	if _anim_t >= 0.12:
-		_anim_t = 0.0
-		_anim_f = 1 - _anim_f
-	var t := F0 if _anim_f == 0 else F1
-	if _lbl.text != t:
-		_lbl.text = t

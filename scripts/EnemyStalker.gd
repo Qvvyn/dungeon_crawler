@@ -195,6 +195,8 @@ func _on_melee_hit(body: Node2D) -> void:
 	body.take_damage(HIT_DAMAGE, self)
 
 func _enemy_anim_update(delta: float) -> void:
+	if _sprite != null:
+		return   # AsciiSpriteDriver owns the label (eye sprite); modulate states still apply
 	if _state == State.HIDDEN:
 		return   # static glyph while idle
 	_anim_t += delta

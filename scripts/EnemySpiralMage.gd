@@ -37,6 +37,10 @@ func _enemy_tick(delta: float) -> void:
 		_fire_pulse()
 
 func _fire_pulse() -> void:
+	# Hold the barrage when a wall (incl. a raised door) blocks the player —
+	# no casting a spiral through a solid moving wall.
+	if not is_instance_valid(_player) or not EnemyVision.has_los(self, _player.global_position):
+		return
 	_spiral += ROTATE_PER_PULSE
 	for i in SHOTS_PER_PULSE:
 		var ang := _spiral + (TAU / float(SHOTS_PER_PULSE)) * float(i)
@@ -51,6 +55,8 @@ func _fire_pulse() -> void:
 		get_tree().current_scene.add_child(p)
 
 func _enemy_anim_update(delta: float) -> void:
+	if _sprite != null:
+		return   # driver owns the label (jester sprite)
 	_anim_t += delta
 	if _anim_t >= 0.18:
 		_anim_t = 0.0

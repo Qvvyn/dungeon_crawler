@@ -112,8 +112,6 @@ func _try_spawn_minion() -> void:
 	m.set_meta("spawner_id", get_instance_id())
 	enemies_node.call_deferred("add_child", m)
 	_telegraph_t = 0.6
-	FloatingText.spawn_str(global_position, "A WHISPER…",
-		Color(0.85, 0.55, 0.95), get_tree().current_scene)
 
 # Counts how many enemies on the floor came out of THIS spawner. Linear scan
 # of the Enemies node — fine for the typical <45 live enemies cap.

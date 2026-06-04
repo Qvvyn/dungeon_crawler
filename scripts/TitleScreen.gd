@@ -109,6 +109,24 @@ func _build_ui() -> void:
 	# Bump GameState.GAME_VERSION on each release.
 	_lbl(GameState.GAME_VERSION, Vector2(1500, 855), 11, Color(0.35, 0.30, 0.45))
 
+	# ── Dev: ASCII sprite preview/approval gallery (bottom-left) ──────────────
+	# Reliable entry point — F6 only runs the gallery if that scene tab is the
+	# active one in the editor, which trips people up. Click here or press F9.
+	var gal_lbl := _lbl("[ SPRITE GALLERY · F9 ]", Vector2(70, 852), 12, Color(0.30, 0.45, 0.55))
+	var gal_btn := Button.new()
+	gal_btn.flat     = true
+	gal_btn.position = Vector2(68, 850)
+	gal_btn.size     = Vector2(230, 26)
+	gal_btn.pressed.connect(_open_gallery)
+	gal_btn.mouse_entered.connect(func() -> void:
+		gal_lbl.add_theme_color_override("font_color", Color(0.5, 0.72, 0.88)))
+	gal_btn.mouse_exited.connect(func() -> void:
+		gal_lbl.add_theme_color_override("font_color", Color(0.30, 0.45, 0.55)))
+	_design_root.add_child(gal_btn)
+
+func _open_gallery() -> void:
+	get_tree().change_scene_to_file("res://scenes/SpriteGallery.tscn")
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 # Multi-line ASCII art label, monospace, centered horizontally. Used for
@@ -221,6 +239,8 @@ func _input(event: InputEvent) -> void:
 		return
 	if event.physical_keycode == KEY_ENTER or event.physical_keycode == KEY_SPACE:
 		_on_start()
+	elif event.physical_keycode == KEY_F9:
+		_open_gallery()
 	elif event.physical_keycode == KEY_ESCAPE:
 		_on_quit()
 

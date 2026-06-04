@@ -234,6 +234,9 @@ func _tick_shots(delta: float) -> void:
 func _fire_aimed() -> void:
 	if not is_instance_valid(_player):
 		return
+	# Don't fire through a raised door / moving wall.
+	if not EnemyVision.has_los(self, _player.global_position):
+		return
 	var base_dir := (_player.global_position - global_position).normalized()
 	var jitter := randf_range(-0.28, 0.28)
 	var proj: Node = PROJECTILE_SCENE.instantiate()
@@ -351,7 +354,7 @@ func _get_status_modulate() -> Color:
 		return Color(1.0, flicker * 0.35, 0.05)
 	return Color.WHITE
 
-func take_damage(amount: int) -> void:
+func take_damage(amount: int, _source: Node = null) -> void:
 	# Phantom form ignores incoming damage entirely
 	if _is_invuln:
 		FloatingText.spawn_str(global_position, "ETHEREAL", Color(0.7, 0.4, 1.0), get_tree().current_scene)

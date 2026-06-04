@@ -23,7 +23,10 @@ const RENDER_MODE_NAMES := ["TOP-DOWN", "3RD PERSON", "1ST PERSON"]
 # the pixelated scene and react. TOPDOWN stays at 1.0×.
 const NON_TOPDOWN_TIME_SCALE: float = 0.75
 
-var render_mode: int = RenderMode.TOPDOWN
+# Default to 3rd-person on first launch (no saved settings yet). Players who
+# explicitly cycled to TOPDOWN / 1st-person have their choice persisted via
+# save_settings() and restored on reload.
+var render_mode: int = RenderMode.THIRD_PERSON
 # The currently-active first-person rig node (FirstPersonRig or RaycasterRig)
 # during a run, or null while TOPDOWN. World.gd publishes it here when it
 # instantiates the rig so entities can register / unregister visuals without
@@ -209,6 +212,12 @@ var fp_blinded: bool = false
 # exclusive with fp_blinded in the debug menu cycle — only one can be on
 # at a time. Re-applied on render-mode flips via _apply_fp_lighting_to_rig.
 var fp_illuminated: bool = false
+# Debug toggle: overrides every freeze / fire / shock projectile's
+# status_stacks to 100 per hit, so a single shot pops ENFLAMED / FROZEN /
+# ELECTRIFIED instantly. Mainly for stress-testing the status overlays and
+# checking how fast a build can cycle elemental procs. Session-only — not
+# persisted to settings.json.
+var debug_status_x100: bool = false
 # FP render resolution — when true, the SubViewport renders at half size
 # (with proportionally smaller cell_px) so the GPU processes 75% fewer
 # pixels. Same number of ASCII characters on screen; slightly softer look.
@@ -310,7 +319,7 @@ func _load_settings() -> void:
 		var wc: String = String(result.get("wizard_color", ""))
 		if wc != "" and Color.html_is_valid(wc):
 			wizard_color = Color.html(wc)
-		render_mode         = clampi(int(result.get("render_mode", RenderMode.TOPDOWN)),
+		render_mode         = clampi(int(result.get("render_mode", RenderMode.THIRD_PERSON)),
 									 0, RenderMode.size() - 1)
 		infinite_mana       = bool(result.get("infinite_mana", false))
 		infinite_health     = bool(result.get("infinite_health", false))

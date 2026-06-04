@@ -11,6 +11,32 @@ const FIRE_PATCH_SCRIPT = preload("res://scripts/FirePatch.gd")
 
 @export var max_health: int = 5
 
+# ASCII sprite system. A non-empty key (explicit export OR resolved from the
+# script name via SCRIPT_TO_KEY) routes this enemy's AsciiChar Label through
+# AsciiSpriteDriver for multi-frame idle/walk/hurt/death art. Leave it blank
+# and the enemy keeps the legacy single-glyph path untouched.
+@export var sprite_key: String = ""
+const SCRIPT_TO_KEY := {
+	"EnemySpider": "spider2",
+	"EnemyStalker": "bat",
+	"EnemyBanshee": "ghost_big",
+	"EnemyPhantom": "ghost_big",
+	"EnemyBerserker": "knight",
+	"EnemyCharger": "minotaur",
+	"EnemyBeamSweep": "jester_head",
+	"EnemySpiralMage": "jester",
+	"EnemyReflector": "reflector",
+	"EnemyBoneDrake": "bone_drake",
+	"EnemyMissileTurret": "eye2",
+	"EnemyMineLayer": "brute",
+	"EnemyFrostSentinel": "ice_sentinel",
+	"EnemyGrenadier": "grenadier",
+	"EnemyBomber": "bomber",
+}
+var _sprite: AsciiSpriteDriver = null
+var _dying: bool               = false
+var _anim_prev_pos: Vector2    = Vector2.ZERO   # for position-based walk/idle detection
+
 var health: int                = 5
 var passive: bool              = false
 var _player: Node2D            = null
@@ -94,13 +120,27 @@ func _ready() -> void:
 	collision_layer = 2
 	collision_mask  = 1
 	health = max_health
+	_anim_prev_pos = global_position
 	_player = get_tree().get_first_node_in_group("player")
 	if elite_modifier == 1:
 		_shield_active = true
 	_health_bar_fg = get_node_or_null("HealthBar/Foreground")
 	_lbl = get_node_or_null("AsciiChar")
 	if _lbl:
-		_setup_label_font()
+		var key := _resolve_sprite_key()
+		if key != "":
+			_sprite = AsciiSpriteDriver.new()
+			if _sprite.setup(_lbl, key):
+				# Apply FP metadata BEFORE register_entity below so the rig
+				# bakes the correct multi-line row count + pixel size.
+				var fm := _sprite.fp_metas()
+				for mk in fm:
+					set_meta(mk, fm[mk])
+			else:
+				_sprite = null
+		# Legacy single-glyph styling only when no sprite drives the label.
+		if _sprite == null:
+			_setup_label_font()
 	_setup_status_label()
 	_update_health_bar()
 	# First-person modes hide every top-down glyph the enemy owns
@@ -117,8 +157,15 @@ func _ready() -> void:
 			and GameState.active_rig.has_method("register_entity"):
 		var enemy_glyph: String = "B" if (is_elite or is_champion) else "d"
 		var tier: int = 2 if is_champion else (1 if is_elite else 0)
+		# Sprite-driven enemies register with their actual multi-line art (the
+		# idle frame the driver already wrote into the label) so the rig picks
+		# the consolidated multi-line billboard path instead of single-glyph.
+		if _sprite != null and _lbl != null and _lbl.text != "":
+			enemy_glyph = _lbl.text
 		GameState.active_rig.register_entity(self, enemy_glyph, GameState.enemy_fp_color(tier))
 	_on_ready_extra()
+	if _sprite != null:
+		_sprite.reapply()   # sprite wins over any label art the subclass set in _on_ready_extra
 
 func _exit_tree() -> void:
 	# Drop our entry from the rig's registry on death / despawn so the rig
@@ -180,7 +227,25 @@ func _setup_label_font() -> void:
 
 func _on_ready_extra() -> void: pass
 
+# Resolves the active sprite key: explicit export wins, else map from the
+# script's file name (e.g. EnemySpider.gd -> "spider"). Returns "" when this
+# enemy has no authored sprite (keeps the legacy single-glyph path).
+func _resolve_sprite_key() -> String:
+	if sprite_key != "":
+		return sprite_key
+	var sp := get_script() as Script
+	if sp != null:
+		var base := sp.resource_path.get_file().get_basename()
+		return String(SCRIPT_TO_KEY.get(base, ""))
+	return ""
+
 func _physics_process(delta: float) -> void:
+	# While dying, freeze AI/movement but keep advancing the death animation
+	# (eyes -> X -> blacken) and let the fade tween finish before queue_free.
+	if _dying:
+		if _sprite != null:
+			_sprite.tick(delta, false)
+		return
 	if _buff_timer > 0.0:
 		_buff_timer -= delta
 		if _buff_timer <= 0.0:
@@ -398,6 +463,81 @@ func _trigger_bewitched() -> void:
 func _should_melee_hit(body: Node) -> bool:
 	return melee_hit_filter(self, body)
 
+# Group-based bewitch trigger callable from any enemy script — the inheritance
+# tree is split (most common enemies override apply_status without inheriting
+# EnemyBase's love_hit branch), so each script's apply_status calls this
+# helper instead of duplicating the trigger logic. Bosses resist. Tint +
+# floater + group join are all the trigger needs; movement retargeting is
+# driven by tick_bewitched_target() each frame.
+static func bewitch(node: Node) -> void:
+	if not is_instance_valid(node):
+		return
+	if node.is_in_group("boss") or node.is_in_group("portal_wizard"):
+		if node is Node2D:
+			FloatingText.spawn_str((node as Node2D).global_position, "RESISTS!",
+				Color(1.0, 0.25, 0.45), node.get_tree().current_scene)
+		return
+	if node.is_in_group("bewitched"):
+		return
+	node.add_to_group("bewitched")
+	var lbl: Label = node.get_node_or_null("AsciiChar") as Label
+	if lbl != null:
+		lbl.add_theme_color_override("font_color", Color(1.00, 0.55, 0.85))
+	if node is Node2D:
+		FloatingText.spawn_str((node as Node2D).global_position, "BEWITCHED",
+			Color(1.00, 0.55, 0.85), node.get_tree().current_scene)
+	if "_has_aggro" in node:
+		node.set("_has_aggro", false)
+	node.set_meta("_bewitched_heart_t", 0.0)
+
+# Returns the bewitched node's best chase target: nearest non-bewitched enemy
+# in the floor, falling back to the player so the unit at least loiters near
+# the wizard instead of standing still. Subclasses with their own movement
+# code call this in _physics_process to swap their `_player` field.
+static func bewitched_target_for(node: Node) -> Node2D:
+	if not is_instance_valid(node) or not (node is Node2D):
+		return null
+	var pos: Vector2 = (node as Node2D).global_position
+	var best: Node2D = null
+	var best_dsq: float = INF
+	for n in node.get_tree().get_nodes_in_group("enemy"):
+		if n == node:
+			continue
+		if not is_instance_valid(n):
+			continue
+		if (n as Node).is_in_group("bewitched"):
+			continue
+		var nd := n as Node2D
+		var dsq: float = pos.distance_squared_to(nd.global_position)
+		if dsq < best_dsq:
+			best_dsq = dsq
+			best = nd
+	if best != null:
+		return best
+	return node.get_tree().get_first_node_in_group("player") as Node2D
+
+# Per-frame heart-particle tick for bewitched units that don't inherit
+# EnemyBase._retarget_bewitched (the 8 override-apply_status scripts).
+# Uses get_meta to track the spawn timer so subclasses don't have to declare
+# a field. Spawn rate matches the inherited path: one heart per second per
+# unit, with a small random x sway.
+static func tick_bewitched_visuals(node: Node, delta: float) -> void:
+	if not is_instance_valid(node) or not (node is Node2D):
+		return
+	if not node.is_in_group("bewitched"):
+		return
+	var t: float = float(node.get_meta("_bewitched_heart_t", 0.0))
+	t -= delta
+	if t <= 0.0:
+		t = 1.0
+		var sway: float = randf_range(-12.0, 12.0)
+		var pos: Vector2 = (node as Node2D).global_position
+		FloatingText.spawn_str(
+			pos + Vector2(sway, -8.0), "v",
+			Color(1.00, 0.55, 0.85),
+			node.get_tree().current_scene)
+	node.set_meta("_bewitched_heart_t", t)
+
 # Static so EnemyChaser / EnemyTank (which extend CharacterBody2D directly,
 # not EnemyBase) can call this without duplicating the logic. Reads the
 # attacker's bewitched state via group membership so it works even on scripts
@@ -496,6 +636,8 @@ func alert_by_sound(source_pos: Vector2, radius: float) -> void:
 		FloatingText.spawn_str(global_position, "!", Color(1.0, 0.9, 0.0), get_tree().current_scene)
 
 func take_damage(amount: int, _source: Node = null) -> void:
+	if _dying:
+		return                       # already dead — ignore late/AoE hits during the death anim
 	if _shield_active:
 		_shield_active = false
 		FloatingText.spawn_str(global_position, "BLOCKED!", Color(0.4, 0.9, 1.0), get_tree().current_scene)
@@ -506,6 +648,8 @@ func take_damage(amount: int, _source: Node = null) -> void:
 	var actual := int(float(amount) * 1.25) if (_frozen or _chill_stacks > 0) else amount
 	health -= actual
 	_hit_flash_t = 0.14
+	if _sprite != null and health > 0:
+		_sprite.set_state("hurt")
 	# Aggregate damage numbers — accumulate hits inside a short window then
 	# spawn one labeled "23" instead of three "8s". A pending hit kicks off
 	# the flush timer; subsequent hits before flush just add to the total.
@@ -548,8 +692,36 @@ func take_damage(amount: int, _source: Node = null) -> void:
 		# spawn via the scene tree, never references self.
 		if GameState.biome == 1 and not is_champion:
 			_schedule_catacombs_reanimation(global_position, get_tree())
-		EffectFx.spawn_death_pop(global_position, get_tree().current_scene)
-		queue_free()
+		# Sprite-driven enemies play their own eyes->X->blacken->fade death
+		# animation in place; the generic "x_x" pop would double up, so skip
+		# it and defer the free until the animation finishes.
+		if _sprite != null:
+			_begin_sprite_death()
+		else:
+			EffectFx.spawn_death_pop(global_position, get_tree().current_scene)
+			queue_free()
+
+# Plays the death animation in place, freezes the body, then frees it once the
+# sequence has played. Called only after the drop/XP block above has run, so
+# loot still spawns immediately on the killing blow.
+func _begin_sprite_death() -> void:
+	if _dying:
+		return
+	_dying = true
+	_sprite.set_state("death")
+	# Stop dealing damage / being targeted during the ~0.4s death anim.
+	var hb := get_node_or_null("MeleeHitbox")
+	if hb is Area2D:
+		(hb as Area2D).set_deferred("monitoring", false)
+	var bar := get_node_or_null("HealthBar")
+	if bar != null:
+		bar.visible = false
+	if _status_lbl != null:
+		_status_lbl.visible = false
+	var t := get_tree().create_timer(_sprite.death_duration())
+	t.timeout.connect(func() -> void:
+		if is_instance_valid(self):
+			queue_free())
 
 # Spawns a low-HP EnemyChaser at the given position 5 s after the host
 # died. Uses get_tree().create_timer so the host can be freed safely;
@@ -723,6 +895,13 @@ func _get_status_modulate() -> Color:
 
 func _tick_anim_base(delta: float) -> void:
 	if _lbl == null: return
+	if _sprite != null:
+		# Position-based movement detection — works for both move_and_slide
+		# enemies and ones that move manually while keeping velocity at zero
+		# (e.g. the spider's pass-through stepping).
+		var moved := global_position.distance_squared_to(_anim_prev_pos) > 0.25
+		_anim_prev_pos = global_position
+		_sprite.tick(delta, moved)
 	_enemy_anim_update(delta)
 	FrozenBlock.sync_to(self, _frozen)
 	EnflameOverlay.sync_to(self, _enflamed)

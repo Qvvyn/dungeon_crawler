@@ -1,0 +1,7 @@
+[gd_scene load_steps=2 format=3 uid="uid://ascii_set_piece"]
+
+[ext_resource type="Script" path="res://scripts/AsciiSetPiece.gd" id="1_setpiece"]
+
+[node name="AsciiSetPiece" type="CanvasLayer"]
+layer = 10
+script = ExtResource("1_setpiece")

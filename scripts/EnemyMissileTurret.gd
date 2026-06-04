@@ -72,6 +72,9 @@ func _tick_anim_base(delta: float) -> void:
 func _fire_missile() -> void:
 	_clear_lock()
 	if _proj_scene == null or not is_instance_valid(_player): return
+	# Don't fire through walls — re-check LOS so a raised door / moving wall
+	# between turret and player blocks the missile instead of phasing through.
+	if not EnemyVision.has_los(self, _player.global_position): return
 	var dir := (_player.global_position - global_position).normalized()
 	var p := _proj_scene.instantiate()
 	p.global_position = global_position

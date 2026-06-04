@@ -34,6 +34,7 @@ var _player: Node2D         = null
 var _summon_timer: float    = 3.0
 var _has_aggro: bool        = false
 var _sight_timer: float     = 0.0
+var _sprite: AsciiSpriteDriver = null   # gnome sprite (standalone enemy, manual driver)
 
 var _chill_stacks: int    = 0
 var _chill_decay_t: float = 0.0
@@ -59,19 +60,28 @@ func _ready() -> void:
 	_update_health_bar()
 	if elite_modifier == 1:
 		_shield_active = true
-	var lbl := get_node_or_null("AsciiChar")
+	var lbl := get_node_or_null("AsciiChar") as Label
 	if lbl:
-		var mono := MonoFont.get_font()
-		lbl.add_theme_font_override("font", mono)
-		lbl.add_theme_font_size_override("font_size", 13)
-		lbl.add_theme_constant_override("line_separation", -4)
-		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		lbl.vertical_alignment   = VERTICAL_ALIGNMENT_TOP
-		lbl.offset_left   = -30
-		lbl.offset_top    = -58
-		lbl.offset_right  =  32
-		lbl.offset_bottom =  12
-		lbl.text = SUMMONER_F0
+		# Summoners are gnome necromancers. Drive the label via the gnome sprite
+		# and publish FP metas (size/grid/height) before the rig registers us.
+		_sprite = AsciiSpriteDriver.new()
+		if _sprite.setup(lbl, "gnome"):
+			var fm := _sprite.fp_metas()
+			for mk in fm:
+				set_meta(mk, fm[mk])
+		else:
+			_sprite = null
+			var mono := MonoFont.get_font()
+			lbl.add_theme_font_override("font", mono)
+			lbl.add_theme_font_size_override("font_size", 13)
+			lbl.add_theme_constant_override("line_separation", -4)
+			lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+			lbl.vertical_alignment   = VERTICAL_ALIGNMENT_TOP
+			lbl.offset_left   = -30
+			lbl.offset_top    = -58
+			lbl.offset_right  =  32
+			lbl.offset_bottom =  12
+			lbl.text = SUMMONER_F0
 
 func _physics_process(delta: float) -> void:
 	if _buff_timer > 0.0:
@@ -83,6 +93,13 @@ func _physics_process(delta: float) -> void:
 		_player = get_tree().get_first_node_in_group("player")
 	if not is_instance_valid(_player):
 		return
+
+	if is_in_group("bewitched"):
+		var bt: Node2D = EnemyBase.bewitched_target_for(self)
+		if bt != null:
+			_player = bt
+			_has_aggro = true
+		EnemyBase.tick_bewitched_visuals(self, delta)
 
 	if not _has_aggro:
 		_sight_timer -= delta
@@ -109,13 +126,16 @@ func _physics_process(delta: float) -> void:
 		velocity = Vector2.ZERO
 	move_and_slide()
 
-	_anim_timer += delta
-	if _anim_timer >= 0.6:
-		_anim_timer = 0.0
-		_anim_frame = 1 - _anim_frame
-		var lbl := get_node_or_null("AsciiChar")
-		if lbl:
-			lbl.text = SUMMONER_F0 if _anim_frame == 0 else SUMMONER_F1
+	if _sprite != null:
+		_sprite.tick(delta, velocity.length_squared() > 100.0)
+	else:
+		_anim_timer += delta
+		if _anim_timer >= 0.6:
+			_anim_timer = 0.0
+			_anim_frame = 1 - _anim_frame
+			var lbl := get_node_or_null("AsciiChar")
+			if lbl:
+				lbl.text = SUMMONER_F0 if _anim_frame == 0 else SUMMONER_F1
 	# Status overlays follow the enemy each frame.
 	FrozenBlock.sync_to(self, _frozen)
 	EnflameOverlay.sync_to(self, _enflamed)
@@ -234,6 +254,8 @@ func apply_status(effect: String, _duration: float) -> void:
 				_trigger_poisoned()
 			else:
 				FloatingText.spawn_str(global_position, "VENOM %d/10" % _poison_stacks, Color(0.35, 1.0, 0.4), get_tree().current_scene)
+		"love_hit":
+			EnemyBase.bewitch(self)
 
 func _add_burn_stacks(count: int) -> void:
 	_burn_stacks = mini(_burn_stacks + count, 9)
@@ -276,7 +298,7 @@ func apply_buff(duration: float) -> void:
 	_speed_multiplier = 2.0
 	_buff_timer += duration
 
-func take_damage(amount: int) -> void:
+func take_damage(amount: int, _source: Node = null) -> void:
 	if _shield_active:
 		_shield_active = false
 		FloatingText.spawn_str(global_position, "BLOCKED!", Color(0.4, 0.9, 1.0), get_tree().current_scene)
@@ -285,6 +307,8 @@ func take_damage(amount: int) -> void:
 		_has_aggro = true
 	var actual := int(float(amount) * 1.25) if (_frozen or _chill_stacks > 0) else amount
 	health -= actual
+	if _sprite != null and health > 0:
+		_sprite.set_state("hurt")
 	FloatingText.spawn(global_position, actual, false, get_tree().current_scene)
 	_update_health_bar()
 	if elite_modifier == 3 and not _enrage_triggered and health > 0 and health * 2 <= max_health:

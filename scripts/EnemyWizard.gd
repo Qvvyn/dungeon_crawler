@@ -104,7 +104,7 @@ func _ready() -> void:
 		_lbl.text = WIZARD_F0
 		_lbl.add_theme_color_override("font_color", _pick_robe_color())
 	# FP per-row x nudge — legs rows compensate for even-char CENTER drift.
-	set_meta("fp_line_x_offsets", [0.0, 0.0, 0.0, 0.5, 0.5])
+	set_meta("fp_grid", true)   # render via the per-row grid path (clean leading-space columns)
 	# School indicator — tiny glyph above the wizard showing what type of
 	# damage to expect. Lets the player triage threats by element before
 	# engaging instead of getting surprised by what comes off the wand.
@@ -164,6 +164,13 @@ func _physics_process(delta: float) -> void:
 		_player = get_tree().get_first_node_in_group("player")
 	if not is_instance_valid(_player):
 		return
+
+	if is_in_group("bewitched"):
+		var bt: Node2D = EnemyBase.bewitched_target_for(self)
+		if bt != null:
+			_player = bt
+			_has_aggro = true
+		EnemyBase.tick_bewitched_visuals(self, delta)
 
 	if not _has_aggro:
 		_sight_timer -= delta
@@ -254,6 +261,8 @@ func apply_status(effect: String, _duration: float) -> void:
 			if _poison_stacks >= 10:
 				_poison_stacks = 0
 				_trigger_poisoned()
+		"love_hit":
+			EnemyBase.bewitch(self)
 
 func _trigger_enflamed() -> void:
 	FloatingText.spawn_str(global_position, "ENFLAMED!", Color(1.0, 0.3, 0.0), get_tree().current_scene)
@@ -421,7 +430,7 @@ func _spawn_proj(dir: Vector2, shoot_type: String) -> void:
 
 # ── Damage / death ──────────────────────────────────────────────────────────
 
-func take_damage(amount: int) -> void:
+func take_damage(amount: int, _source: Node = null) -> void:
 	if not _has_aggro:
 		_has_aggro = true
 		FloatingText.spawn_str(global_position, "!", Color(1.0, 0.9, 0.0), get_tree().current_scene)

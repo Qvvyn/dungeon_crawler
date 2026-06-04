@@ -63,7 +63,7 @@ func _enemy_anim_update(delta: float) -> void:
 	if _anim_t >= period:
 		_anim_t = 0.0
 		_anim_f = 1 - _anim_f
-		if _lbl:
+		if _lbl and _sprite == null:
 			_lbl.text = F0 if _anim_f == 0 else F1
 	if _arming and _lbl:
 		# Bright red pulse while telegraphing so it pops over the

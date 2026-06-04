@@ -640,6 +640,12 @@ func _register_all_entities_with(rig: Node) -> void:
 				elif child.get("is_elite") == true:
 					tier = 1
 				var glyph: String = "B" if tier > 0 else "D"
+				# Prefer the enemy's live AsciiChar art (multi-line for sprite-
+				# driven enemies) so the rig registers it on the consolidated
+				# multi-line path; falls back to the placeholder for plain ones.
+				var ascii := child.get_node_or_null("AsciiChar")
+				if ascii is Label and (ascii as Label).text != "":
+					glyph = (ascii as Label).text
 				rig.register_entity(child, glyph, GameState.enemy_fp_color(tier))
 	# Everything else (shrines / traps / loot / portals / village shops /
 	# floor hazards) self-tags into "fp_visible" via GameState.attach_fp_visual,

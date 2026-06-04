@@ -64,6 +64,9 @@ func _enemy_tick(delta: float) -> void:
 func _fire_shot() -> void:
 	if not is_instance_valid(_player):
 		return
+	# Re-check LOS so a raised door / moving wall blocks the shot.
+	if not EnemyVision.has_los(self, _player.global_position):
+		return
 	_visible_t = VISIBLE_TIME   # the firing window the player sees
 	var dir := (_player.global_position - global_position).normalized()
 	var p := PROJ_SCENE.instantiate()

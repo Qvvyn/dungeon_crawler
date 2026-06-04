@@ -78,6 +78,8 @@ func _on_melee_hit(body: Node2D) -> void:
 	body.take_damage(int(round(float(BASE_DAMAGE) * _rage_mult())), self)
 
 func _enemy_anim_update(delta: float) -> void:
+	if _sprite != null:
+		return   # driver owns the label (brute sprite)
 	_anim_t += delta
 	# Animation pace also scales with rage so the visual reads "more
 	# frenzied" as HP drops.

@@ -1202,13 +1202,7 @@ func _impact_shock(pos: Vector2) -> void:
 		tw.tween_property(arc, "modulate:a", 0.0, 0.22)
 		tw.tween_callback(arc.queue_free)
 		_fp_chain(pos, end_pt, fp_col)
-	# Shock engulf — z's wrapping the body. Was firing every hit with the
-	# default 0.007 pixel_size + count=2 across four bands, which painted
-	# over the enemy art on chunky fonts. Aggressive shrink:
-	#   pixel_size 0.007 → 0.0025 (~3× smaller)
-	#   count      2     → 1     (fewer glyphs per band, less screen clutter)
-	#   spread     0.45  → 0.30  (z's stay close to the silhouette)
-	_fp_engulf(pos, "z", fp_col, 1, 0.30, 0.24, 0.0025)
+	_fp_engulf(pos, "z", fp_col, 2)
 
 func _impact_shotgun(pos: Vector2) -> void:
 	var col := Color(1.0, 0.85, 0.10)

@@ -94,6 +94,8 @@ func _emit_pulse() -> void:
 		SoundManager.play("explosion", randf_range(1.10, 1.25))
 
 func _enemy_anim_update(delta: float) -> void:
+	if _sprite != null:
+		return   # driver owns the label (ghost sprite)
 	_anim_t += delta
 	if _anim_t >= 0.35:
 		_anim_t = 0.0

@@ -262,6 +262,8 @@ func _clear_fire_telegraph() -> void:
 	_fire_telegraph_ring = null
 
 func _fire_spread(count: int) -> void:
+	if not is_instance_valid(_player) or not EnemyVision.has_los(self, _player.global_position):
+		return
 	var base_dir := (_player.global_position - global_position).normalized()
 	var spread := deg_to_rad(36.0)
 	for i in count:
@@ -275,6 +277,8 @@ func _fire_spread(count: int) -> void:
 		get_tree().current_scene.add_child(proj)
 
 func _fire_nova() -> void:
+	if not is_instance_valid(_player) or not EnemyVision.has_los(self, _player.global_position):
+		return
 	for i in 12:
 		var angle := (TAU / 12.0) * float(i)
 		var proj: Node = PROJECTILE_SCENE.instantiate()
@@ -389,7 +393,7 @@ func _get_status_modulate() -> Color:
 		return Color(1.0, flicker * 0.35, 0.05)
 	return Color.WHITE
 
-func take_damage(amount: int) -> void:
+func take_damage(amount: int, _source: Node = null) -> void:
 	if _invuln_timer > 0.0:
 		return
 	var actual := int(float(amount) * 1.25) if (_frozen or _chill_stacks > 0) else amount
