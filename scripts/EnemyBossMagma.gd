@@ -81,7 +81,7 @@ func _ready() -> void:
 
 	var cshape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()
-	circ.radius = 34.0
+	circ.radius = 24.0   # navigable in tight corridors (art stays big)
 	cshape.shape = circ
 	add_child(cshape)
 
@@ -158,7 +158,7 @@ func _check_phases() -> void:
 
 # ── Erupt — drops puddles in a ring around the player ────────────────────────
 func _tick_erupt(delta: float) -> void:
-	_erupt_timer -= delta
+	_erupt_timer -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	if _erupt_timer > 0.0 or _no_attack_timer > 0.0:
 		return
 	_erupt_timer = ERUPT_INT_P2 if _phase >= 2 else ERUPT_INT_P1
@@ -222,7 +222,7 @@ func _arm_puddle(holder: Node2D) -> void:
 
 # ── Phase-2 fan shot ─────────────────────────────────────────────────────────
 func _tick_fan(delta: float) -> void:
-	_fan_timer -= delta
+	_fan_timer -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	if _fan_timer > 0.0 or _no_attack_timer > 0.0:
 		return
 	_fan_timer = FAN_INT

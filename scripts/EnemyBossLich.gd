@@ -71,7 +71,7 @@ func _ready() -> void:
 
 	var cshape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()
-	circ.radius = 32.0
+	circ.radius = 22.0   # navigable in tight corridors (art stays big)
 	cshape.shape = circ
 	add_child(cshape)
 
@@ -135,7 +135,7 @@ func _physics_process(delta: float) -> void:
 		velocity = _drift_dir * 80.0
 	move_and_slide()
 
-	_summon_t -= delta
+	_summon_t -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	if _summon_t <= 0.0 and _no_attack_timer <= 0.0:
 		_summon_t = SUMMON_INTERVAL
 		_summon_wave()

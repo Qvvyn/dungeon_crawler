@@ -847,10 +847,13 @@ static func generate_wand(rarity: int = Item.RARITY_COMMON) -> Item:
 	# _fire, manual play with a backwards wand reads as "wand is broken,
 	# why am I shooting myself" more than as a flaw to play around. Pool
 	# kept as a reference so re-enabling is one line.
+	# Wand flaws disabled for now (Item.WAND_FLAWS_ENABLED). The power→num_flaws
+	# math above is kept so re-enabling is a single flag flip.
 	var flaw_pool: Array = ["clunky", "sloppy", "slow_shots"]
-	flaw_pool.shuffle()
-	for i in num_flaws:
-		item.wand_flaws.append(flaw_pool[i])
+	if Item.WAND_FLAWS_ENABLED:
+		flaw_pool.shuffle()
+		for i in num_flaws:
+			item.wand_flaws.append(flaw_pool[i])
 
 	# Tier-driven scaling — same axis as generate_gear so wands and gear
 	# read off a single power number. Also stored on the item for the

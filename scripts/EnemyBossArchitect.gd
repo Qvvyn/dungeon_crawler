@@ -72,7 +72,7 @@ func _ready() -> void:
 
 	var cshape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()
-	circ.radius = 34.0
+	circ.radius = 24.0   # navigable in tight corridors (art stays big)
 	cshape.shape = circ
 	add_child(cshape)
 
@@ -236,7 +236,7 @@ func _tick_shoot(delta: float) -> void:
 		return
 
 	var interval := SHOOT_INT_P3 if _phase == 3 else (SHOOT_INT_P2 if _phase == 2 else SHOOT_INT_P1)
-	_shoot_timer -= delta
+	_shoot_timer -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	_update_fire_telegraph()
 	if _shoot_timer <= 0.0:
 		_shoot_timer = interval

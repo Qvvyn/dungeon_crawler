@@ -93,6 +93,37 @@ func enemy_fp_color_for(body: Node, tier: int = 0) -> Color:
 		return (lbl as Label).get_theme_color("font_color")
 	return enemy_fp_color(tier)
 
+# ── Enemy aggression: frequency-led difficulty ───────────────────────────────
+# Threat used to be flat in frequency — only HP + per-hit damage scaled, so deep
+# floors were spongey one-shotters, not a constant threat. enemy_attack_rate()
+# is a >1 multiplier applied to attack cadence: ~1.35× at floor 1 (baseline
+# punch-up so enemies press from the start) ramping to 3.0× on deep floors.
+# Divide a base interval by it (or use atk_interval) for the scaled cooldown.
+# Tune ATTACK_RATE_BASE / _SLOPE / _CAP to dial the whole roster at once.
+const ATTACK_RATE_BASE: float  = 1.35
+const ATTACK_RATE_SLOPE: float = 0.10
+const ATTACK_RATE_CAP: float   = 3.0
+func enemy_attack_rate() -> float:
+	var d: float = test_difficulty if test_mode else difficulty
+	return clampf(ATTACK_RATE_BASE + maxf(0.0, d - 1.0) * ATTACK_RATE_SLOPE, ATTACK_RATE_BASE, ATTACK_RATE_CAP)
+
+# Scaled attack cooldown for a base interval (smaller result = fires more often).
+func atk_interval(base: float) -> float:
+	return base / enemy_attack_rate()
+
+# ── Enemy damage rescale ─────────────────────────────────────────────────────
+# The player HP pool was rescaled to 100 base + 10/VIT (_max_hp = VIT×10), but
+# every enemy's base damage is still tuned for the old ~10-50 HP era, so even a
+# diff-100 Chaser barely scratched. ENEMY_DAMAGE_SCALE multiplies ALL incoming
+# enemy damage to rematch the new HP pool; DAMAGE_DIFF_SLOPE adds a per-hit
+# difficulty ramp on top (frequency still leads via enemy_attack_rate). Both are
+# single knobs — tune here to rebalance the whole roster.
+const ENEMY_DAMAGE_SCALE: float  = 5.0
+const DAMAGE_DIFF_SLOPE: float   = 0.20
+func enemy_damage_mult() -> float:
+	var d: float = test_difficulty if test_mode else difficulty
+	return ENEMY_DAMAGE_SCALE * (1.0 + sqrt(maxf(0.0, d - 1.0)) * DAMAGE_DIFF_SLOPE)
+
 # Refresh an already-attached entity's FP glyph/color without re-registering.
 # Used by LootBag when its rarity tier changes mid-floor so the FP bag re-
 # shapes and re-tints to match the 2D view. Also updates the meta fields so

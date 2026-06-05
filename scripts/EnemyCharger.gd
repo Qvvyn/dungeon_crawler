@@ -9,7 +9,7 @@ const MOVE_SPEED       := 95.0
 const TELEGRAPH_TIME   := 0.7
 const DASH_TIME        := 0.45
 const DASH_SPEED       := 720.0
-const COOLDOWN         := 1.2
+const COOLDOWN         := 0.8
 const CONTACT_DAMAGE   := 4
 const CONTACT_RADIUS   := 30.0
 const TELEGRAPH_RANGE  := 360.0
@@ -59,8 +59,10 @@ func _enemy_tick(delta: float) -> void:
 			if _state_t <= 0.0 or get_slide_collision_count() > 0:
 				_enter_cooldown()
 		State.COOLDOWN:
-			velocity = Vector2.ZERO
-			_state_t -= delta
+			# Relentless: keep advancing on the player during recovery (was a dead
+			# stop), and recover faster on deeper floors so dashes come more often.
+			velocity = (_player.global_position - global_position).normalized() * MOVE_SPEED * _speed_multiplier * slow_mult
+			_state_t -= delta * GameState.enemy_attack_rate()
 			if _state_t <= 0.0:
 				_state = State.CIRCLE
 
@@ -72,7 +74,8 @@ func _circle_player(slow_mult: float) -> void:
 		velocity = toward * MOVE_SPEED * _speed_multiplier * slow_mult
 	else:
 		var lat := toward.rotated(PI * 0.5)
-		velocity = (toward * 0.4 + lat * 0.6).normalized() * MOVE_SPEED * _speed_multiplier * slow_mult
+		# Relentless: bias hard toward the player so it closes while circling.
+		velocity = (toward * 0.75 + lat * 0.25).normalized() * MOVE_SPEED * _speed_multiplier * slow_mult
 
 func _enter_telegraph() -> void:
 	_state = State.TELEGRAPH

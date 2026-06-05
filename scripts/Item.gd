@@ -3,6 +3,11 @@ extends RefCounted
 
 enum Type { WAND, HAT, ROBES, FEET, RING, NECKLACE, SHIELD, TOME, VALUABLE, POTION }
 
+# Wand flaws are disabled for now (straying from the mechanic). One flag gates
+# both generation (ItemDB.generate_wand) and loading (from_dict below), so new,
+# banked, and saved wands all come through flawless. Flip to re-enable.
+const WAND_FLAWS_ENABLED := false
+
 # Ordered ascending so `item.rarity > other.rarity` still means "better."
 # Renumbering note: rare and legendary moved up by 1 to make room for
 # uncommon. Save files written before this change get silently down-
@@ -150,7 +155,7 @@ static func from_dict(d: Dictionary) -> Item:
 	it.wand_pierce       = int(d.get("wand_pierce", 0))
 	it.wand_ricochet     = int(d.get("wand_ricochet", 0))
 	it.wand_status_stacks = int(d.get("wand_status_stacks", 1))
-	it.wand_flaws        = (d.get("wand_flaws", []) as Array).duplicate()
+	it.wand_flaws        = (d.get("wand_flaws", []) as Array).duplicate() if WAND_FLAWS_ENABLED else []
 	it.wand_max_charges  = int(d.get("wand_max_charges", 0))
 	it.wand_charges      = int(d.get("wand_charges", 0))
 	it.wand_forge_count  = int(d.get("wand_forge_count", 0))

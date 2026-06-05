@@ -54,7 +54,7 @@ func _enemy_tick(delta: float) -> void:
 		_drift_dir = to_p.rotated(PI * 0.5) * sign_choice
 	velocity = _drift_dir * 60.0 * _speed_multiplier
 	# Shooting cycle.
-	_shoot_t -= delta
+	_shoot_t -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	if _shoot_t <= 0.0 and _no_attack_timer <= 0.0:
 		_shoot_t = SHOOT_INTERVAL + randf_range(-0.3, 0.3)
 		_fire_shot()

@@ -43,7 +43,7 @@ func _enemy_tick(delta: float) -> void:
 		return
 	match _bstate:
 		BState.IDLE:
-			_cycle_t -= delta
+			_cycle_t -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 			if _cycle_t <= 0.0 and _stun_timer <= 0.0 and _no_attack_timer <= 0.0:
 				_bstate = BState.TELEGRAPH
 				_bstate_t = TELEGRAPH_TIME

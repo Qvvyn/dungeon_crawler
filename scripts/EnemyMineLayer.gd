@@ -40,7 +40,7 @@ func _enemy_tick(delta: float) -> void:
 	if not _has_aggro: return
 	if _no_attack_timer > 0.0: return
 
-	_drop_t -= delta
+	_drop_t -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	if _drop_t <= 0.0:
 		_drop_t = DROP_INTERVAL
 		_drop_mine()

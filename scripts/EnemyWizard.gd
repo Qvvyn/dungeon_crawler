@@ -368,7 +368,7 @@ func _check_sight() -> void:
 # ── Wand-driven shooting ────────────────────────────────────────────────────
 
 func _tick_shoot(delta: float) -> void:
-	_shoot_timer -= delta
+	_shoot_timer -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	var interval := _effective_fire_interval()
 	if _shoot_timer <= 0.3 and not _telegraphing and _stun_timer <= 0.0 and _no_attack_timer <= 0.0:
 		_telegraphing = true

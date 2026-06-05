@@ -76,7 +76,7 @@ func _ready() -> void:
 
 	var cshape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()
-	circ.radius = 44.0   # chunky Devourer — enlarged hitbox to match FP scale
+	circ.radius = 26.0   # navigable: fits a 3-wide corridor (art stays big, collider doesn't)
 	cshape.shape = circ
 	add_child(cshape)
 
@@ -157,7 +157,7 @@ func _get_status_modulate() -> Color:
 func _tick_tether(delta: float) -> void:
 	if not is_instance_valid(_player):
 		return
-	_tether_t -= delta
+	_tether_t -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	match _tether_state:
 		TetherState.IDLE:
 			if _tether_t <= 0.0 and _no_attack_timer <= 0.0:
@@ -232,7 +232,7 @@ func _apply_tether_pull() -> void:
 # Bite — quick AoE hit when the player crowds the Devourer between
 # tethers. Soft damage cap via cooldown so chip-DPS isn't crippling.
 func _tick_bite(delta: float) -> void:
-	_bite_cd -= delta
+	_bite_cd -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	if _bite_cd > 0.0:
 		return
 	if not is_instance_valid(_player):

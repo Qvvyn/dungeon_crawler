@@ -297,7 +297,7 @@ func _tick_shoot(delta: float) -> void:
 		if _windup_elapsed >= WINDUP_TIME:
 			_finish_windup()
 		return
-	_shoot_timer -= delta
+	_shoot_timer -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	if _shoot_timer <= 0.0 and _stun_timer <= 0.0 and _no_attack_timer <= 0.0:
 		# Only commit to a shot when we actually have line of sight
 		if _has_los_to_player():

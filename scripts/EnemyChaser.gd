@@ -312,9 +312,11 @@ func _chase(delta: float) -> void:
 	var dist := to_player.length()
 	var direct_dir := to_player.normalized()
 
-	# Flank: at long range, approach from the side; angle closes as distance shrinks
+	# Relentless pursuit: mostly beeline at the player with only a slight flank
+	# arc at long range (was up to 0.45 weight, which read as loitering). Closes
+	# and commits instead of circling.
 	var perp := direct_dir.rotated(PI * 0.5) * _flank_side
-	var flank_weight := clampf((dist - 60.0) / 180.0, 0.0, 0.45)
+	var flank_weight := clampf((dist - 120.0) / 320.0, 0.0, 0.15)
 	var move_dir := (direct_dir + perp * flank_weight).normalized()
 
 	# Separation: cached every ~0.1s, staggered per enemy so recomputes don't pile up

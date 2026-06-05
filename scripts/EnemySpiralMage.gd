@@ -31,7 +31,7 @@ func _enemy_tick(delta: float) -> void:
 	if not _has_aggro: return
 	if _stun_timer > 0.0 or _no_attack_timer > 0.0: return
 
-	_pulse_t -= delta
+	_pulse_t -= delta   # already a dense spiral barrage — left un-scaled so it stays readable
 	if _pulse_t <= 0.0:
 		_pulse_t = PULSE_INTERVAL
 		_fire_pulse()

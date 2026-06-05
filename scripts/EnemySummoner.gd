@@ -143,7 +143,7 @@ func _physics_process(delta: float) -> void:
 	PoisonOverlay.sync_to(self, _poisoned)
 
 	if _has_aggro and _stun_timer <= 0.0 and _no_attack_timer <= 0.0 and not passive:
-		_summon_timer -= delta
+		_summon_timer -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 		if _summon_timer <= 0.0:
 			_summon_timer = summon_interval
 			_try_summon()

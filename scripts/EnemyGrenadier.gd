@@ -53,7 +53,7 @@ func _enemy_tick(delta: float) -> void:
 	if not _has_aggro: return
 	if _no_attack_timer > 0.0: return
 
-	_lob_t -= delta
+	_lob_t -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	if _lob_t <= TELEGRAPH_TIME and not _telegraphing:
 		_start_telegraph()
 	if _telegraphing:

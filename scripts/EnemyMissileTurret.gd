@@ -31,7 +31,7 @@ func _enemy_tick(delta: float) -> void:
 		_clear_lock()
 		return
 
-	_fire_t -= delta
+	_fire_t -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	if _fire_t <= TELEGRAPH_TIME and not _telegraphing:
 		_start_lock_on()
 	if _fire_t <= 0.0:

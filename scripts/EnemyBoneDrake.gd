@@ -58,7 +58,7 @@ func _enemy_tick(delta: float) -> void:
 	match _state:
 		State.CHASE:
 			velocity = to_p.normalized() * APPROACH_SPEED * _speed_multiplier * slow_mult
-			_attack_cd -= delta
+			_attack_cd -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 			if _attack_cd <= 0.0 and dist <= HITBOX_REACH * 1.5 and _no_attack_timer <= 0.0:
 				_state = State.COMBO
 				_combo_left = COMBO_HITS
@@ -72,7 +72,7 @@ func _enemy_tick(delta: float) -> void:
 				_state_t = COMBO_GAP
 			if _combo_left <= 0 and _state_t <= 0.0:
 				_state = State.RETREAT
-				_state_t = 0.7
+				_state_t = 0.3   # relentless: brief reposition, not a long back-off
 		State.RETREAT:
 			velocity = -to_p.normalized() * RETREAT_SPEED * _speed_multiplier * slow_mult
 			_state_t -= delta

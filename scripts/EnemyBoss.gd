@@ -94,7 +94,7 @@ func _ready() -> void:
 	set_meta("fp_pixel_size", 0.024)
 	var _cs := get_node_or_null("CollisionShape2D")
 	if _cs != null:
-		(_cs as Node2D).scale = Vector2(1.4, 1.4)
+		(_cs as Node2D).scale = Vector2(1.1, 1.1)   # navigable (was 1.4 — snagged in corridors)
 	_update_health_bar()
 	_create_boss_bar()
 	FloatingText.spawn_str(global_position, "BOSS!", Color(1.0, 0.2, 0.0), get_tree().current_scene)
@@ -180,7 +180,7 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 
 	var interval := SHOOT_INT_P3 if _phase == 3 else (SHOOT_INT_P2 if _phase == 2 else SHOOT_INT_P1)
-	_shoot_timer -= delta
+	_shoot_timer -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	# Telegraph the upcoming burst with a pulsing ring around the boss so the
 	# player can pre-position before pellets spray out.
 	_update_fire_telegraph()

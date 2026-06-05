@@ -5941,17 +5941,12 @@ func take_damage(amount: int, source: Node = null) -> void:
 			if d.length() > 0.0:
 				imp = global_position + d.normalized() * 26.0
 		GameState.active_rig.flash_melee(imp, Color(1.0, 0.35, 0.2))
-	# Higher difficulties make enemies more deadly — scale incoming damage
-	# before shield/DEF so both sources of mitigation apply consistently.
-	# Slope was 0.40 (deep floors one-shot); 0.30 keeps enemies dangerous
-	# without making two-bombers an instant death sentence.
-	var diff_for_dmg: float = GameState.test_difficulty if GameState.test_mode else GameState.difficulty
-	# Square-root curve replaces the old linear *0.30 slope. Diff 4 still feels
-	# dangerous (~1.7×) but diff 100+ no longer one-shots (~5× vs the old 30×),
-	# capping the deep-floor scaling that made even ~800 HP runs evaporate.
-	var dmg_mult: float = 1.0 + sqrt(maxf(0.0, diff_for_dmg - 1.0)) * 0.40
-	if dmg_mult > 1.0:
-		amount = max(1, int(round(float(amount) * dmg_mult)))
+	# Scale incoming damage before shield/DEF so both mitigations apply consistently.
+	# Global enemy-damage rescale (GameState.enemy_damage_mult): enemy base damage
+	# was tuned for the old ~10-50 HP era; the player now has 100 base HP (+10/VIT),
+	# so all incoming damage is scaled up to stay meaningful, with a difficulty ramp
+	# on top. Frequency still leads the threat curve via enemy_attack_rate.
+	amount = max(1, int(round(float(amount) * GameState.enemy_damage_mult())))
 	if _is_shielding:
 		var cost := float(amount) * SHIELD_MANA_PER_DMG
 		if mana >= cost:

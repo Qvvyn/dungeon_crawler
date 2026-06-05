@@ -2711,6 +2711,14 @@ func _carve_boss_arena() -> Rect2i:
 		0: _arena_layout_pillars(best)
 		1: _arena_layout_cross(best)
 		2: _arena_layout_corners(best)
+	# Guarantee an open plaza at the centre (where the boss spawns) so a large,
+	# non-pathfinding boss can never start boxed inside a stamped wall pattern —
+	# e.g. the cross layout's enclosed hole, which trapped the Magma Tyrant.
+	var c: Vector2i = best.get_center()
+	for yy in range(c.y - 4, c.y + 5):
+		for xx in range(c.x - 4, c.x + 5):
+			if xx >= 2 and xx < GRID_W - 2 and yy >= 2 and yy < GRID_H - 2:
+				_grid[yy][xx] = FLOOR
 	return best
 
 # Four 2×2 pillar walls at quartile positions — classic cover-shooter feel.

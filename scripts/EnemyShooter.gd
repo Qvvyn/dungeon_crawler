@@ -414,7 +414,7 @@ func _check_sight() -> void:
 # ── Shooting ──────────────────────────────────────────────────────────────────
 
 func _tick_shoot(delta: float) -> void:
-	_shoot_timer -= delta
+	_shoot_timer -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	if _shoot_timer <= 0.3 and not _telegraphing and _stun_timer <= 0.0 and _no_attack_timer <= 0.0:
 		_telegraphing = true
 	if _stun_timer > 0.0 or _no_attack_timer > 0.0:

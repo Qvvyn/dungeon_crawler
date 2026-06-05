@@ -153,7 +153,7 @@ func _physics_process(delta: float) -> void:
 	_tick_anim(delta)
 
 	if _has_aggro:
-		_attack_elapsed += delta
+		_attack_elapsed += delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 		if _attack_elapsed >= _effective_interval - 0.2 and _stun_timer <= 0.0 and _no_attack_timer <= 0.0:
 			_telegraphing = true
 		elif _stun_timer > 0.0 or _no_attack_timer > 0.0:

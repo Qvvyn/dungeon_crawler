@@ -448,6 +448,14 @@ func _physics_process(delta: float) -> void:
 				_spawn_overlap_walls[b.get_instance_id()] = true
 
 	var move := direction * speed * delta
+	# Anti-tunnel cap: very fast shots (high DEX ×1.6 + shock ×1.7 → ~2400 px/s)
+	# outran the Area2D enemy-overlap check between physics frames and skipped
+	# straight through enemies. Cap the per-frame STEP so the projectile can't
+	# jump past an enemy hurtbox — ~1200 px/s effective ceiling at 60 Hz, and
+	# framerate-safe (bounds the actual tunneling distance, not just speed).
+	const MAX_STEP: float = 20.0
+	if move.length() > MAX_STEP:
+		move = move.normalized() * MAX_STEP
 
 	# CCD wall check — raycasts ahead to prevent tunneling at high speeds.
 	# Restricted to layer 1 (walls / static geometry) so the ray ignores

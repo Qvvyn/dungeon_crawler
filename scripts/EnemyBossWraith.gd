@@ -68,7 +68,7 @@ func _ready() -> void:
 
 	var cshape := CollisionShape2D.new()
 	var circ := CircleShape2D.new()
-	circ.radius = 32.0
+	circ.radius = 22.0   # navigable in tight corridors (art stays big)
 	cshape.shape = circ
 	add_child(cshape)
 
@@ -213,7 +213,7 @@ func _check_phases() -> void:
 func _tick_blink(delta: float) -> void:
 	if _shots_queued > 0:
 		return
-	_blink_timer -= delta
+	_blink_timer -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	var interval := BLINK_INT_P2 if _phase >= 2 else BLINK_INT_P1
 	if _blink_timer <= 0.0:
 		_blink_timer = interval

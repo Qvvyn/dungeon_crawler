@@ -57,7 +57,7 @@ func _enemy_tick(delta: float) -> void:
 	var to_p: Vector2 = _player.global_position - global_position
 	velocity = to_p.normalized() * BASE_SPEED * _speed_multiplier * _rage_mult() * slow_mult
 
-	_attack_t -= delta
+	_attack_t -= delta * GameState.enemy_attack_rate()   # frequency-led difficulty
 	if _attack_t <= 0.0 and _no_attack_timer <= 0.0:
 		var dist := to_p.length()
 		if dist <= HITBOX_REACH * 1.5:
