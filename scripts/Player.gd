@@ -58,8 +58,10 @@ var _fire_rate_multiplier: float = 1.0
 # Each entry: {amount: int, source: String, ticks_msec: int, hp_after: int,
 # floor: int}. Surfaced on the death screen so the player can see what
 # actually killed them. Capped at DAMAGE_LOG_SIZE.
-const DAMAGE_LOG_SIZE: int = 5
+const DAMAGE_LOG_SIZE: int = 10
 var _damage_log: Array = []
+var _damage_chart_visible: bool = false   # F4 live damage chart (bottom-left)
+var _damage_chart_refresh_t: float = 0.0
 
 # Equipment stat bonuses (applied by InventoryManager)
 var _equip_speed_bonus: float = 0.0
@@ -2771,6 +2773,13 @@ func _process(_delta: float) -> void:
 	# cursor for FP mouse-look. process_mode = ALWAYS means this still ticks
 	# even while the tree is paused.
 	_sync_mouse_mode()
+	# Live damage chart (F4): refresh ~4×/sec so the "Xs ago" timers tick even
+	# between hits.
+	if _damage_chart_visible:
+		_damage_chart_refresh_t += _delta
+		if _damage_chart_refresh_t >= 0.25:
+			_damage_chart_refresh_t = 0.0
+			_refresh_damage_chart()
 	# While autoplay drives the camera in FP mode, mirror its chosen aim
 	# into _fp_heading so handing control back to the user doesn't snap
 	# the view back to where they were facing pre-autoplay.
@@ -2959,6 +2968,16 @@ func _input(event: InputEvent) -> void:
 			FloatingText.spawn_str(global_position + Vector2(0.0, -32.0),
 				"FONT: " + MonoFont.current_name(),
 				Color(0.85, 0.75, 0.5), get_tree().current_scene)
+			get_viewport().set_input_as_handled()
+		KEY_F4:
+			# Toggle the live damage chart in the bottom-left corner — shows the
+			# last 10 hits (source / dmg / HP-after / age), updating continuously.
+			# Works even with infinite vitals (F2) on so damage can be inspected.
+			_damage_chart_visible = not _damage_chart_visible
+			_refresh_damage_chart()
+			FloatingText.spawn_str(global_position + Vector2(0.0, -32.0),
+				"DAMAGE CHART: " + ("ON" if _damage_chart_visible else "OFF"),
+				Color(1.0, 0.6, 0.6), get_tree().current_scene)
 			get_viewport().set_input_as_handled()
 		KEY_BRACKETLEFT:   # [  →  random wand
 			if not _is_dead and not _is_paused:
@@ -5924,8 +5943,9 @@ func take_damage(amount: int, source: Node = null) -> void:
 		return
 	if _is_invincible:
 		return
-	if GameState.infinite_health:
-		return
+	# NOTE: infinite_health (F2) no longer returns early — we still compute and
+	# LOG the hit (so the F4 damage chart works while invincible for testing),
+	# and only skip the actual HP subtraction below.
 	# FP feedback: melee / contact enemies (Tank, Berserker, Charger, Spider,
 	# Chaser…) have no projectile to telegraph their hit, so in first-person
 	# the attack was invisible. Whenever an enemy *body* (not a projectile —
@@ -5980,18 +6000,27 @@ func take_damage(amount: int, source: Node = null) -> void:
 	amount = reduced
 	if amount <= 0:
 		return
-	health = max(0, health - amount)
+	# Infinite vitals (F2): keep logging the hit for the damage chart, but don't
+	# actually drain HP.
+	if not GameState.infinite_health:
+		health = max(0, health - amount)
 	# Log this hit to the rolling damage history so the death screen can
 	# show what actually killed the run. Source name pulled from the
 	# attacker's script (e.g. "EnemyChaser") so generic engine names like
 	# "CharacterBody2D" never show up; falls back to Node.name then "?".
 	var src_name: String = "?"
 	if source != null and is_instance_valid(source):
-		var scr: Script = source.get_script() as Script
-		if scr != null and scr.resource_path != "":
-			src_name = scr.resource_path.get_file().get_basename()
-		elif source is Node:
-			src_name = (source as Node).name
+		# Projectiles carry the monster that fired them — show that instead of
+		# the generic "Projectile" script name.
+		var sn: Variant = source.get("shooter_name") if ("shooter_name" in source) else null
+		if sn is String and String(sn) != "":
+			src_name = String(sn)
+		else:
+			var scr: Script = source.get_script() as Script
+			if scr != null and scr.resource_path != "":
+				src_name = scr.resource_path.get_file().get_basename()
+			elif source is Node:
+				src_name = (source as Node).name
 	_damage_log.append({
 		"amount":     amount,
 		"source":     src_name,
@@ -6001,6 +6030,8 @@ func take_damage(amount: int, source: Node = null) -> void:
 	})
 	while _damage_log.size() > DAMAGE_LOG_SIZE:
 		_damage_log.pop_front()
+	if _damage_chart_visible:
+		_refresh_damage_chart()
 	FloatingText.spawn(global_position, amount, false, get_tree().current_scene)
 	_update_health_bar()
 	# Visceral feedback: shake + red flash + varied hurt grunt
@@ -6447,7 +6478,7 @@ func _build_death_leaderboard(ranks: Dictionary) -> void:
 # died to OOB cleanup, etc.) shows a placeholder line.
 func _build_death_damage_log(parent: Node, pos: Vector2, size: Vector2) -> void:
 	var title := Label.new()
-	title.text = "— LAST 5 HITS —"
+	title.text = "— LAST 10 HITS —"
 	title.position = pos
 	title.size = Vector2(size.x, 22)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -6478,6 +6509,46 @@ func _build_death_damage_log(parent: Node, pos: Vector2, size: Vector2) -> void:
 			lines.append("%-22s %5d   %-7d   %s" % [src, dmg, hp_after, when_str])
 		body.text = "\n".join(lines)
 	parent.add_child(body)
+
+# Live bottom-left damage chart (F4) — last 10 hits, newest first, updating
+# continuously (incl. while F2 infinite vitals is on). Built lazily under $HUD.
+func _refresh_damage_chart() -> void:
+	var hud := get_node_or_null("HUD")
+	if hud == null:
+		return
+	var chart := hud.get_node_or_null("DamageChart") as Label
+	if chart == null:
+		chart = Label.new()
+		chart.name = "DamageChart"
+		chart.add_theme_font_override("font", MonoFont.get_font())
+		chart.add_theme_font_size_override("font_size", 12)
+		chart.add_theme_color_override("font_color", Color(0.96, 0.86, 0.86))
+		chart.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0))
+		chart.add_theme_constant_override("outline_size", 3)
+		chart.add_theme_constant_override("line_separation", 2)
+		chart.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hud.add_child(chart)
+	chart.visible = _damage_chart_visible
+	if not _damage_chart_visible:
+		return
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	chart.size = Vector2(580.0, 220.0)
+	chart.position = Vector2(12.0, vp.y - 232.0)
+	var now_ms: int = Time.get_ticks_msec()
+	var lines: Array = ["— DAMAGE TAKEN (last %d) —" % _damage_log.size(),
+		"%-20s %5s %-7s %s" % ["SOURCE", "DMG", "HP→", "AGO"]]
+	if _damage_log.is_empty():
+		lines.append("(no hits yet)")
+	else:
+		for i in range(_damage_log.size() - 1, -1, -1):   # newest first
+			var e: Dictionary = _damage_log[i] as Dictionary
+			var src: String = String(e.get("source", "?"))
+			if src.length() > 20:
+				src = src.substr(0, 20)
+			var ago: float = float(now_ms - int(e.get("ticks_msec", now_ms))) / 1000.0
+			lines.append("%-20s %5d %-7d %.1fs" % [
+				src, int(e.get("amount", 0)), int(e.get("hp_after", 0)), ago])
+	chart.text = "\n".join(lines)
 
 func _made_top_10(ranks: Dictionary) -> bool:
 	for cat in ["portals", "gold", "damage"]:

@@ -239,7 +239,7 @@ var infinite_health: bool = false
 # returns. Cycled via the debug menu. Persists across sessions; takes
 # effect on the next FP rig rebuild / scene reload since existing
 # Label3Ds / Labels hold their font reference at creation time.
-var font_choice: int = 0
+var font_choice: int = 3   # Departure Mono (MonoFont.FONTS index) — current favourite
 var show_hitboxes: bool = false
 # Debug overlay: floats each enemy's script-derived name above their head
 # in FP. Toggled with KEY_N. Useful for ID'ing which enemy type is which
@@ -365,7 +365,7 @@ func _load_settings() -> void:
 									 0, RenderMode.size() - 1)
 		infinite_mana       = bool(result.get("infinite_mana", false))
 		infinite_health     = bool(result.get("infinite_health", false))
-		font_choice         = clampi(int(result.get("font_choice", 0)), 0, 99)
+		font_choice         = clampi(int(result.get("font_choice", 3)), 0, 99)
 		fp_low_res          = bool(result.get("fp_low_res",   false))
 		# Mirror the loaded difficulty into the active run value so the title
 		# screen's slider starts where the player last left it.

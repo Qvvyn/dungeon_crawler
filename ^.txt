@@ -13,13 +13,13 @@ created the grim reaper, nigh unkillable just run. other very threatening enemie
 enemy that must be looked at to stop its movement toward you? isn't dmgable normally? scp 173? mmmm fun 
 -have the minotaur be an enemy that chases after the player, does damage to them if they are touching, and periodically sends out small circular aoe's around it. be sure to give this expanding ring a visual in fp. perhaps he will charge quickly in a straight line at the player periodically, and occasionally send out the ring which can stun the player if it hits them, enabling him to pounce on them.
 
+gameplay mechanics:
 change Q to a burst ability around player pushing everything away and out of its range. if it pushes an enemy into a wall, make them take dmg?
 
 adjust the shield. if pressing control it will do a concentrate, and for shield it will give a full circle protection and cost 4x
 
 as well as further consider and contemplate the moving away from gear... i think gear can stay but the manual equipping would get quite tedious. 
 straying away from loot as a whole tbh.. put ppl love getting loot.... i think its just too much to reasonably or enjoyably go through at the moment. progression can be more player based?
-im thinking of straying away from wand flaws for now too
 
 more deadly traps
 
@@ -37,26 +37,12 @@ bosses from early levels can become regular enemies later on. centaur, brute,
 concentrating spells can increase consumption by x?
 first person 50% slowdown with a mana cost attached?
 
-range of shot can be determined bby int or wis
+range of shot can be determined by int or wis
 
-i want the enemy wizard added to the gallery, as well as any other monsters (bosses included) which have not been thrown in there yet.
 
-and along with the gallery, i would like you to make a document for all of the ascii art in the game. 
-
-please additionally add all of the ascii art for objects like teleporters and shrines to the gallery.
 
 
 =================  VISUALS  ==================
-spider, ghost, slime, eye, brute, bat need help
-gryphon and lion are too sideways to make sense visually?
-
-the newly added enemies need to be given more animations.
-
-if animations fail, just flip them on the y axis to simulate animation repeatedly. only works with symmetrical characters tho!! (weapons)
-
-
-i want to give the pretty pretty man a place in the town
-
 player wizard needs more animation, he is boring to look at.
 
 also get rid of the BEAM! text. we should cull a bunch text of text....
@@ -68,7 +54,7 @@ fire ascii dot burn looks good from afar, should just have it stay in place long
 ice is maybe just the * symbol appearing more and larger over the body before the full freeze?
 shock needs a bit less per impact methinks..
 we break it down into sections, on hit projectiles, on hit if under a status effect, the engulfing of the body, and the fire dot/chain lightning/icecube-ing
-get rid of the overhead ()( and ZzZ?
+get rid of the overhead ()( and ZzZ? yes, looks teeny and stupid on the bigger sprites. also visuals for engulfed enemies should be scaled for the enemy size category now
 
 the fire dot needs sliiiiight tweaking. a more robust mid section? stop disappearing, instead, shift the )(... oh but the space mid might cause the orange....
 
@@ -88,6 +74,11 @@ Shadow Tower (1998)
 done?
 
 please give me a list of all enemy types and a description of their behavior/stats. how do they do damage and try to impede the player? are there any spawn conditions for them? bosses included too please.
+
+spider, ghost, slime, eye, brute, bat need help
+gryphon and lion are too sideways to make sense visually?
+
+i want to give the pretty pretty man a place in the town
 
 remove these fonts: cutive mono, share tech mono, pxplus IBM vga, perfect dos vga, courier new, jetbrains mono, 
 

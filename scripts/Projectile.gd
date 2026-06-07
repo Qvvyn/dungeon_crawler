@@ -8,6 +8,7 @@ const NOVA_SPAWNER_SCR  := preload("res://scripts/NovaSpawner.gd")
 
 # Set by spawner immediately after instantiation
 var source: String     = "player"
+var shooter_name: String = ""   # which monster fired it (for the damage log), set by the enemy
 var direction: Vector2 = Vector2.RIGHT
 var shoot_type: String = "regular"
 
@@ -535,6 +536,14 @@ func _on_body_entered(body: Node2D) -> void:
 	if source == "player" and body.is_in_group("player"):
 		return
 	if source == "enemy" and body.is_in_group("enemy"):
+		# Attribute the shot to the monster that fired it (the enemy this shot
+		# spawned overlapping) for the damage log — captured during the spawn
+		# window, before any infighting gating, so the death/HUD chart shows
+		# "EnemyShooter" instead of a generic "Projectile".
+		if shooter_name == "" and not _spawn_overlap_checked:
+			var sscr := body.get_script() as Script
+			if sscr != null and sscr.resource_path != "":
+				shooter_name = sscr.resource_path.get_file().get_basename()
 		# Monster infighting — controlled friendly fire. Enemies still target the
 		# player (take_damage just wakes the victim); shots only chip neighbours.
 		if not INFIGHTING_ENABLED:

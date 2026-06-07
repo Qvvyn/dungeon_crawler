@@ -102,6 +102,18 @@ var _palette_idx: int = -1
 var _hitbox_size: float = 14.0
 var _hitbox_shape: String = "circle"   # "circle" | "square"
 var _hitbox_tuned: bool = false        # true once it differs from the scene default
+# Copyright-replacement review: press V to compare the current (found) art with
+# a proposed ORIGINAL counterpart stored in assets/ascii/sprites/proposed/<key>.txt.
+const PROPOSED_DIR := "res://assets/ascii/sprites/proposed/"
+var _compare: bool = false
+var _cmp_root: Control = null
+var _cmp_left: Label = null
+var _cmp_right: Label = null
+var _cmp_lhead: Label = null
+var _cmp_rhead: Label = null
+var _cmp_right_frames: Array = []   # animated proposals: proposed/<key>.0.txt, .1.txt, …
+var _cmp_right_fi: int = 0
+var _cmp_right_t: float = 0.0
 const COLOR_PALETTE: Array = [
 	Color(0.90, 0.90, 0.95),   # near-white
 	Color(0.70, 0.72, 0.80),   # cool grey
@@ -143,6 +155,7 @@ func _ready() -> void:
 	add_child(_stage)
 
 	_build_3d()   # added before info/help so those overlay it
+	_build_compare()
 
 	_info = Label.new()
 	_info.position = Vector2(16, 12)
@@ -166,28 +179,36 @@ func _ready() -> void:
 	_load_current()
 
 func _update_help() -> void:
+	if _compare:
+		_help.text = "COMPARE — current (found) vs proposed (original)   ←/→ sprite   V exit   Esc"
+		return
 	if _mode == "3d":
 		_help.text = "F1 1st-person   ←/→ sprite   ↑/↓ size·shift height·ctrl hitbox · ctrl←/→ shape · C colour · Enter save   1-4 state   WASD·QE cam   F font   Esc"
 	elif _mode == "fp":
 		_help.text = "F1 2D view   ←/→ sprite   ↑/↓ size·shift height·ctrl hitbox · ctrl←/→ shape · C colour · Enter save   1-4 state   F font   Esc"
 	else:
-		_help.text = "F1 3rd-person   ←/→ sprite   ctrl↑/↓ hitbox · ctrl←/→ shape · C colour · Enter save   1-4 state   F font   G grid   +/- zoom   Esc"
+		_help.text = "F1 3rd-person   ←/→ sprite   ctrl↑/↓ hitbox · ctrl←/→ shape · C colour · Enter save   1-4 state   V compare   F font   G grid   +/- zoom   Esc"
 
 func _build_entries() -> void:
 	_entries.clear()
-	# Order: enemy-wired sprites first, then objects/interactables, then
-	# unassigned sprite drafts, then raw set-piece .txt last.
+	# Order: sprites that have a PROPOSED original (for review) first, then
+	# enemy-wired sprites, then objects/interactables, unassigned drafts, and
+	# raw set-piece .txt last.
+	var proposed: Array = []
 	var enemies: Array = []
 	var objects: Array = []
 	var unassigned: Array = []
 	for key in AsciiSprites.SPRITES.keys():
 		var entry := {"kind": "sprite", "key": String(key), "name": String(key)}
-		if SPRITE_TO_ENEMY.has(String(key)):
+		if _has_proposal(String(key)):
+			proposed.append(entry)
+		elif SPRITE_TO_ENEMY.has(String(key)):
 			enemies.append(entry)
 		elif SPRITE_TO_OBJECT.has(String(key)):
 			objects.append(entry)
 		else:
 			unassigned.append(entry)
+	_entries.append_array(proposed)
 	_entries.append_array(enemies)
 	_entries.append_array(objects)
 	_entries.append_array(unassigned)
@@ -237,6 +258,8 @@ func _load_current() -> void:
 	else:
 		_load_piece(e["path"])
 	_grid.queue_redraw()   # refresh the hitbox overlay for the new entry
+	if _compare:
+		_load_compare()
 
 func _load_sprite(key: String) -> void:
 	var meta: Dictionary = AsciiSprites.meta(key)
@@ -387,6 +410,13 @@ func _update_info() -> void:
 	_info.text = "%s\n%s\n%s\n%s" % [head, line2, line3, sz]
 
 func _process(delta: float) -> void:
+	# Animated proposals in the compare view (e.g. the turret's pulsing waves).
+	if _compare and _cmp_right_frames.size() > 1 and _cmp_right != null:
+		_cmp_right_t += delta
+		if _cmp_right_t >= 0.35:
+			_cmp_right_t = 0.0
+			_cmp_right_fi = (_cmp_right_fi + 1) % _cmp_right_frames.size()
+			_cmp_right.text = String(_cmp_right_frames[_cmp_right_fi])
 	if _mode == "3d":
 		_update_camera(delta)
 	if _frames.size() <= 1:
@@ -399,6 +429,124 @@ func _process(delta: float) -> void:
 		_frame_idx += 1
 		_apply_frame()
 		_update_info()
+
+# True if this sprite key has a proposed original (single or animated frames).
+func _has_proposal(key: String) -> bool:
+	return FileAccess.file_exists(PROPOSED_DIR + key + ".txt") \
+		or FileAccess.file_exists(PROPOSED_DIR + key + ".0.txt")
+
+# ── Compare view (V): current found art vs proposed original ─────────────────
+func _build_compare() -> void:
+	_cmp_root = Control.new()
+	_cmp_root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_cmp_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_cmp_root.visible = false
+	add_child(_cmp_root)
+	var div := ColorRect.new()
+	div.color = Color(0.4, 0.4, 0.55, 0.6)
+	div.anchor_left = 0.5; div.anchor_right = 0.5
+	div.anchor_top = 0.0;  div.anchor_bottom = 1.0
+	div.offset_left = -1.0; div.offset_right = 1.0
+	div.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_cmp_root.add_child(div)
+	_cmp_lhead = _mk_cmp_header(0.0, 0.5, Color(1.0, 0.72, 0.5))
+	_cmp_rhead = _mk_cmp_header(0.5, 1.0, Color(0.6, 1.0, 0.72))
+	_cmp_left  = _mk_cmp_art(0.0, 0.5)
+	_cmp_right = _mk_cmp_art(0.5, 1.0)
+
+func _mk_cmp_header(al: float, ar: float, col: Color) -> Label:
+	var l := Label.new()
+	l.anchor_left = al; l.anchor_right = ar
+	l.offset_top = 40.0; l.offset_bottom = 66.0
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.add_theme_font_size_override("font_size", 18)
+	l.add_theme_color_override("font_color", col)
+	l.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	l.add_theme_constant_override("outline_size", 3)
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_cmp_root.add_child(l)
+	return l
+
+func _mk_cmp_art(al: float, ar: float) -> Label:
+	var l := Label.new()
+	l.anchor_left = al; l.anchor_right = ar
+	l.anchor_top = 0.0;  l.anchor_bottom = 1.0
+	l.add_theme_font_override("font", MonoFont.get_font())
+	l.add_theme_color_override("font_color", Color(0.9, 0.9, 1.0))
+	l.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	l.add_theme_constant_override("outline_size", 2)
+	l.add_theme_constant_override("line_separation", -2)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_cmp_root.add_child(l)
+	return l
+
+func _set_compare(on: bool) -> void:
+	_compare = on
+	if _cmp_root != null:
+		_cmp_root.visible = on
+	# Hide the normal views while comparing.
+	_stage.visible = (not on) and (_mode == "2d")
+	_grid.visible = (not on) and (_mode == "2d")
+	if _vp_container != null:
+		_vp_container.visible = (not on) and (_mode != "2d")
+	if on:
+		_load_compare()
+	_update_help()
+	_update_info()
+
+func _load_compare() -> void:
+	if not _compare or _cmp_left == null:
+		return
+	if _entries.is_empty() or _entries[_idx]["kind"] != "sprite":
+		_cmp_left.text = "(select a sprite)"
+		_cmp_right.text = ""
+		_cmp_lhead.text = ""
+		_cmp_rhead.text = ""
+		return
+	var key: String = _entries[_idx]["key"]
+	var en: String = SPRITE_TO_ENEMY.get(key, SPRITE_TO_OBJECT.get(key, key))
+	var cur: Array = AsciiSprites.frames(key, "idle")
+	var cur_txt: String = String((cur[0] as Dictionary).get("t", "")) if not cur.is_empty() else ""
+	# Proposed art: a single proposed/<key>.txt, OR an animated set
+	# proposed/<key>.0.txt, .1.txt, … (cycled in _process so the pulse plays).
+	_cmp_right_frames.clear()
+	_cmp_right_fi = 0
+	if FileAccess.file_exists(PROPOSED_DIR + key + ".0.txt"):
+		var n := 0
+		while FileAccess.file_exists(PROPOSED_DIR + "%s.%d.txt" % [key, n]):
+			_cmp_right_frames.append(AsciiSprites.pad_block(
+				FileAccess.get_file_as_string(PROPOSED_DIR + "%s.%d.txt" % [key, n])))
+			n += 1
+		_cmp_rhead.text = "PROPOSED (original, animated) — %s" % en
+	elif FileAccess.file_exists(PROPOSED_DIR + key + ".txt"):
+		_cmp_right_frames.append(AsciiSprites.pad_block(
+			FileAccess.get_file_as_string(PROPOSED_DIR + key + ".txt")))
+		_cmp_rhead.text = "PROPOSED (original) — %s" % en
+	else:
+		_cmp_right_frames.append("(no proposal yet)")
+		_cmp_rhead.text = "PROPOSED — none yet"
+	var prop_txt: String = String(_cmp_right_frames[0])
+	_cmp_lhead.text = "CURRENT (found) — %s" % en
+	_cmp_left.text = cur_txt
+	_cmp_right.text = prop_txt
+	# Same font size on both so the scale is comparable; fit to the taller/wider
+	# across the current art AND every proposed frame (so animation doesn't jump).
+	var rows := 1
+	var cols := 1
+	var fit_set: Array = [cur_txt]
+	fit_set.append_array(_cmp_right_frames)
+	for t in fit_set:
+		var ls := (t as String).split("\n")
+		rows = maxi(rows, ls.size())
+		for ln in ls:
+			cols = maxi(cols, (ln as String).length())
+	var fs_w := int((size.x * 0.46) / (float(cols) * 0.62))
+	var fs_h := int((size.y * 0.74) / float(rows))
+	var fs := clampi(mini(fs_w, fs_h), 5, 18)
+	_cmp_left.add_theme_font_size_override("font_size", fs)
+	_cmp_right.add_theme_font_size_override("font_size", fs)
 
 func _draw_grid() -> void:
 	var cx := size.x * 0.5
@@ -430,9 +578,14 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not (event is InputEventKey) or not event.pressed or event.echo:
 		return
 	match (event as InputEventKey).keycode:
+		KEY_V:
+			# Toggle the copyright-replacement compare view (found vs proposed).
+			_set_compare(not _compare)
 		KEY_F1:
 			# Cycle the same three views the game uses: flat 2D → 3rd-person
 			# room → 1st-person head-on.
+			if _compare:
+				_set_compare(false)
 			var order := ["2d", "3d", "fp"]
 			_set_mode(order[(order.find(_mode) + 1) % order.size()])
 		KEY_RIGHT:
